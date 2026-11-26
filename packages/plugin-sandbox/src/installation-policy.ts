@@ -2,6 +2,7 @@
 
 import {
   externalCapabilityRefusal,
+  externalUrlSlotRefusal,
   type PluginCapability,
   type PluginManifest,
 } from "@caelo-cms/plugin-sdk";
@@ -38,7 +39,17 @@ export function validateInstallationPolicy(manifest: PluginManifest): void {
   requireCapability(Boolean(manifest.tools?.length), "chat_runner_tools");
   requireCapability(Boolean(manifest.workers?.length), "background_workers");
   requireCapability(Boolean(manifest.contributes?.length), "head_contributions");
-  requireCapability(Boolean(manifest.urlContributions?.length), "url_slots");
+  requireCapability(
+    Boolean(manifest.urlContributions?.length) || manifest.urlTables !== undefined,
+    "url_slots",
+  );
+  // #1729 (decision Q7 A) — no plugin code runs while core composes an
+  // address, so a runtime-installed plugin claims only the slots data can
+  // describe, and declares that data (`urlTables`, checked by the validator).
+  for (const claim of manifest.urlContributions ?? []) {
+    const refusal = externalUrlSlotRefusal(claim.slot, manifest.urlTables !== undefined);
+    if (refusal) throw new Error(refusal);
+  }
   requireCapability(manifest.hasBuildAssets || manifest.hasDeferrals, "client_assets");
   requireCapability(Boolean(manifest.listSources?.length), "list_sources");
   requireCapability(Boolean(manifest.listTypes?.length), "list_types");

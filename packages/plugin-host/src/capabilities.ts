@@ -54,6 +54,7 @@ import { isPublicSideHost, makeProjectedAdminQuery } from "./published-state.js"
 import type { SandboxKind } from "./sandbox-kind.js";
 import { makePluginSiteMedia } from "./site-media.js";
 import { registerPluginStorageOps, STORAGE_OPS, UPDATE_MANY_MAX } from "./storage-ops.js";
+import { checkUrlTableWrite, type UrlTableWrite, urlTableRole } from "./url-tables.js";
 
 export interface MakePluginContextOpts {
   readonly plugin: LoadedPlugin;
@@ -591,12 +592,31 @@ function makeScopedQuery(
     return r.value as T;
   }
 
-  return {
+  /**
+   * #1729 — a declared URL table (`urlTables`) shapes page addresses: it
+   * changes only in an Owner-approved call, and never into a collision, an
+   * unserved host or a page naming a missing value (url-tables.ts). For
+   * every plugin that declares one.
+   */
+  async function guardUrlTable(write: UrlTableWrite): Promise<void> {
+    const tables = plugin.definition.urlTables;
+    if (scope.pool !== "admin" || !tables || urlTableRole(tables, write.table) === null) return;
+    await checkUrlTableWrite({
+      pluginSlug: plugin.slug,
+      tables,
+      invocation,
+      write,
+      list: (t, f) => handle.list(t, f),
+    });
+  }
+
+  const handle: PluginQuery & Partial<Pick<PluginAdminQuery, "upsert">> = {
     insert: async (table, data) => {
       const tableStr = table as string;
       assertAuthoring("insert");
       const columns = tableColumns("insert", tableStr);
       assertDeclared("insert", tableStr, columns, Object.keys(data));
+      await guardUrlTable({ method: "insert", table: tableStr, data });
       if (Object.keys(data).length === 0) {
         throw new Error(`${scope.label}.insert: data must include at least one declared column`);
       }
@@ -680,6 +700,7 @@ function makeScopedQuery(
       if (keys.length === 0) {
         throw new Error(`${scope.label}.update: patch must include at least one declared column`);
       }
+      await guardUrlTable({ method: "update", table: tableStr, id, data: patch });
       await run(ops.update, { schema: schemaName, table: tableStr, columns, id, patch });
     },
 
@@ -695,6 +716,7 @@ function makeScopedQuery(
         );
       }
       if (ids.length === 0) return;
+      await guardUrlTable({ method: "updateMany", table: tableStr, data: patch });
       if (ids.length > UPDATE_MANY_MAX) {
         throw new Error(
           `${scope.label}.updateMany: at most ${UPDATE_MANY_MAX} ids per call — split the list into several calls`,
@@ -713,6 +735,7 @@ function makeScopedQuery(
       const tableStr = table as string;
       assertAuthoring("delete");
       const columns = tableColumns("delete", tableStr);
+      await guardUrlTable({ method: "delete", table: tableStr, id });
       await run(ops.delete, { schema: schemaName, table: tableStr, columns, id });
     },
 
@@ -720,6 +743,7 @@ function makeScopedQuery(
       const tableStr = table as string;
       assertAuthoring("compareAndSwap");
       const columns = tableColumns("compareAndSwap", tableStr);
+      await guardUrlTable({ method: "compareAndSwap", table: tableStr, id, data: patch });
       const out = await run<{ swapped: boolean }>(ops.compareAndSwap, {
         schema: schemaName,
         table: tableStr,
@@ -742,6 +766,11 @@ function makeScopedQuery(
               ...Object.keys(key),
               ...Object.keys(values),
             ]);
+            await guardUrlTable({
+              method: "upsert",
+              table: tableStr,
+              data: { ...key, ...values },
+            });
             return run<PluginUpsertResult>(STORAGE_OPS.private.upsert, {
               schema: schemaName,
               table: tableStr,
@@ -754,6 +783,7 @@ function makeScopedQuery(
         }
       : {}),
   };
+  return handle;
 }
 
 function makePluginQuery(

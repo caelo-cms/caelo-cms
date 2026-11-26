@@ -219,5 +219,9 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
     ...(manifest.listExt ? { listExt: manifest.listExt } : {}),
     ...(manifest.visitorProjection ? { visitorProjection: manifest.visitorProjection } : {}),
     ...(manifest.component ? { component: manifest.component } : {}),
+    // #1729 (decision Q7 A) — the `host` / `path-prefix` slots as tables the
+    // host reads while it composes addresses (url-tables.ts); no plugin
+    // code runs on the URL path, so no encode/decode crosses from the source.
+    ...(manifest.urlTables ? { urlTables: manifest.urlTables } : {}),
   };
 }

@@ -122,10 +122,14 @@ export * from "./indexes.js";
 export * from "./mail-templates.js";
 export * from "./public-run.js";
 export * from "./public-surface.js";
+export * from "./url-tables.js";
 export * from "./visitor-auth.js";
+
 /** Re-exported so plugins can validate at their boundaries (CLAUDE.md
  *  §4 "Zod at every boundary") without importing zod directly — the
  *  sandbox validator allowlists only the SDK + component-kit. */
+import { type PluginUrlTables, pluginUrlTables, urlTableSlots } from "./url-tables.js";
+
 export { z };
 
 // ---------------------------------------------------------------------------
@@ -217,6 +221,7 @@ export {
   externalCapabilityHint,
   externalCapabilityRefusal,
   externallyBrokeredCapabilities,
+  externallyRequestable,
   isExternallyBrokered,
 } from "./external-capabilities.js";
 
@@ -1477,6 +1482,10 @@ export const pluginManifest = z
     /** #390 — URL-slot claims (release-signed only). The definition
      *  supplies the matching pure encode/decode pairs. */
     urlContributions: z.array(urlContributionClaim).optional(),
+    /** #1729 — see `PluginDefinition.urlTables`: the `host` and
+     *  `path-prefix` slots as tables the host reads, which is how a
+     *  runtime-installed plugin claims them. */
+    urlTables: pluginUrlTables.optional(),
     /** #391 — head/sitemap contribution claims (release-signed only,
      *  requires the `head_contributions` capability). */
     contributes: z.array(contributionKind).optional(),
@@ -2870,6 +2879,18 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    *  entry's slot must also be claimed in the manifest. */
   readonly urlContributions?: ReadonlyArray<UrlContributionDef>;
   /**
+   * #1729 (decision Q7 A) — the `host` and `path-prefix` slots as data
+   * instead of code: a `pages` table naming each shaped page's value and a
+   * `values` table naming each value's segment or host, both in
+   * `adminSchema` (url-tables.ts). The host reads them itself while it
+   * composes addresses, on the composing writer's branch, and builds the
+   * encode/decode pair; the plugin's code never runs on the URL path.
+   * Writes to them are refused except from an Owner-approved call.
+   * Declare this OR code `urlContributions`, never both; a runtime-installed
+   * plugin can only declare this.
+   */
+  readonly urlTables?: PluginUrlTables;
+  /**
    * #390 — the I/O half of URL resolution: given page ids, return each
    * page's URL annotations from the plugin's own data (e.g. its locale
    * from the variant table). Called by core BEFORE composing; the
@@ -3363,6 +3384,7 @@ export function manifestFromDefinition(def: {
   readonly aiReadableTables?: ReadonlyArray<string>;
   readonly indexes?: PluginIndexes;
   readonly urlContributions?: ReadonlyArray<{ readonly slot: UrlSlot }>;
+  readonly urlTables?: PluginUrlTables;
   readonly contributes?: ReadonlyArray<ContributionKind>;
   readonly listSources?: ReadonlyArray<PluginListSourceSpec>;
   readonly listTypes?: ReadonlyArray<ListTypeDef>;
@@ -3480,6 +3502,16 @@ export function manifestFromDefinition(def: {
     ...(def.skills ? { skills: [...def.skills] } : {}),
     ...(def.urlContributions && def.urlContributions.length > 0
       ? { urlContributions: def.urlContributions.map((c) => ({ slot: c.slot })) }
+      : {}),
+    // #1729 — declared tables claim the slots they fill, so a plugin that
+    // shapes addresses as data has the same manifest claim as one with code.
+    ...(def.urlTables
+      ? {
+          urlTables: structuredClone(def.urlTables),
+          ...(def.urlContributions && def.urlContributions.length > 0
+            ? {}
+            : { urlContributions: urlTableSlots(def.urlTables).map((slot) => ({ slot })) }),
+        }
       : {}),
     ...(def.contributes && def.contributes.length > 0 ? { contributes: [...def.contributes] } : {}),
     ...(def.listSources && def.listSources.length > 0 ? { listSources: [...def.listSources] } : {}),

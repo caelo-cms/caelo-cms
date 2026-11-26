@@ -35,6 +35,7 @@ import {
 import { externalDeclarations } from "./external-plugin.js";
 import { renderPointDefinition } from "./render-points.js";
 import { runSandbox } from "./sandbox-runtime.js";
+import { declaredUrlAnnotationKey, declaredUrlContributions } from "./url-tables.js";
 
 const PLUGINS_ROOT = resolve(import.meta.dir, "../../plugins");
 const ID = "11111111-1111-4111-8111-111111111111";
@@ -135,6 +136,8 @@ async function fixtureManifest(): Promise<PluginManifest> {
     linkResolveReads: international.linkResolveReads,
     aiChatOperations: assistant.aiChatOperations,
     changeConsumer: consent.changeConsumer,
+    urlTables: URL_TABLES,
+    urlContributions: [{ slot: "host" }, { slot: "path-prefix" }],
     tier: 2,
   };
 }
@@ -146,6 +149,15 @@ async function fixtureManifest(): Promise<PluginManifest> {
  */
 const DEFINITION_KEY: Partial<Record<keyof PluginManifest, string>> = {
   hasLinkResolve: "linkResolveOperation",
+  // #1729 (Q7 A) — the slot claims of an installed plugin are its tables:
+  // the host builds the encoders from them (url-tables.ts).
+  urlContributions: "urlTables",
+};
+
+/** Declared URL tables in the shape a runtime-installed plugin submits them. */
+const URL_TABLES = {
+  pages: { table: "page_markets", valueColumn: "market" },
+  values: { table: "markets", valueColumn: "code", segmentColumn: "segment", hostColumn: "host" },
 };
 
 /** A render-point call as core makes it in an editor preview. */
@@ -333,6 +345,42 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
         { pageIds: [ID] },
       ),
     ).toEqual({ pages: { [ID]: { variant: "de", group: "render" } } });
+  },
+  // #1729 (Q7 A) — no plugin code runs on the URL path: the definition
+  // carries the tables, and the encoders are the host's, reading the value
+  // the host attached to the page.
+  url_slots: async () => {
+    const manifest = {
+      ...probe,
+      urlTables: URL_TABLES,
+      urlContributions: [{ slot: "host" as const }, { slot: "path-prefix" as const }],
+    };
+    expect(externalDeclarations(manifest).urlTables).toEqual(URL_TABLES);
+    const encoders = declaredUrlContributions("parity-probe", URL_TABLES);
+    const page = {
+      pageId: ID,
+      slug: "pricing",
+      ancestorSlugs: [],
+      isHomePage: false,
+      annotations: {
+        [declaredUrlAnnotationKey("parity-probe")]: {
+          id: ID,
+          value: "de",
+          segment: "de",
+          host: "de.example.com",
+        },
+      },
+    };
+    const bySlot = Object.fromEntries(encoders.map((c) => [c.slot, c]));
+    expect(
+      bySlot["path-prefix"]?.slot === "path-prefix" && bySlot["path-prefix"].encode(page),
+    ).toEqual(["de"]);
+    expect(bySlot.host?.slot === "host" && bySlot.host.encode(page)).toBe("de.example.com");
+    // A page without a row keeps the site's own shape.
+    const bare = { ...page, annotations: {} };
+    expect(
+      bySlot["path-prefix"]?.slot === "path-prefix" && bySlot["path-prefix"].encode(bare),
+    ).toEqual([]);
   },
   batch_jobs: async () => {
     expect(
