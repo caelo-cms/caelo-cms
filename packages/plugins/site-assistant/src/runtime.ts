@@ -36,11 +36,17 @@
  * (run.app on gcp-firebase) carries none. Nothing here builds site content: the
  * texts are cloned from the markup, the rest is the conversation itself.
  *
- * #1701 — the inline answer: on the search results page the site places
- * its own answer card, and the visitor's search query is asked once, as
- * the question, with no launcher and no floating panel:
+ * #1701 — the answer cards: the site places its own card in a page, with
+ * no launcher and no floating panel. `data-caelo-assistant-answer` says
+ * how it asks:
  *
- *   <section data-caelo-assistant-answer hidden>
+ *   - `query`: on the search results page, the visitor's search query is
+ *     asked once, as the question (`#q=` first, then `?q=`, again on
+ *     `hashchange`, as site-search reads it); hidden while there is none.
+ *   - `ask`: anywhere (a product page, a sidebar, the contact page), the
+ *     visitor types the first question in the card's form.
+ *
+ *   <section data-caelo-assistant-answer="ask" hidden>
  *     <p><span data-caelo-assistant-disclosure>Antworten schreibt eine KI …</span> <a href="/datenschutz/">…</a></p>
  *     <div data-caelo-assistant-thread></div>
  *     <template data-caelo-assistant-turn>
@@ -51,18 +57,24 @@
  *     </template>
  *     <template data-caelo-assistant-source><li><a data-field="link"><span data-field="title"></span></a></li></template>
  *     <p data-caelo-assistant-status role="status"></p>
- *     <form data-caelo-assistant-followup hidden><input data-caelo-assistant-input>…</form>
+ *     <form data-caelo-assistant-ask><input data-caelo-assistant-input>…</form>
+ *     <button type="button" data-caelo-assistant-new hidden>…</button>
  *     <template data-caelo-assistant-texts>… (thinking, thanks, errors, handoff)</template>
  *   </section>
  *
- * It follows site-search's precedent (the results page fills the site's
- * hit template): the runtime fills the site's templates in the page
- * itself, so the card is the site's markup, CSS and texts; it is no Web
- * Component, and the widget keeps its Shadow DOM. The query comes from the
- * address as site-search reads it (`#q=` first, then `?q=`, again on
- * `hashchange`); an answer stays in the tab per query, so a reload asks
- * nothing again. The same conversation, limits, proof of work and feedback
- * as the widget; without a non-empty disclosure element nothing is asked.
+ * In both modes `form[data-caelo-assistant-ask]` is the card's one question
+ * field: an ask card's first question and every follow-up; on a query
+ * card (where it is optional and starts `hidden`) the follow-ups after the
+ * query's answer. It follows site-search's precedent (the results page
+ * fills the site's hit template): the runtime fills the site's templates
+ * in the page itself, so a card is the site's markup, CSS and texts; it is
+ * no Web Component, and the widget keeps its Shadow DOM. Each card keeps
+ * its own conversation in the tab (`answerStoreKey`: the page and the
+ * card's id or position), so several cards on a page stay apart and a
+ * reload shows each its own without asking. The same conversation, limits,
+ * proof of work and feedback as the widget; a card whose disclosure element
+ * is empty asks nothing, and a card stays hidden while the visitor AI is
+ * unavailable.
  */
 
 import { WIDGET_LOGIC } from "./widget-logic.js";
@@ -482,33 +494,43 @@ const MAIN = String.raw`
     });
   }
 
-  // ---- the inline answer (#1701) ----
-  var ANSWER_STORE = "caelo-assistant-answer";
-
-  function loadAnswer() {
+  // ---- the answer cards (#1701) ----
+  // A card's kept conversations: one per language and query, the latest first.
+  function loadAnswers(key) {
     try {
-      var raw = sessionStorage.getItem(ANSWER_STORE);
+      var raw = sessionStorage.getItem(key);
       var v = raw ? JSON.parse(raw) : null;
-      if (v && typeof v.query === "string" && Array.isArray(v.history) && Array.isArray(v.messages)) return v;
+      if (!Array.isArray(v)) return [];
+      return v.filter(function (k) {
+        return k && typeof k.lang === "string" && typeof k.query === "string" && Array.isArray(k.history) && Array.isArray(k.messages);
+      });
     } catch (e) {}
-    return null;
+    return [];
   }
-  function saveAnswer(state) {
-    try { sessionStorage.setItem(ANSWER_STORE, JSON.stringify(state)); } catch (e) {}
+  function saveAnswer(key, state) {
+    try { sessionStorage.setItem(key, JSON.stringify(keepConversation(loadAnswers(key), state))); } catch (e) {}
   }
 
-  function bindAnswer(root) {
+  // One card: "query" answers the page's search query, "ask" the visitor's
+  // own question. Each card keeps its own conversation (answerStoreKey).
+  function bindAnswer(root, index) {
     if (root.__caeloAnswer) return;
     root.__caeloAnswer = true;
+    var mode = answerCardMode(root.getAttribute("data-caelo-assistant-answer"));
     var t = texts(root);
     var thread = root.querySelector("[data-caelo-assistant-thread]");
     var turnTpl = root.querySelector("template[data-caelo-assistant-turn]");
     var sourceTpl = root.querySelector("template[data-caelo-assistant-source]");
     var status = root.querySelector("[data-caelo-assistant-status]");
-    var followup = root.querySelector("form[data-caelo-assistant-followup]");
-    var input = followup ? (followup.querySelector("[data-caelo-assistant-input]") || followup.querySelector("input, textarea")) : null;
+    var form = root.querySelector("form[data-caelo-assistant-ask]");
+    var input = form ? (form.querySelector("[data-caelo-assistant-input]") || form.querySelector("input, textarea")) : null;
+    var restart = root.querySelector("[data-caelo-assistant-new]");
     var disclosure = root.querySelector("[data-caelo-assistant-disclosure]");
-    if (!thread || !turnTpl) {
+    if (!mode) {
+      root.setAttribute("data-caelo-assistant-state", "mode-missing");
+      return;
+    }
+    if (!thread || !turnTpl || (mode === "ask" && !input)) {
       root.setAttribute("data-caelo-assistant-state", "markup-missing");
       return;
     }
@@ -517,6 +539,7 @@ const MAIN = String.raw`
       root.setAttribute("data-caelo-assistant-state", "disclosure-missing");
       return;
     }
+    var key = answerStoreKey(location.pathname, root.id || "", index);
     var query = "";
     var state = null;
     var busy = false;
@@ -609,15 +632,25 @@ const MAIN = String.raw`
       });
     }
 
-    function followUp(i) {
-      if (!followup || !input) return;
-      followup.hidden = false;
+    // The card's question form: open for the next question while the
+    // conversation has turns left; a full one offers a new conversation.
+    function showForm(i) {
+      if (!form || !input) return;
+      form.hidden = false;
       var max = i.limits && i.limits.maxTurns ? i.limits.maxTurns : 8;
       var used = conversationFull(state.history, max);
       input.disabled = used;
-      var submit = followup.querySelector('[type="submit"]');
+      var submit = form.querySelector('[type="submit"]');
       if (submit) submit.disabled = used || busy;
+      if (restart) restart.hidden = !used;
       if (used) say("limit");
+    }
+
+    // A conversation the card kept, shown again (a copy: it is saved anew).
+    function restore(kept) {
+      state = { lang: kept.lang, query: kept.query, history: kept.history.slice(), messages: kept.messages.slice() };
+      state.messages.forEach(function (m) { fill(addTurn(m.q), m.a, m.sources); });
+      setState("done");
     }
 
     function ask(question, i) {
@@ -642,7 +675,7 @@ const MAIN = String.raw`
           if (mine !== gen) return;
           state.history = appendTurn(state.history, data.turn);
           state.messages = state.messages.concat([{ q: question, a: text, sources: sources }]);
-          saveAnswer(state);
+          saveAnswer(key, state);
           fill(parts, text, sources);
           rate(parts, question, sources);
           setState("done");
@@ -655,8 +688,8 @@ const MAIN = String.raw`
             if (kind === "BudgetExhausted" || kind === "Unavailable") handoff(parts.answer);
           }
           if (kind === "Invalid") {
-            state = { query: query, history: [], messages: [] };
-            saveAnswer(state);
+            state = { lang: lang(), query: query, history: [], messages: [] };
+            saveAnswer(key, state);
           }
           setState("error");
           say("");
@@ -676,13 +709,14 @@ const MAIN = String.raw`
           busy = false;
           running = null;
           thread.setAttribute("aria-busy", "false");
-          followUp(i);
+          showForm(i);
         });
     }
 
-    // The query of the address: on load, and whenever the fragment changes
-    // (site-search's hash mode). Asked once per query; this tab keeps the
-    // answer, so the same query shows it again without asking.
+    // A query card: the query of the address, on load and whenever the
+    // fragment changes (site-search's hash mode). Asked once per query; the
+    // tab keeps the answer, so the same query shows it again without asking.
+    // The card's form, if it has one, takes the follow-ups.
     function follow(isChange) {
       var found = searchQueryOf(location.search, location.hash);
       if (isChange && found.anchor) return;
@@ -693,7 +727,8 @@ const MAIN = String.raw`
       busy = false;
       thread.textContent = "";
       say("");
-      if (followup) followup.hidden = true;
+      if (form) form.hidden = true;
+      if (restart) restart.hidden = true;
       if (query === "") {
         root.hidden = true;
         setState("idle");
@@ -709,22 +744,55 @@ const MAIN = String.raw`
           return;
         }
         root.hidden = false;
-        var stored = loadAnswer();
-        if (stored && stored.query === query && stored.messages.length > 0) {
-          state = stored;
-          state.messages.forEach(function (m) { fill(addTurn(m.q), m.a, m.sources); });
-          setState("done");
-          followUp(i);
+        var kept = keptConversation(loadAnswers(key), lang(), query);
+        if (kept) {
+          restore(kept);
+          showForm(i);
           return;
         }
-        state = { query: query, history: [], messages: [] };
-        saveAnswer(state);
+        state = { lang: lang(), query: query, history: [], messages: [] };
         ask(query, i);
       });
     }
 
-    if (followup && input) {
-      followup.addEventListener("submit", function (ev) {
+    // An ask card: open at once (when the visitor AI answers), with the
+    // conversation this card keeps, or empty for the first question.
+    function open() {
+      getInfo().then(function (i) {
+        if (!i || !i.available) {
+          root.hidden = true;
+          setState("unavailable");
+          return;
+        }
+        root.hidden = false;
+        var kept = keptConversation(loadAnswers(key), lang(), "");
+        if (kept) restore(kept);
+        else {
+          state = { lang: lang(), query: "", history: [], messages: [] };
+          setState("idle");
+        }
+        showForm(i);
+      });
+    }
+
+    if (restart) {
+      restart.addEventListener("click", function () {
+        if (busy) return;
+        gen += 1;
+        state = { lang: lang(), query: query, history: [], messages: [] };
+        saveAnswer(key, state);
+        thread.textContent = "";
+        say("");
+        setState("idle");
+        getInfo().then(function (i) {
+          if (i && i.available) showForm(i);
+          if (input) input.focus();
+        });
+      });
+    }
+
+    if (form && input) {
+      form.addEventListener("submit", function (ev) {
         ev.preventDefault();
         if (busy || !state) return;
         getInfo().then(function (i) {
@@ -739,15 +807,18 @@ const MAIN = String.raw`
       });
     }
 
-    follow(false);
-    window.addEventListener("hashchange", function () { follow(true); });
+    if (mode === "ask") open();
+    else {
+      follow(false);
+      window.addEventListener("hashchange", function () { follow(true); });
+    }
   }
 
   function start() {
     var scopes = document.querySelectorAll("[data-caelo-assistant]");
     for (var i = 0; i < scopes.length; i++) bind(scopes[i]);
     var answers = document.querySelectorAll("[data-caelo-assistant-answer]");
-    for (var j = 0; j < answers.length; j++) bindAnswer(answers[j]);
+    for (var j = 0; j < answers.length; j++) bindAnswer(answers[j], j);
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
   else start();

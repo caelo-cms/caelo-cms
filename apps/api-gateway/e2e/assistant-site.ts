@@ -15,11 +15,13 @@
  * #1701 — `/suche/` is site-search's results page with the assistant's
  * answer card (the plugin's own `ANSWER_MARKUP`, its texts filled in) and
  * the search field in hash mode; `/suche-ohne-hinweis/` the same card with
- * an empty disclosure. `/__test/model-calls` counts the model's calls and
- * `/__test/requests` lists the page requests the server saw.
+ * an empty disclosure. `/produkt/` carries an ask card (`ASK_MARKUP`) and no
+ * query, `/produkt-ohne-hinweis/` one with an empty disclosure,
+ * `/zwei-karten/` two ask cards. `/__test/model-calls` counts the model's
+ * calls and `/__test/requests` lists the page requests the server saw.
  */
 
-import { ANSWER_MARKUP } from "@caelo-cms/plugin-site-assistant";
+import { ANSWER_MARKUP, ASK_MARKUP } from "@caelo-cms/plugin-site-assistant";
 import { RUNTIME_JS } from "@caelo-cms/plugin-site-assistant/runtime";
 import {
   RUNTIME_CSS as SEARCH_CSS,
@@ -82,14 +84,15 @@ const CARD_TEXTS: Record<string, string> = {
   handoff: "Kontakt",
 };
 
-/** #1701 — the answer card as the AI writes it: the plugin's markup with the site's texts. */
-function answerCard(disclosure: string): string {
-  return ANSWER_MARKUP.replace(/\{\{site_text\.assistant_([a-z_]+)\}\}/g, (_, key: string) => {
-    if (key === "disclosure") return disclosure;
-    const text = CARD_TEXTS[key];
-    if (text === undefined) throw new Error(`the fixture has no text for assistant_${key}`);
-    return text;
-  })
+/** #1701 — a card as the AI writes it: the plugin's markup with the site's texts. */
+function answerCard(disclosure: string, markup = ANSWER_MARKUP): string {
+  return markup
+    .replace(/\{\{site_text\.assistant_([a-z_]+)\}\}/g, (_, key: string) => {
+      if (key === "disclosure") return disclosure;
+      const text = CARD_TEXTS[key];
+      if (text === undefined) throw new Error(`the fixture has no text for assistant_${key}`);
+      return text;
+    })
     .replace("<privacy page link>", "/datenschutz/")
     .replace("<contact page link: the same page as assistant.handoff_page>", "/kontakt/")
     .replace("{{page.id}}", "results")
@@ -115,6 +118,14 @@ function resultsPage(disclosure: string): Response {
   const html = `<!doctype html><html lang="de"><head><meta charset="utf-8"><title>Suche</title><style>${SEARCH_CSS}</style></head><body><header>${SEARCH_FORM}</header><main>${answerCard(disclosure)}${SEARCH_RESULTS}</main><script>${SEARCH_JS}</script><script>${RUNTIME_JS}</script></body></html>`;
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
 }
+
+/** #1701 — a page with ask cards in its content, no search, no widget. */
+function askPage(...cards: string[]): Response {
+  const html = `<!doctype html><html lang="de"><head><meta charset="utf-8"><title>Produkt</title></head><body><main><h1>Starter-Paket</h1>${cards.map((c) => `<aside>${c}</aside>`).join("")}</main><script>${RUNTIME_JS}</script></body></html>`;
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+}
+
+const DISCLOSURE = TEXTS.disclosure as string;
 
 /** Every page request the server answered, as path and query (#1701). */
 const pageRequests: string[] = [];
@@ -142,6 +153,10 @@ async function routes(pathname: string): Promise<Response> {
   if (pathname === "/__test/requests") return Response.json(pageRequests);
   if (pathname === "/suche/") return resultsPage(TEXTS.disclosure as string);
   if (pathname === "/suche-ohne-hinweis/") return resultsPage("");
+  if (pathname === "/produkt/") return askPage(answerCard(DISCLOSURE, ASK_MARKUP));
+  if (pathname === "/produkt-ohne-hinweis/") return askPage(answerCard("", ASK_MARKUP));
+  if (pathname === "/zwei-karten/")
+    return askPage(answerCard(DISCLOSURE, ASK_MARKUP), answerCard(DISCLOSURE, ASK_MARKUP));
   if (pathname === "/") return page("Start", "<h1>Start</h1>");
   const p = ASSISTANT_SITE_PAGES.find((x) => x.path === pathname);
   if (p)

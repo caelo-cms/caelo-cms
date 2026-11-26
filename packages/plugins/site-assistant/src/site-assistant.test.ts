@@ -10,6 +10,7 @@ import {
 import { clusterGaps, type FeedbackEvent, MIN_GAP_COUNT, questionWords } from "./gaps.js";
 import plugin, {
   ANSWER_MARKUP,
+  ASK_MARKUP,
   linkedPageId,
   SITE_TEXT_KEYS,
   testQuestionsOf,
@@ -17,11 +18,15 @@ import plugin, {
 } from "./index.js";
 import { RUNTIME_JS } from "./runtime.js";
 import {
+  answerCardMode,
   answered,
   answerParts,
+  answerStoreKey,
   appendTurn,
   checkQuestion,
   conversationFull,
+  keepConversation,
+  keptConversation,
   parseSse,
   searchQueryOf,
   sourceHref,
@@ -94,43 +99,59 @@ describe("the site assistant's declaration", () => {
   });
 
   it("gives the AI the widget and answer-card markup with every text as a site text", () => {
-    for (const key of Object.keys(SITE_TEXT_KEYS))
-      expect(`${WIDGET_MARKUP}\n${ANSWER_MARKUP}`).toContain(`{{site_text.${key}}}`);
-    // Every key either markup names is a documented site text.
-    for (const m of `${WIDGET_MARKUP}\n${ANSWER_MARKUP}`.matchAll(/\{\{site_text\.([a-z_]+)\}\}/g))
+    const all = `${WIDGET_MARKUP}\n${ANSWER_MARKUP}\n${ASK_MARKUP}`;
+    for (const key of Object.keys(SITE_TEXT_KEYS)) expect(all).toContain(`{{site_text.${key}}}`);
+    // Every key a markup names is a documented site text.
+    for (const m of all.matchAll(/\{\{site_text\.([a-z_]+)\}\}/g))
       expect(Object.keys(SITE_TEXT_KEYS)).toContain(m[1] as string);
     expect(WIDGET_MARKUP).toContain('data-caelo-plugin="site-assistant"');
   });
 
-  it("#1701 — the answer card is the site's own markup, hidden until it answers, with the disclosure", () => {
-    expect(ANSWER_MARKUP).toMatch(/^<section data-caelo-assistant-answer hidden /);
-    for (const contract of [
-      "data-caelo-assistant-disclosure",
-      "{{site_text.assistant_disclosure}}",
-      "data-caelo-assistant-thread",
-      "<template data-caelo-assistant-turn>",
-      'data-field="question"',
-      'data-field="answer"',
-      'data-field="sources"',
-      'data-rate="helpful"',
-      "<template data-caelo-assistant-source>",
-      "data-caelo-assistant-followup hidden",
-      "data-caelo-assistant-input",
-      'data-text="handoff"',
-      'data-caelo-plugin="site-assistant"',
-    ])
-      expect(ANSWER_MARKUP).toContain(contract);
-    // No floating panel, no Web Component: it is not the widget.
-    expect(ANSWER_MARKUP).not.toContain("data-caelo-assistant-open");
-    expect(ANSWER_MARKUP).not.toContain("<script");
+  it("#1701 — both cards are the site's own markup, hidden until they answer, with the disclosure", () => {
+    for (const card of [ANSWER_MARKUP, ASK_MARKUP]) {
+      for (const contract of [
+        "data-caelo-assistant-disclosure",
+        "{{site_text.assistant_disclosure}}",
+        "data-caelo-assistant-thread",
+        "<template data-caelo-assistant-turn>",
+        'data-field="question"',
+        'data-field="answer"',
+        'data-field="sources"',
+        'data-rate="helpful"',
+        "<template data-caelo-assistant-source>",
+        "data-caelo-assistant-input",
+        "data-caelo-assistant-new hidden",
+        'data-text="handoff"',
+        'data-caelo-plugin="site-assistant"',
+      ])
+        expect(card).toContain(contract);
+      // No floating panel, no Web Component: neither is the widget.
+      expect(card).not.toContain("data-caelo-assistant-open");
+      expect(card).not.toContain("<script");
+      // Several cards on a page: no fixed ids to collide.
+      expect(card).not.toContain(" id=");
+    }
+    // The results page's card answers the query; its field waits for the follow-ups.
+    expect(ANSWER_MARKUP).toMatch(/^<section data-caelo-assistant-answer="query" hidden>/);
+    expect(ANSWER_MARKUP).toContain("<form data-caelo-assistant-ask hidden>");
+    // The card for any page takes the visitor's own question at once.
+    expect(ASK_MARKUP).toMatch(/^<section data-caelo-assistant-answer="ask" hidden>/);
+    expect(ASK_MARKUP).toContain("<form data-caelo-assistant-ask>");
+    expect(answerCardMode("query")).toBe("query");
+    expect(answerCardMode(" Ask ")).toBe("ask");
   });
 
-  it("#1701 — get_site_assistant_setup hands out both markups", async () => {
+  it("#1701 — get_site_assistant_setup hands out the widget and both cards", async () => {
     const setup = (await (
       plugin.operations.setup as (c: unknown, a: unknown) => Promise<Record<string, unknown>>
-    )({ config: { get: async () => ({}) } }, {})) as { widgetMarkup: string; answerMarkup: string };
+    )({ config: { get: async () => ({}) } }, {})) as {
+      widgetMarkup: string;
+      answerMarkup: string;
+      askMarkup: string;
+    };
     expect(setup.widgetMarkup).toBe(WIDGET_MARKUP);
     expect(setup.answerMarkup).toBe(ANSWER_MARKUP);
+    expect(setup.askMarkup).toBe(ASK_MARKUP);
   });
 });
 
@@ -222,6 +243,61 @@ describe("#1701 — the query the answer card asks", () => {
   });
 });
 
+describe("#1701 — the cards' modes and kept conversations", () => {
+  it("knows only the two modes: anything else asks nothing", () => {
+    expect(answerCardMode("query")).toBe("query");
+    expect(answerCardMode("ask")).toBe("ask");
+    expect(answerCardMode("")).toBeNull();
+    expect(answerCardMode(null)).toBeNull();
+    expect(answerCardMode("chat")).toBeNull();
+  });
+
+  it("keeps each card's conversation apart: by page and by its id or place", () => {
+    const keys = new Set([
+      answerStoreKey("/produkt/", "", 0),
+      answerStoreKey("/produkt/", "", 1),
+      answerStoreKey("/kontakt/", "", 0),
+      answerStoreKey("/produkt/", "sidebar", 0),
+      answerStoreKey("/produkt/", "footer", 0),
+    ]);
+    expect(keys.size).toBe(5);
+    // The same card on a reload: the same key.
+    expect(answerStoreKey("/produkt/", "", 1)).toBe(answerStoreKey("/produkt/", "", 1));
+    // An id may not pose as a place.
+    expect(answerStoreKey("/p/", "n:0", 3)).not.toBe(answerStoreKey("/p/", "", 0));
+  });
+
+  it("shows a kept conversation again only for its language and query (review on #1742)", () => {
+    const de = { lang: "de", query: "kosten", history: ["a.b"], messages: [{ q: "kosten" }] };
+    const en = { lang: "en", query: "kosten", history: ["c.d"], messages: [{ q: "kosten" }] };
+    const ask = { lang: "de", query: "", history: ["e.f"], messages: [{ q: "Was kostet es?" }] };
+    const kept = [de, en, ask];
+    expect(keptConversation(kept, "de", "kosten")).toBe(de);
+    expect(keptConversation(kept, "en", "kosten")).toBe(en);
+    expect(keptConversation(kept, "fr", "kosten")).toBeNull();
+    expect(keptConversation(kept, "de", "versand")).toBeNull();
+    expect(keptConversation(kept, "de", "")).toBe(ask);
+    // A conversation without an answer is nothing to show.
+    expect(keptConversation([{ ...de, messages: [] }], "de", "kosten")).toBeNull();
+    expect(keptConversation(null, "de", "")).toBeNull();
+  });
+
+  it("keeps the conversations of earlier searches, the latest first, at most ten", () => {
+    const conv = (query: string) => ({ lang: "de", query, history: [], messages: [{ q: query }] });
+    let kept = keepConversation(null, conv("a"));
+    kept = keepConversation(kept, conv("b"));
+    // Back to A: A's conversation is still there.
+    expect(keptConversation(kept, "de", "a")?.query).toBe("a");
+    // Saving A again moves it to the front instead of adding a second one.
+    kept = keepConversation(kept, { ...conv("a"), history: ["x.y"] });
+    expect(kept.map((k) => k.query)).toEqual(["a", "b"]);
+    expect(kept[0]?.history).toEqual(["x.y"]);
+    for (let i = 0; i < 20; i++) kept = keepConversation(kept, conv(`q${i}`));
+    expect(kept).toHaveLength(10);
+    expect(kept[0]?.query).toBe("q19");
+  });
+});
+
 describe("the browser script", () => {
   it("is valid JavaScript, ships the tested logic, and builds no markup from text", () => {
     expect(() => new Function(RUNTIME_JS)).not.toThrow();
@@ -232,6 +308,10 @@ describe("the browser script", () => {
       "appendTurn",
       "checkQuestion",
       "searchQueryOf",
+      "answerCardMode",
+      "answerStoreKey",
+      "keptConversation",
+      "keepConversation",
     ])
       expect(RUNTIME_JS).toContain(`function ${name}(`);
     // #1701 — the answer card binds to the site's card, follows the query

@@ -553,13 +553,14 @@ export default definePlugin({
         },
         widgetMarkup: WIDGET_MARKUP,
         answerMarkup: ANSWER_MARKUP,
+        askMarkup: ASK_MARKUP,
         siteTexts: SITE_TEXT_KEYS,
         testQuestionListType: LIST_TYPES.testQuestions,
         checklist: [
           "Visitor AI is on with a key and budgets (Settings → Visitor AI; propose_set_visitor_ai).",
           "persona, scope and handoff fit the brand voice and the site's topics (update_plugin_config; handoff needs the Owner's approval).",
           "A contact page is set (assistant.handoff_page) and the handoff links point to it.",
-          "Where visitors ask: the widget module in the layout every page uses (a launcher and a panel), and/or the answer card (answerMarkup) in the search results page's module, above or beside the results. Their texts are site texts.",
+          "Where visitors ask, from the operator's words: widgetMarkup in the layout every page uses (a launcher button and a floating panel: 'a chat on every page'); answerMarkup in the search results page's module (answers the search query in the page: 'answers in the results, like Google'); askMarkup in the module of any page or layout region (a box with its own question field: 'put the AI chat into the page here', 'no bubble'). Any mix works; their texts are site texts.",
           "5–10 test questions (some off-topic) are in a list named in lists.test_questions.",
           "Stage, then check preview_site_assistant_sources and the Stage audit.",
         ],
@@ -600,7 +601,7 @@ export default definePlugin({
     {
       name: "get_site_assistant_setup",
       description:
-        "The site assistant's settings and how to put it on the site: the widget markup for a layout module (a launcher button and a panel), the answer-card markup for the search results page (answers the visitor's search query in the page, with its sources, no panel), the site-text keys both use, and the setup checklist. USE FOR: setting up or checking the visitors' assistant before writing the widget module or the answer card.",
+        "The site assistant's settings and how to put it on the site: widgetMarkup (a layout module: launcher button + floating panel on every page), answerMarkup (the search results page's module: answers the visitor's search query in the page with its sources), askMarkup (any page's module: an embedded box where visitors type their own question; no button, no panel — what 'put the AI chat into the page, no bubble' means), the site-text keys they use, and the setup checklist. USE FOR: setting up or checking the visitors' assistant before writing the widget module or a card.",
       operationName: "setup",
       inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
     },
@@ -739,8 +740,8 @@ function gapRow(g: Gap) {
 /** The site-text keys the widget markup uses, with what each says. */
 export const SITE_TEXT_KEYS: Readonly<Record<string, string>> = {
   assistant_open: "The launcher button (e.g. 'Ask us').",
-  assistant_title: "The panel's heading.",
-  assistant_greeting: "The first line the panel shows.",
+  assistant_title: "The panel's heading, and an ask card's.",
+  assistant_greeting: "The first line the panel and an ask card show.",
   assistant_disclosure:
     "That answers are written by an AI from this site's pages and can be wrong (always shown).",
   assistant_privacy: "The privacy link's text.",
@@ -759,8 +760,8 @@ export const SITE_TEXT_KEYS: Readonly<Record<string, string>> = {
   assistant_toolong: "Shown when a question is too long.",
   assistant_error: "Shown when an answer failed.",
   assistant_new: "The button that starts a new conversation.",
-  assistant_answer_title: "The answer card's heading on the search results page (e.g. 'Answer').",
-  assistant_thinking: "Shown in the answer card while the answer is being written.",
+  assistant_answer_title: "The results-page answer card's heading (e.g. 'Answer').",
+  assistant_thinking: "Shown in a card while the answer is being written.",
 };
 
 /** The launcher module's markup, as the AI writes it into a layout module. */
@@ -791,16 +792,24 @@ export const WIDGET_MARKUP = `<div data-caelo-assistant>
 </div>`;
 
 /**
- * #1701 — the answer card, as the AI writes it into the search results
- * page's module: it answers the visitor's search query in the page, lists
- * the pages it used, and offers a follow-up. Every attribute named
- * `data-caelo-assistant-*`, `data-field`, `data-rate` and `data-text` is
- * the contract (runtime.ts); the elements, classes and layout are the
+ * #1701 — an answer card: the assistant in the page itself, in the site's
+ * markup, with no launcher and no floating panel. `query` answers the
+ * visitor's search query on the search results page (hidden while there is
+ * none; the form takes follow-ups); `ask` takes the visitor's own question
+ * anywhere (a product page, a sidebar, the contact page). Every attribute
+ * named `data-caelo-assistant-*`, `data-field`, `data-rate` and `data-text`
+ * is the contract (runtime.ts); the elements, classes and layout are the
  * site's (sources beside the answer is CSS). `hidden` on the section keeps
- * it out of sight until there is a query and an answer is coming.
+ * a card out of sight until the visitor AI answers.
  */
-export const ANSWER_MARKUP = `<section data-caelo-assistant-answer hidden aria-labelledby="caelo-answer-title">
-  <h2 id="caelo-answer-title">{{site_text.assistant_answer_title}}</h2>
+function answerCard(mode: "query" | "ask"): string {
+  const intro =
+    mode === "ask"
+      ? `<h2>{{site_text.assistant_title}}</h2>
+  <p>{{site_text.assistant_greeting}}</p>`
+      : `<h2>{{site_text.assistant_answer_title}}</h2>`;
+  return `<section data-caelo-assistant-answer="${mode}" hidden>
+  ${intro}
   <p><span data-caelo-assistant-disclosure>{{site_text.assistant_disclosure}}</span> <a href="<privacy page link>">{{site_text.assistant_privacy}}</a></p>
   <div data-caelo-assistant-thread></div>
   <template data-caelo-assistant-turn>
@@ -817,10 +826,11 @@ export const ANSWER_MARKUP = `<section data-caelo-assistant-answer hidden aria-l
   </template>
   <template data-caelo-assistant-source><li><a data-field="link"><span data-field="title"></span></a></li></template>
   <p data-caelo-assistant-status role="status"></p>
-  <form data-caelo-assistant-followup hidden>
+  <form data-caelo-assistant-ask${mode === "query" ? " hidden" : ""}>
     <input type="text" data-caelo-assistant-input maxlength="500" aria-label="{{site_text.assistant_placeholder}}" placeholder="{{site_text.assistant_placeholder}}">
     <button type="submit">{{site_text.assistant_send}}</button>
   </form>
+  <button type="button" data-caelo-assistant-new hidden>{{site_text.assistant_new}}</button>
   <template data-caelo-assistant-texts>
     <span data-text="thinking">{{site_text.assistant_thinking}}</span>
     <span data-text="thanks">{{site_text.assistant_thanks}}</span>
@@ -833,5 +843,12 @@ export const ANSWER_MARKUP = `<section data-caelo-assistant-answer hidden aria-l
   </template>
   <div data-caelo-plugin="site-assistant" data-page-id="{{page.id}}"></div>
 </section>`;
+}
+
+/** #1701 — the card for the search results page: it answers the visitor's search query. */
+export const ANSWER_MARKUP = answerCard("query");
+
+/** #1701 — the card for any page: the visitor asks in it, no launcher, no panel. */
+export const ASK_MARKUP = answerCard("ask");
 
 export { LIST_TYPES };

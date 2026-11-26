@@ -23,21 +23,29 @@ A client asset (`runtime.ts`, `buildAssets`), bound to markup the AI writes into
 - The signed history and the shown messages stay in the tab (`sessionStorage`), never on a server; a conversation that used its questions offers a new one.
 - The decision logic is `widget-logic.ts`: self-contained functions whose source text runtime.ts ships, so the unit tests run the code the browser runs. Every check on visitor text is a single linear pass.
 
-## The answer card (#1701)
+## The answer cards (#1701)
 
-The same conversation, on the search results page, without a launcher or a panel: the visitor's search query is the question. The AI writes `ANSWER_MARKUP` (`src/index.ts`, returned by `get_site_assistant_setup` as `answerMarkup`) into the results page's module, beside site-search's results, and styles it like the site's cards. It follows site-search's precedent, where the runtime fills the site's hit template: the runtime fills the site's templates in the page, so the card is the site's markup, CSS and site texts. It is no Web Component; the widget keeps its Shadow DOM.
+The same conversation in the page itself, without a launcher or a floating panel. A card is markup the AI writes into a module and styles like the site's cards. It follows site-search's precedent, where the runtime fills the site's hit template: the runtime fills the card's templates in the page, so the card is the site's markup, CSS and site texts. It is no Web Component; the widget keeps its Shadow DOM. `data-caelo-assistant-answer` names the mode, and a card without a known mode asks nothing (`mode-missing`):
+
+| Mode | Markup (`get_site_assistant_setup`) | Where | The first question |
+|---|---|---|---|
+| `query` | `ANSWER_MARKUP` (`answerMarkup`) | site-search's results page, beside the results | the visitor's search query, from the address as site-search reads it: `#q=` first, then `?q=`, again on `hashchange` (`searchQueryOf`). Hidden while the page has none |
+| `ask` | `ASK_MARKUP` (`askMarkup`) | any page or layout region (a product page, a sidebar, the contact page) | typed by the visitor into the card's form |
+
+In both modes `form[data-caelo-assistant-ask]` is the card's one question field. On an ask card it takes the first question and every follow-up. On a query card it is optional, starts `hidden`, and opens for the follow-ups once the query is answered. So the combined case, a query card with a form on the results page, asks the query first and then continues in the same field. One field rather than a separate follow-up form keeps a single contract for the AI to write, and the mode attribute alone decides whether the card reads the address. A card's form never asks a page's `?q=` by itself: only a `query` card reads the address, so a link with a `q` parameter to an ordinary page spends nothing.
 
 | Part | Role |
 |---|---|
-| `[data-caelo-assistant-answer]` (`hidden`) | The card. Shown when the page has a query and the visitor AI is available; stays hidden otherwise, so the results stand alone. `data-caelo-assistant-state`: `loading`, `done`, `error`, `unavailable`, `idle`, `disclosure-missing`, `markup-missing`. |
-| `[data-caelo-assistant-disclosure]` | The AI disclosure. Without text in it nothing is asked: the card cannot run without telling visitors an AI wrote the answer. |
+| `[data-caelo-assistant-answer="query" \| "ask"]` (`hidden`) | The card. Shown while the visitor AI is available (a query card: and the page has a query); hidden otherwise, so the page stands alone. `data-caelo-assistant-state`: `idle`, `loading`, `done`, `error`, `unavailable`, `disclosure-missing`, `markup-missing`, `mode-missing`. |
+| `[data-caelo-assistant-disclosure]` | The AI disclosure. Without text in it nothing is asked: a card cannot run without telling visitors an AI wrote the answer. The privacy link sits beside it, so a link alone is no disclosure. |
 | `[data-caelo-assistant-thread]` + `template[data-caelo-assistant-turn]` | One turn per question, with `data-field` `question`, `answer` (streamed as text; `[n]` becomes a link only to a source the gateway sent), `sources` (the cited pages), `rating` (the site's `data-rate="helpful"` / `"not_helpful"` buttons, shown only while feedback is kept) and `note` (an optional form after "not helpful"). `aria-busy` on the thread while an answer streams. |
 | `template[data-caelo-assistant-source]` | One cited page: `data-field` `link` (href), `title`, optionally `n` and `url`. |
 | `[data-caelo-assistant-status]` | Status texts (`thinking`, `limit`, `toolong`). |
-| `form[data-caelo-assistant-followup]` (`hidden`) | Optional follow-up question, shown after the first answer, within the conversation's turns. |
+| `form[data-caelo-assistant-ask]` with `[data-caelo-assistant-input]` | The question field (above). Required on an ask card. |
+| `[data-caelo-assistant-new]` (`hidden`) | Shown when the conversation used its turns; starts a new one in this card. |
 | `template[data-caelo-assistant-texts]` | The status and error texts and the handoff link, as in the widget. |
 
-The query comes from the address as site-search reads it: `#q=` first, then `?q=`, again on `hashchange` (`searchQueryOf` in `widget-logic.ts`). A query is asked once per tab: the answer and its signed history stay in `sessionStorage` under the query, so a reload or a return shows it without asking again; a new query starts a new conversation and stops the stream of the old one. Limits, proof of work, budgets and the feedback inbox are the widget's, since it is the same `ask` operation.
+Each card keeps its own conversation in the tab, under `answerStoreKey`: the page's path and the card's `id`, or its position on the page when it has none. Two cards on one page, or one card on two pages, never show each other's conversation, and a reload shows each card its own without asking again. A query card shows a kept conversation only while the page shows the query it answered; a new query starts a new conversation and stops the stream of the old one. Several cards on a page run independently, each with its own proof of work for its first question. Limits, proof of work, budgets and the feedback inbox are the widget's, since it is the same `ask` operation.
 
 ## Feedback and the gap report
 
@@ -58,7 +66,7 @@ A plugin with the `visitor_ai` grant and an `ai-chat` operation gets `ctx.chatTo
 - `packages/plugins/site-assistant/src/site-assistant.test.ts`: the declaration, the widget logic, the browser script, the gap clustering, test-question parsing.
 - `apps/api-gateway/src/site-assistant.integration.test.ts`: the conversation through the real gateway (the prompt from the released settings after the core's rules, only site-search's tools, the sources) and feedback (off, on after a release, personal data, honeypot, proof, undeclared fields).
 - `packages/admin-core/src/__tests__/site-assistant.integration.test.ts`: activation, `ctx.chatTools` on a Stage's release, the audit, the gap batch.
-- `apps/admin/e2e/site-assistant-visitor.browser.ts` on `apps/api-gateway/e2e/assistant-site.ts` (both built by `apps/api-gateway/e2e/assistant-test-site.ts`): a visitor asks, reads the streamed answer with its source, rates it, keeps the conversation across pages. On the results page (#1701) the card answers the search query once with its source, shows it again after a reload without asking, takes a follow-up and a rating, answers a new hash-mode search without a reload, and asks nothing without its disclosure.
+- `apps/admin/e2e/site-assistant-visitor.browser.ts` on `apps/api-gateway/e2e/assistant-site.ts` (both built by `apps/api-gateway/e2e/assistant-test-site.ts`): a visitor asks, reads the streamed answer with its source, rates it, keeps the conversation across pages. On the results page (#1701) the query card answers the search query once with its source, shows it again after a reload without asking, takes a follow-up and a rating, answers a new hash-mode search without a reload, and asks nothing without its disclosure. On a page without a query an ask card answers a typed question with its source and a follow-up, restores its conversation after a reload, asks nothing without its disclosure, and two ask cards on one page keep their own conversations.
 
 ## Not yet
 
