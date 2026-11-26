@@ -245,7 +245,13 @@ export async function makePluginContext(
     if (requested.has("cms_admin_schema")) {
       tier1.adminQuery = makeProjectedAdminQuery(plugin, infra);
     }
-    if (requested.has("email")) tier1.email = makePluginEmail(plugin, infra, infra.adapter, true);
+    if (requested.has("email")) {
+      tier1.email = makePluginEmail(plugin, infra, {
+        publicAdapter: infra.adapter,
+        publicSide: true,
+        invocation,
+      });
+    }
     return tier1;
   }
   if (requested.has("cms_admin")) {
@@ -259,7 +265,11 @@ export async function makePluginContext(
   }
   if (requested.has("email")) {
     // #1337 — on the admin side a queued mail goes to the live outbox.
-    tier1.email = makePluginEmail(plugin, infra, infra.adapter, false);
+    tier1.email = makePluginEmail(plugin, infra, {
+      publicAdapter: infra.adapter,
+      publicSide: false,
+      invocation,
+    });
   }
   // Shipped plugins get private files on the same author terms as installed ones.
   if (

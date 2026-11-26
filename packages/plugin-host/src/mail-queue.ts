@@ -18,6 +18,21 @@
  * `unsubscribeLink` (#1432, admin side) is the link of a recipient of mail
  * sent with `send`: `send` turns it into the RFC 8058 headers, so a plugin
  * never writes a mail header itself.
+ *
+ * #1729 — rules for every plugin, shipped or installed:
+ *
+ * - A mail reaches a person and cannot be taken back, so it goes out only
+ *   from a call someone decided on: a worker or system call (the Owner's
+ *   grant working unattended), the Owner panel, an approved tool call, or a
+ *   visitor's own request on the gateway. A render (it runs on every
+ *   preview), a page-output observer or a batch job (staged work, before
+ *   Publish live) and a chat (its work waits on its branch) never queue or
+ *   send. A render never mints an unsubscribe link either: the token is the
+ *   whole proof of a one-click unsubscribe.
+ * - A runtime-installed plugin gets `queue` and `unsubscribeLink` only
+ *   (decision Q5 A): its mail is its reviewed templates. `send` takes any
+ *   HTML to any address and is not capped yet; a capped `send` for every
+ *   plugin is #1735 (docs/dev/external-plugin-brokers.md §7.3).
  */
 
 import {
@@ -27,6 +42,7 @@ import {
   MAIL_TOKEN_RE,
   mailLinkPath,
   type PluginEmail,
+  type PluginInvocation,
 } from "@caelo-cms/plugin-sdk";
 import {
   type DatabaseAdapter,
@@ -126,23 +142,58 @@ async function unsubscribeHeaders(
   };
 }
 
-/**
- * The `ctx.email` handle of one call. `publicAdapter` is the adapter whose
- * public database the call's outbox row goes to (the gateway's own; the
- * admin's live one).
- *
- * @param publicSide whether the call runs in a public gateway, which has
- *   no transport: `send` refuses there.
- */
+/** Origins that never queue or send a mail (see the file comment). */
+const NO_MAIL_ORIGINS: ReadonlySet<PluginInvocation["origin"]> = new Set([
+  "render",
+  "observer",
+  "batch",
+  "chat",
+]);
+
+/** Why `invocation` may not mail anyone, or null when it may. */
+function mailRefusal(
+  method: "queue" | "send",
+  plugin: LoadedPlugin,
+  invocation: PluginInvocation,
+): string | null {
+  if (!NO_MAIL_ORIGINS.has(invocation.origin)) return null;
+  const why =
+    invocation.origin === "chat"
+      ? "a chat's work waits on its branch, and a mail cannot"
+      : invocation.origin === "render"
+        ? "a render runs on every preview and build of every page"
+        : "it is staged work, and the mail would reach someone before Publish live";
+  return `ctx.email.${method}: plugin "${plugin.slug}" cannot mail from a ${invocation.origin} call (${why}) — mail from a worker, the Owner panel or a tool call the operator approves (approvalMode "user-approval")`;
+}
+
+/** What one call's `ctx.email` is built with. */
+export interface PluginEmailOpts {
+  /** The adapter whose public database the outbox row goes to (the gateway's own; the admin's live one). */
+  readonly publicAdapter: DatabaseAdapter;
+  /** Whether the call runs in a public gateway, which has no transport: `send` refuses there. */
+  readonly publicSide: boolean;
+  readonly invocation: PluginInvocation;
+}
+
+/** The `ctx.email` handle of one call. */
 export function makePluginEmail(
   plugin: LoadedPlugin,
   infra: PluginHostInfra,
-  publicAdapter: DatabaseAdapter,
-  publicSide: boolean,
+  opts: PluginEmailOpts,
 ): PluginEmail {
+  const { publicAdapter, publicSide, invocation } = opts;
   const templates = plugin.definition.mailTemplates ?? {};
   return {
     send: async (args) => {
+      // Q5 A — never reached through the sandbox (no `email.send` method);
+      // refused here too, so the handle itself holds the rule.
+      if (plugin.provenance === "runtime-authored") {
+        throw new Error(
+          `ctx.email.send: runtime-installed plugins cannot send free-form mail yet (#1735) — queue one of plugin "${plugin.slug}"'s mailTemplates with ctx.email.queue`,
+        );
+      }
+      const refused = mailRefusal("send", plugin, invocation);
+      if (refused) throw new Error(refused);
       if (publicSide) {
         throw new Error(
           `ctx.email.send: plugin "${plugin.slug}" cannot send mail from a visitor call — the public side has no mail transport; queue one of its mailTemplates with ctx.email.queue`,
@@ -163,6 +214,11 @@ export function makePluginEmail(
       );
     },
     unsubscribeLink: async ({ recipientId }) => {
+      if (invocation.origin === "render") {
+        throw new Error(
+          `ctx.email.unsubscribeLink: plugin "${plugin.slug}" cannot make an unsubscribe link from a render — the token unsubscribes its recipient, so it belongs in a mail, never on a page`,
+        );
+      }
       const link = plugin.definition.mailUnsubscribe;
       if (!link) {
         throw new Error(
@@ -186,6 +242,8 @@ export function makePluginEmail(
       return `${origin}${mailLinkPath(plugin.slug, link.operation)}?token=${token}`;
     },
     queue: async ({ template, to, token }) => {
+      const refused = mailRefusal("queue", plugin, invocation);
+      if (refused) throw new Error(refused);
       if (!Object.hasOwn(templates, template)) {
         throw new Error(
           `ctx.email.queue: plugin "${plugin.slug}" declares no mail template "${template}" (mailTemplates)`,

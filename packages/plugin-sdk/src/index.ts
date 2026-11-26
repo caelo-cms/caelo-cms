@@ -2099,15 +2099,22 @@ export interface PluginCaptcha {
 }
 
 /**
- * Tier-1 only — outbound email. Configurable transport (SMTP / Resend /
- * SES / no-op stub). The host's /settings/email page configures which
- * transport is live; ctx.email.send dispatches to it. Plugins that
- * declare requestedCapabilities: ['email'] get this handle; others throw.
+ * Outbound email, for a plugin granted `email`. Configurable transport
+ * (SMTP / Resend / SES / no-op stub); the host's /settings/email page
+ * configures which transport is live.
+ *
+ * #1729 — a mail goes out only from a call someone decided on: a worker or
+ * system call, the Owner panel, an approved tool call, or a visitor's own
+ * request. `queue` and `send` throw on a render, a page-output observer, a
+ * batch job and a chat call. A runtime-installed plugin's handle has `queue`
+ * and `unsubscribeLink` only: in its sandbox `ctx.email.send` is undefined.
  */
 export interface PluginEmail {
   /**
    * Send a mail now. Admin side only (a campaign the Owner approved, sent
    * by a worker); a visitor call has no transport and throws: it queues.
+   * Not available to runtime-installed plugins yet (#1735, a capped send
+   * for every plugin): they queue their `mailTemplates`.
    */
   send(args: {
     to: string;
