@@ -1688,6 +1688,9 @@ async function registerPluginSurfaces(
   // activation called the annotation op of a plugin not yet loaded
   // (PluginNotFound in every preview during the activation window).
   // #1729 — declared tables (`urlTables`) are read by the host itself.
+  // A reload replaces the slots an earlier version claimed, so a version
+  // that drops them, or its tables, leaves no composition reading them.
+  urlContributionsRegistry.unregisterPlugin(def.slug);
   if (def.urlTables || (def.urlContributions && def.urlContributions.length > 0)) {
     try {
       if (def.urlTables) urlContributionsRegistry.registerDeclared(def.slug, def.urlTables);

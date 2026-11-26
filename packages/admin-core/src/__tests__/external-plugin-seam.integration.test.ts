@@ -22,6 +22,7 @@ import {
   pluginListSourcesRegistry,
   resetPluginHost,
   runPluginOperation,
+  urlContributionsRegistry,
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
@@ -40,7 +41,7 @@ const system = {
 };
 const SLUG = "seam-notes";
 /** Every plugin this file installs: their schemas outlive the per-file reset. */
-const SCHEMAS = ["seam-notes", "seam-liar", "seam-worker", "seam-glossary"].map(
+const SCHEMAS = ["seam-notes", "seam-liar", "seam-worker", "seam-glossary", "seam-markets"].map(
   (slug) => `plugin_${slug.replaceAll("-", "_")}`,
 );
 const dropSchemas = () =>
@@ -392,6 +393,55 @@ it("an update without list sources leaves none of the earlier version's live (li
   );
   expect(live()).toEqual([]);
   expect(pluginListSourcesRegistry.dormantNames().get(name)).toBe(slug);
+});
+
+it("an update without URL tables leaves none of the earlier version's slots claimed (url_slots)", async () => {
+  const slug = "seam-markets";
+  const v1 = {
+    slug,
+    version: "1.0.0",
+    tier: 2,
+    schema: {},
+    adminSchema: {
+      page_markets: { page_id: "uuid", market: "text" },
+      markets: { code: "text", segment: "text", host: "text" },
+    },
+    indexes: { adminSchema: { page_markets: [["page_id"], ["market"]] } },
+    operations: ["noop"],
+    urlTables: {
+      pages: { table: "page_markets", valueColumn: "market" },
+      values: {
+        table: "markets",
+        valueColumn: "code",
+        segmentColumn: "segment",
+        hostColumn: "host",
+      },
+    },
+    urlContributions: [{ slot: "host" }, { slot: "path-prefix" }],
+    requestedCapabilities: ["cms_admin_schema", "url_slots"],
+    capabilityReasons: { cms_admin_schema: "Keep the markets", url_slots: "Market prefixes" },
+  };
+  await installExternal(
+    v1,
+    `export default {slug:"${slug}",version:"1.0.0",tier:2,operations:{noop:async()=>null}};`,
+  );
+  expect(urlContributionsRegistry.declared().has(slug)).toBe(true);
+  expect(urlContributionsRegistry.activeSlots().sort()).toEqual(["host", "path-prefix"]);
+  // The update keeps its tables but no longer shapes addresses with them:
+  // no composition may still read them as URL tables.
+  await installExternal(
+    {
+      ...v1,
+      version: "1.1.0",
+      urlTables: undefined,
+      urlContributions: undefined,
+      requestedCapabilities: ["cms_admin_schema"],
+      capabilityReasons: { cms_admin_schema: "Keep the markets" },
+    },
+    `export default {slug:"${slug}",version:"1.1.0",tier:2,operations:{noop:async()=>null}};`,
+  );
+  expect(urlContributionsRegistry.declared().has(slug)).toBe(false);
+  expect(urlContributionsRegistry.activeSlots()).toEqual([]);
 });
 
 it("refuses an installed plugin's list type without its prefix at staging", async () => {
