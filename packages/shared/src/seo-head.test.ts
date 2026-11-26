@@ -272,7 +272,9 @@ describe("markNosnippet", () => {
     );
     const once = markNosnippet("<article>x</article>");
     expect(markNosnippet(once)).toBe(once);
-    expect(markNosnippet("plain text")).toBe("plain text");
+    // A text-only placement is wrapped too (review #1771); an empty one stays empty.
+    expect(markNosnippet("plain text")).toBe('<div data-nosnippet="">plain text</div>');
+    expect(markNosnippet("  ")).toBe("  ");
   });
 
   it("wraps a placement of several top-level elements whole (review #1771)", () => {

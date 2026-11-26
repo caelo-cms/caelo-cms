@@ -103,7 +103,8 @@ function soleRootTag(html: string): string | null {
  */
 export function markNosnippet(html: string): string {
   const m = /<([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*>/.exec(html);
-  if (!m) return html;
+  // A placement of text only is wrapped too; an empty one has nothing to hide.
+  if (!m) return html.trim().length === 0 ? html : `<div data-nosnippet="">${html}</div>`;
   const root = soleRootTag(html);
   if (root !== null && /\sdata-nosnippet\b/.test(m[0])) return html;
   if (root !== null && NOSNIPPET_ROOTS.has(root.toLowerCase())) {
