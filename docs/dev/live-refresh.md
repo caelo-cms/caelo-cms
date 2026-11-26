@@ -12,7 +12,7 @@ A live surface (the running-agents bar, the pending strip, the quality status, t
 2. **The tab becomes visible or the window gets focus.**
 3. **The tab did something itself** (an Approve, a Stop, a quality action): the code calls `liveHub.publish([...])` or re-reads directly.
 
-An idle tab (no turn running, nothing in progress) makes **no request at all**. `scripts/no-timer-polling.test.ts` fails on a timer loop in `apps/admin/src` that reaches a request.
+An idle tab (no turn running, nothing in progress) makes **no request at all**. `scripts/no-timer-polling.test.ts` fails on a timer loop in `apps/admin/src` that reaches a request. It also fails on a `$effect` that reaches a request and reads a member of a `$derived` a clock ticks (#1749): Settings → Updates had `void pageState.kind` in such an effect, `pageState` was a new object on every 30 s clock tick, and the effect re-read the plugin approvals on that clock (once a minute from a background tab), keeping an admin instance up. Read a `$derived` of the member instead (`const pageKind = $derived(pageState.kind)`): it changes only when the value does.
 
 ## Where topics come from
 

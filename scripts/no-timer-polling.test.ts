@@ -200,6 +200,90 @@ function timerPollingFindings(text: string): string[] {
   return findings;
 }
 
+/**
+ * Issue #1749 — the variables a timer LOOP's callback assigns: a clock that
+ * ticks component state (`setInterval(() => (now = new Date()), 30_000)`).
+ */
+function clockVariables(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of text.matchAll(TIMER)) {
+    const open = (m.index ?? 0) + m[0].length - 1;
+    const callback = firstArgument(text, open);
+    if (m[1] !== "setInterval" && !reachOf(text, callback).reschedules) continue;
+    // Assignments to state outside the callback: a declaration inside it
+    // (`const res = await fetch(…)`) is the callback's own.
+    for (const a of callback.matchAll(
+      new RegExp(String.raw`(?<!\b(?:const|let|var)\s+)(?<![\w$.])(${IDENT})\s*=(?![=>])`, "g"),
+    )) {
+      if (a[1]) out.add(a[1]);
+    }
+  }
+  return out;
+}
+
+/** Whether `code` names `name` as a whole word. */
+function mentions(code: string, name: string): boolean {
+  const n = name.replace(/[$#]/g, (c) => `\\${c}`);
+  return new RegExp(String.raw`(?<![\w$.])${n}(?![\w$])`).test(code);
+}
+
+/**
+ * Issue #1749 — `$effect`s that re-run on a clock and reach a request: a
+ * timer poll one step removed, which the loop scan above cannot see. A
+ * `$derived` computed from a clock variable (directly or through another
+ * such `$derived`) is a new value on every tick; an effect that reads a
+ * MEMBER of it (`pageState.kind`) depends on the whole object, so it re-ran
+ * on every tick. The Updates page did that and re-read the plugin
+ * approvals every 30 s (once a minute from a background tab), keeping an
+ * admin instance up while the tab stayed open. Reading a `$derived` of
+ * the member instead (`const kind = $derived(pageState.kind)`) re-runs the
+ * effect only when the value changes, and passes.
+ */
+function clockEffectFindings(text: string): string[] {
+  const clock = clockVariables(text);
+  if (clock.size === 0) return [];
+  const derived = new Map<string, string>();
+  for (const m of text.matchAll(
+    new RegExp(
+      String.raw`\b(?:const|let)\s+(${IDENT})(?:\s*:[^=]+)?\s*=\s*\$derived(?:\.by)?\s*\(`,
+      "g",
+    ),
+  )) {
+    const open = (m.index ?? 0) + m[0].length - 1;
+    if (m[1]) derived.set(m[1], text.slice(open, closingIndex(text, open) + 1));
+  }
+  const ticking = new Set<string>();
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [name, expr] of derived) {
+      if (ticking.has(name)) continue;
+      if ([...clock, ...ticking].some((c) => mentions(expr, c))) {
+        ticking.add(name);
+        grew = true;
+      }
+    }
+  }
+  const findings: string[] = [];
+  for (const m of text.matchAll(/\$effect(?:\.pre)?\s*\(/g)) {
+    const open = (m.index ?? 0) + m[0].length - 1;
+    const body = firstArgument(text, open);
+    if (!reachOf(text, body).request) continue;
+    const reads = [
+      ...[...clock].filter((c) => mentions(body, c)),
+      ...[...ticking].filter((d) =>
+        new RegExp(
+          String.raw`(?<![\w$.])${d.replace(/[$#]/g, (c) => `\\${c}`)}\s*\??\.\s*[\w$#]`,
+        ).test(body),
+      ),
+    ];
+    if (reads.length > 0) {
+      const line = text.slice(0, m.index).split("\n").length;
+      findings.push(`line ${line}: $effect reads ${reads.join(", ")}, which a timer ticks`);
+    }
+  }
+  return findings;
+}
+
 const CLIENT_SOURCES = sources(ADMIN_SRC).map((path) => ({
   path: relative(REPO_ROOT, path),
   text: readFileSync(path, "utf8"),
@@ -264,6 +348,56 @@ describe("the admin's browser code does not poll the admin on a timer (#1215)", 
     expect(
       timerPollingFindings(`setInterval(() => void loadPendingProposals(), 10_000);`),
     ).toHaveLength(1);
+  });
+
+  it("no $effect that a clock re-runs reaches a request (#1749)", () => {
+    const offenders = CLIENT_SOURCES.flatMap((s) =>
+      clockEffectFindings(s.text).map((f) => `${s.path} ${f}`),
+    ).filter((f) => !Object.keys(ALLOWED).some((path) => f.startsWith(`${path} `)));
+    expect(offenders).toEqual([]);
+  });
+
+  it("catches the clock-driven re-read of the Updates page (#1749)", () => {
+    const before = `
+      let now = $state(new Date());
+      $effect(() => {
+        const id = setInterval(() => (now = new Date()), 30_000);
+        return () => clearInterval(id);
+      });
+      const pageState = $derived(updatePageState({ status, now, policy: data.policy }));
+      $effect(() => {
+        void pageState.kind;
+        void pluginApprovals.refresh();
+      });`;
+    expect(clockEffectFindings(before)).toEqual([
+      "line 8: $effect reads pageState, which a timer ticks",
+    ]);
+    // Reading the clock itself, through a second $derived, still counts.
+    expect(
+      clockEffectFindings(`
+        setInterval(() => { nowMs = Date.now(); }, 1000);
+        const age = $derived.by(() => ({ ms: nowMs - startedAt }));
+        const label = $derived(age.ms > 60_000 ? "old" : "new");
+        $effect(() => { if (age.ms > 5000) void fetch("/api/x"); });
+        $effect(() => { void nowMs; void refresh(); });`),
+    ).toHaveLength(2);
+    // The fix: the effect reads a $derived of the member, which changes
+    // only when the kind does.
+    const after = before
+      .replace(
+        "$effect(() => {\n        void pageState.kind;",
+        "const pageKind = $derived(pageState.kind);\n      $effect(() => {\n        void pageKind;",
+      )
+      .trim();
+    expect(after).toContain("void pageKind;");
+    expect(clockEffectFindings(after)).toEqual([]);
+    // An effect on a clock that makes no request is a display tick.
+    expect(
+      clockEffectFindings(`
+        setInterval(() => (now = new Date()), 30_000);
+        const ago = $derived(format(now));
+        $effect(() => { title = ago.text; });`),
+    ).toEqual([]);
   });
 
   it("lets debounces, clocks and watchdogs through", () => {

@@ -2,10 +2,12 @@
 
 /**
  * Issue #875 — parallel audit tasks on GCP installs (`gcp`, `gcp-firebase`):
- * ONE Cloud Run job execution per audit, with `taskCount` = the number of
- * runs; every task picks its order from the batch in its env override by
- * `CLOUD_RUN_TASK_INDEX`. The job's `parallelism` (the `auditParallelism`
- * knob) caps how many run at once.
+ * ONE Cloud Run job execution per batch, with `taskCount` = as many runs as
+ * the project's CPU quota lets run at once (`RunCapacity.lighthouseTasks`,
+ * reporting-jobs/run-capacity.ts) or fewer; every task runs the batch's
+ * orders of its `CLOUD_RUN_TASK_INDEX`, one after another (audit-task.ts).
+ * The job definition sets no `parallelism`: with one, Cloud Run refuses to
+ * create the job on a project whose quota is smaller than its width.
  *
  * Trust boundary. The audit job runs as its own service account, which may
  * read the staged build (the staging and static buckets, read-only), create
@@ -57,29 +59,34 @@ export function executionProgress(e: Execution): AuditBatchProgress {
   };
 }
 
-/** Per-task timeout of the execution, as Cloud Run's duration string. */
-const TASK_TIMEOUT = `${Math.round(parallelAuditTimeoutMs() / 1000)}s`;
-
 /**
  * The launcher for a Cloud Run audit job.
  *
  * @param job - the job's full resource name.
  * @param results - the audit results store the tasks write into.
+ * @param tasksAtOnce - Lighthouse runs at once (`RunCapacity.lighthouseTasks`).
  */
 export function gcpAuditLauncher(
   job: string,
   results: AuditResultStore,
+  tasksAtOnce: number,
   deps: GoogleDeps = defaultGoogleDeps(),
 ): AuditTaskLauncher {
   if (!JOB_NAME.test(job))
     throw new Error(`${AUDIT_JOB_ENV_VAR} is not a Cloud Run job name: ${job}`);
+  if (!Number.isInteger(tasksAtOnce) || tasksAtOnce < 1)
+    throw new Error(`Lighthouse runs at once must be a positive whole number, got ${tasksAtOnce}`);
   return {
     label: `Cloud Run job ${job.split("/").pop()}`,
+    tasksAtOnce,
     async start(batch) {
+      const taskCount = Math.min(batch.orders.length, tasksAtOnce);
+      const rounds = Math.ceil(batch.orders.length / taskCount);
       const op = (await googleCall(deps, `https://run.googleapis.com/v2/${job}:run`, "POST", {
         overrides: {
-          taskCount: batch.orders.length,
-          timeout: TASK_TIMEOUT,
+          taskCount,
+          // Per task: it runs `rounds` orders one after another.
+          timeout: `${Math.round(parallelAuditTimeoutMs(rounds) / 1000)}s`,
           containerOverrides: [
             { env: [{ name: AUDIT_TASK_ENV_VAR, value: JSON.stringify(batch) }] },
           ],
@@ -98,8 +105,16 @@ export function gcpAuditLauncher(
   };
 }
 
-/** The GCP launcher from the admin's env, or null on other providers. */
-export function gcpAuditLauncherFromEnv(env: NodeJS.ProcessEnv): AuditTaskLauncher | null {
+/**
+ * The GCP launcher from the audit runner's env, or null on other providers.
+ *
+ * @param tasksAtOnce - from the runner's order (`JobOrder.capacity`); a
+ *   GCP order without it is refused rather than guessed.
+ */
+export function gcpAuditLauncherFromEnv(
+  env: NodeJS.ProcessEnv,
+  tasksAtOnce: number | undefined,
+): AuditTaskLauncher | null {
   if (env.CAELO_PROVIDER !== "gcp" && env.CAELO_PROVIDER !== "gcp-firebase") return null;
   const job = env[AUDIT_JOB_ENV_VAR]?.trim();
   const bucket = env.CAELO_AUDIT_RESULTS_BUCKET?.trim();
@@ -108,5 +123,10 @@ export function gcpAuditLauncherFromEnv(env: NodeJS.ProcessEnv): AuditTaskLaunch
       `${AUDIT_JOB_ENV_VAR} / CAELO_AUDIT_RESULTS_BUCKET are not set on the admin, so it cannot run the parallel audit — run \`cms-provision upgrade\``,
     );
   }
-  return gcpAuditLauncher(job, gcsAuditResultStore(bucket));
+  if (tasksAtOnce === undefined) {
+    throw new Error(
+      "the audit runner's order carries no CPU capacity, so it cannot tell how many Lighthouse runs the project's quota allows at once — the admin that started it is older than its job; run `cms-provision upgrade`",
+    );
+  }
+  return gcpAuditLauncher(job, gcsAuditResultStore(bucket), tasksAtOnce);
 }

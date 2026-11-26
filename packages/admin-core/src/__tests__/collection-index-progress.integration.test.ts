@@ -136,6 +136,36 @@ describe("a Stage's search index progress", () => {
     );
   });
 
+  it("#1764 — keeps the CPU quota's limit with the counts and drops it once a report has none", async () => {
+    const limit = {
+      wantedTasks: 2,
+      quotaVcpu: 20,
+      quotaNeededVcpu: 42,
+      projectId: "acme-site",
+      region: "europe-west1",
+    };
+    await op("collections.index_progress", {
+      runId,
+      pluginId,
+      collection: "pages",
+      task: 0,
+      tasks: 1,
+      embedded: 300,
+      toEmbed: 800,
+      planned: 800,
+      limit,
+    });
+    const run = await stageRun();
+    expect(run.searchIndexes?.[0]?.progress).toMatchObject({ tasks: 1, limit });
+    expect(describeStageRun(run)).toContain(
+      "on 1 task (the Cloud Run CPU quota of project acme-site, 20 vCPU in europe-west1, allows no more; raised to 42 vCPU",
+    );
+    // The counts it carried are still there with the limit (no key lost).
+    expect(run.searchIndexes?.[0]?.progress?.embedded).toBeGreaterThanOrEqual(300);
+    await progress(0, 350, 800, 800, 1);
+    expect((await stageRun()).searchIndexes?.[0]?.progress?.limit).toBeUndefined();
+  });
+
   it("a wider attempt starts the count over", async () => {
     await op("collections.index_reset_progress", { runId });
     expect((await stageRun()).searchIndexes?.[0]?.progress).toBeUndefined();
@@ -156,5 +186,35 @@ describe("a Stage's search index progress", () => {
     expect(describeStageRun(run)).toContain("search index ready");
     // A late report of a finished index is not recorded.
     expect(await progress(0, 1, 400, 400, 1)).toEqual({ recorded: false });
+  });
+
+  // #1749 — the first `done` committed, its post-commit publish failed on a
+  // busy pool, and the job sent the report again: each replay was refused
+  // with "no pending release" until the job's retry budget ran out.
+  it("a resent done for the release it recorded is answered as done", async () => {
+    const done = {
+      runId,
+      pluginId,
+      collection: "pages",
+      releaseKey: "release-0123456789abcdef01234567.json",
+      stats: {},
+    };
+    expect(await op("collections.index_done", done)).toEqual({});
+    const r = await execute(registry, adapter, SYS, "collections.index_done", {
+      ...done,
+      releaseKey: "release-fedcba9876543210fedcba98.json",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.message).toBe(
+        "no pending release of this run and collection: it is ready with release-0123456789abcdef01234567.json",
+      );
+    }
+    const { collections } = await op<{ collections: unknown[] }>("collections.run_state", {
+      runId,
+    });
+    expect(collections).toMatchObject([
+      { state: "ready", releaseKey: "release-0123456789abcdef01234567.json" },
+    ]);
   });
 });

@@ -456,7 +456,7 @@ describe("the collection index job (epic #1644)", () => {
     expect(flag(deploy, "cpu")).toBe("2");
     expect(flag(deploy, "memory")).toBe("4Gi");
     // admin-core JOB_TIMING.collection_index.maxRunSeconds.
-    expect(flag(deploy, "task-timeout")).toBe("3600s");
+    expect(flag(deploy, "task-timeout")).toBe("21600s");
     expect(flag(deploy, "set-env-vars")?.split(",").sort()).toEqual([
       "CAELO_COLLECTIONS_STAGING_STORE=gs://acme-caelo-production-coll-staging",
       "CAELO_PROVIDER=gcp",

@@ -12,12 +12,9 @@ import {
   readConvergeCheckpoint,
   writeConvergeCheckpoint,
 } from "./converge-checkpoint.js";
-import {
-  convergeExecutionNameError,
-  deployedOwnerMismatch,
-  deployedSiteMismatch,
-} from "./converge-job-gcp.js";
+import { convergeExecutionNameError, deployedSiteMismatch } from "./converge-job-gcp.js";
 import type { GcloudResult } from "./gcloud.js";
+import { deployedOwnerMismatch } from "./operator-access.js";
 import type { SyncGcloud } from "./state-store.js";
 import { installStateCondition } from "./upgrader-setup.js";
 

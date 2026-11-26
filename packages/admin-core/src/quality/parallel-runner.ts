@@ -53,7 +53,12 @@ export interface AuditBatchProgress {
 export interface AuditTaskLauncher {
   /** Human-readable target for messages, e.g. "Cloud Run job caelo-production-audit". */
   readonly label: string;
-  /** Start one task per order of `batch`, all at once; returns a handle for `progress`. */
+  /**
+   * How many orders run at once; the rest wait their round (on Cloud Run a
+   * task runs its share one after another). Absent: all at once.
+   */
+  readonly tasksAtOnce?: number;
+  /** Start `batch`'s orders, `tasksAtOnce` at a time; returns a handle for `progress`. */
   start(batch: AuditTaskBatch): Promise<string>;
   progress(handle: string): Promise<AuditBatchProgress>;
   /** A task's result object as text, or null while it is not written. */
@@ -76,12 +81,18 @@ export interface ParallelRunnerOptions {
   readonly version?: string;
 }
 
-/** Per batch: container start + browser start + CPU benchmark + one
- *  Lighthouse run (Lighthouse's own page-load ceiling is ~45 s), with
- *  headroom for a cold image pull. All tasks of a batch run at once, so the
- *  page count does not add up; a confirmation batch gets its own budget. */
-export function parallelAuditTimeoutMs(): number {
-  return 5 * 60_000;
+/**
+ * Per batch: container start + browser start + CPU benchmark + one
+ * Lighthouse run (Lighthouse's own page-load ceiling is ~45 s), with
+ * headroom for a cold image pull; then, per further round, one more
+ * Lighthouse run with its own browser and benchmark, but no container
+ * start. A batch whose orders all run at once has one round, so the page
+ * count does not add up; a confirmation batch gets its own budget.
+ *
+ * @param rounds - orders the busiest task runs one after another.
+ */
+export function parallelAuditTimeoutMs(rounds = 1): number {
+  return 5 * 60_000 + Math.max(0, rounds - 1) * 150_000;
 }
 
 interface PlannedTask {
@@ -188,7 +199,6 @@ export function createParallelAuditRunner(
   const sleep = options.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const now = options.now ?? Date.now;
   const pollMs = options.pollMs ?? 3_000;
-  const timeoutMs = options.timeoutMs ?? parallelAuditTimeoutMs();
   const { launcher } = options;
   const version = options.version ?? CAELO_VERSION;
 
@@ -212,6 +222,9 @@ export function createParallelAuditRunner(
     }
 
     const results = new Map<number, AuditTaskResult>();
+    const atOnce = Math.min(tasks.length, launcher.tasksAtOnce ?? tasks.length);
+    const timeoutMs =
+      options.timeoutMs ?? parallelAuditTimeoutMs(Math.ceil(tasks.length / Math.max(1, atOnce)));
     const deadline = now() + timeoutMs;
     for (;;) {
       const read = await readPending(launcher, tasks, results);

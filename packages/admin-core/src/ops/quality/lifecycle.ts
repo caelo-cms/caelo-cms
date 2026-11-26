@@ -55,7 +55,7 @@ export const QUALITY_AUDIT_PAGE_CAP = 5;
 /** First Performance runs per page. When they agree the best one scores
  *  the page (#874); when they disagree the runner adds confirmation runs
  *  and the median of `MEDIAN_RUNS` scores it (#1370, run-selection.ts). */
-const PERFORMANCE_RUNS = 3;
+export const PERFORMANCE_RUNS = 3;
 
 /**
  * A `running` audit without a job, older than this, was claimed by the

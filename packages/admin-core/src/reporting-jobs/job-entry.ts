@@ -61,13 +61,30 @@ export async function runOrder(
   );
 }
 
+/**
+ * The order this container was started with. An order from an admin on
+ * another version may carry fields this job does not know yet; it is read
+ * without them so the job can give the attempt back with the version
+ * mismatch (`runOrder`) instead of crashing before it could say why.
+ * Exported for tests.
+ */
+export function parseJobOrder(raw: unknown, ownVersion: string = CAELO_VERSION): JobOrder {
+  const strict = jobOrderSchema.safeParse(raw);
+  if (strict.success) return strict.data;
+  const version = (raw as { version?: unknown } | null)?.version;
+  if (typeof version === "string" && version !== ownVersion) {
+    return jobOrderSchema.strip().parse(raw);
+  }
+  throw strict.error;
+}
+
 /** Run the attempt this container was started for. */
 export async function main(env: Record<string, string | undefined> = process.env): Promise<number> {
   const raw = env[JOB_ORDER_ENV_VAR];
   if (!raw) {
     throw new Error(`${JOB_ORDER_ENV_VAR} is not set — the admin passes the job's order in it`);
   }
-  const order = jobOrderSchema.parse(JSON.parse(raw));
+  const order = parseJobOrder(JSON.parse(raw));
   if (!order.adminUrl) {
     throw new Error("the order names no admin URL: a job container reports through IAP");
   }

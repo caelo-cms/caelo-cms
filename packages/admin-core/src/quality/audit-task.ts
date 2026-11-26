@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #875 — one parallel audit task: one Lighthouse run of one page, in
- * its own short-lived container (Cloud Run job / Fargate task / Container
- * Apps job), started by the admin's parallel runner (`parallel-runner.ts`).
+ * Issue #875 — one parallel audit task: its share of a batch's Lighthouse
+ * runs, one after another, in its own short-lived container (Cloud Run job
+ * / Fargate task / Container Apps job), started by the audit runner's
+ * parallel runner (`parallel-runner.ts`). A task runs more than one order
+ * when the project's CPU quota allows fewer runs at once than the batch
+ * has (reporting-jobs/run-capacity.ts); each run still has the container
+ * to itself, so it measures nothing but its page.
  *
  *   CAELO_AUDIT_TASK='<AuditTaskOrder JSON>' bun packages/admin-core/src/quality/audit-task.ts
  *
@@ -12,10 +16,10 @@
  * provider keys. The order comes from the admin; the task trusts nothing
  * else and validates it.
  *
- * Exit code 0 means a result was written (a page Lighthouse could not
- * measure is a written `run-error`, not a crash). Any other exit leaves no
- * result, and the runner reports the task as failed with a pointer to its
- * log.
+ * Exit code 0 means a result was written for every order of the task (a
+ * page Lighthouse could not measure is a written `run-error`, not a
+ * crash). Any other exit leaves the rest without a result, and the runner
+ * reports the task as failed with a pointer to its log.
  */
 
 import { CAELO_VERSION } from "@caelo-cms/shared";
@@ -26,6 +30,7 @@ import {
   type AuditTaskOrder,
   type AuditTaskResult,
   auditTaskBatchSchema,
+  TASK_COUNT_ENV_VAR,
   TASK_INDEX_ENV_VAR,
 } from "./audit-task-protocol.js";
 import { LighthouseRunError, type RunMeasurement } from "./lighthouse-extract.js";
@@ -113,26 +118,30 @@ function wireRun(run: RunMeasurement): Extract<AuditTaskResult, { kind: "run" }>
 }
 
 /**
- * This task's order from the batch, or why there is none. Pure; exported
- * for tests.
+ * This task's orders from the batch, or why there are none: task `index`
+ * of `count` runs every order whose position is `index` modulo `count`.
+ * Pure; exported for tests.
  *
  * @param index - `CLOUD_RUN_TASK_INDEX`; absent on providers that start one
  *   task per order (a batch of one).
+ * @param count - `CLOUD_RUN_TASK_COUNT`; absent: one task per order.
  */
-export function pickOrder(
+export function pickOrders(
   batch: AuditTaskBatch,
   index: string | undefined,
+  count: string | undefined,
   ownVersion: string,
-): { order: AuditTaskOrder; versionMismatch: string | null } {
+): { orders: AuditTaskOrder[]; versionMismatch: string | null } {
   const i = index === undefined ? 0 : Number(index);
-  const order = Number.isInteger(i) ? batch.orders[i] : undefined;
-  if (!order) {
-    throw new Error(
-      `task index ${index ?? "(none)"} has no order in a batch of ${batch.orders.length}`,
-    );
+  const n = count === undefined ? batch.orders.length : Number(count);
+  if (!Number.isInteger(n) || n < 1 || n > batch.orders.length) {
+    throw new Error(`task count ${count} does not fit a batch of ${batch.orders.length}`);
+  }
+  if (!Number.isInteger(i) || i < 0 || i >= n) {
+    throw new Error(`task index ${index ?? "(none)"} is not one of ${n} task(s)`);
   }
   return {
-    order,
+    orders: batch.orders.filter((_, k) => k % n === i),
     versionMismatch:
       batch.version === ownVersion
         ? null
@@ -146,16 +155,21 @@ async function main(): Promise<void> {
     throw new Error(`${AUDIT_TASK_ENV_VAR} is not set — the admin passes the task's batch in it`);
   }
   const batch = auditTaskBatchSchema.parse(JSON.parse(raw));
-  const { order, versionMismatch } = pickOrder(
+  const { orders, versionMismatch } = pickOrders(
     batch,
     process.env[TASK_INDEX_ENV_VAR],
+    process.env[TASK_COUNT_ENV_VAR],
     CAELO_VERSION,
   );
   const store = auditResultStoreFromEnv(process.env);
-  const result: AuditTaskResult = versionMismatch
-    ? { kind: "fatal", taskId: order.taskId, code: "version-mismatch", message: versionMismatch }
-    : await measure(order);
-  await store.write(order.resultKey, JSON.stringify(result));
+  // One after another: two runs at once would share the container's CPU
+  // and measure each other.
+  for (const order of orders) {
+    const result: AuditTaskResult = versionMismatch
+      ? { kind: "fatal", taskId: order.taskId, code: "version-mismatch", message: versionMismatch }
+      : await measure(order);
+    await store.write(order.resultKey, JSON.stringify(result));
+  }
 }
 
 if (import.meta.main) {
