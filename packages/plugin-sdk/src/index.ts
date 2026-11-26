@@ -46,6 +46,11 @@ import {
 } from "./ai-chat-operations.js";
 import { MAX_BATCH_OPERATIONS, pluginBatchOperation } from "./batch.js";
 import {
+  type DeferralPlaceholders,
+  deferralPlaceholderRef,
+  deferralPlaceholders,
+} from "./client-assets.js";
+import {
   type CollectionOperationInput,
   checkCollectionOperations,
   collectionOperationManifest,
@@ -110,6 +115,7 @@ export {
   validateFieldValue,
 } from "@caelo-cms/shared/lists-model";
 export * from "./admin-panels.js";
+export * from "./client-assets.js";
 export * from "./editor-toolbar.js";
 export * from "./index-coverage.js";
 export * from "./indexes.js";
@@ -613,10 +619,6 @@ const deferralReasonKey = z
   .max(64)
   .regex(/^[a-z][a-z0-9_-]*$/, "reason is a lowercase key");
 
-const deferralMarkup = z
-  .object({ html: z.string().min(1).max(20_000), css: z.string().max(20_000) })
-  .strict();
-
 /**
  * A module withheld from the page until the withholding plugin says
  * otherwise.
@@ -645,10 +647,11 @@ export const moduleDeferralSpec = z.union([
       /** Slug of the module rendered in the withheld one's place. An
        *  ordinary module, so the AI authors and styles it. */
       placeholderModuleSlug: z.string().min(1).max(200),
-      /** The plugin's own built-in placeholder, rendered while no module
-       *  with `placeholderModuleSlug` exists yet. Without it a site whose
+      /** #1729 — one of the plugin's declared `deferralPlaceholders`,
+       *  rendered while no module with `placeholderModuleSlug` exists yet,
+       *  with text for its slots (core escapes it). Without it a site whose
        *  placeholder was never designed cannot render the page at all. */
-      defaultPlaceholder: deferralMarkup.optional(),
+      placeholder: deferralPlaceholderRef.optional(),
     })
     .strict(),
   z
@@ -657,10 +660,12 @@ export const moduleDeferralSpec = z.union([
       omit: z.literal(true),
       /**
        * Shown in the editor preview only, in the module's place: what is
-       * held back and why. A `<button data-caelo-ask-ai>` inside it adds
-       * the module to the current chat as a reference chip.
+       * held back and why. One of the plugin's declared
+       * `deferralPlaceholders` (#1729) with text for its slots. A
+       * `<button data-caelo-ask-ai>` inside it adds the module to the
+       * current chat as a reference chip.
        */
-      editorNotice: deferralMarkup,
+      editorNotice: deferralPlaceholderRef,
     })
     .strict(),
 ]);
@@ -767,6 +772,25 @@ export const linkResolvePageVariant = z
   .strict();
 
 export type LinkResolvePageVariant = z.infer<typeof linkResolvePageVariant>;
+
+const storageIdentifier = z.string().regex(/^[a-z_][a-z0-9_]{0,62}$/);
+
+/**
+ * #1269, #1729 — what a link-resolve answer is computed from, as manifest
+ * data (see `PluginDefinition.linkResolveReads`). The validator checks that
+ * every table is one of the plugin's `adminSchema` tables and every column
+ * one of theirs; `tables` may be empty for an answer that depends on the
+ * page ids alone.
+ */
+export const linkResolveReadsSchema = z
+  .object({
+    tables: z.array(storageIdentifier).max(20),
+    columns: z.array(storageIdentifier).max(64).optional(),
+    pageColumns: z.record(storageIdentifier, storageIdentifier).optional(),
+  })
+  .strict();
+
+export type LinkResolveReads = z.infer<typeof linkResolveReadsSchema>;
 
 /**
  * Epic #724 (rollout E) — one place in a plugin's private storage that
@@ -1387,9 +1411,13 @@ export const pluginManifest = z
      *  files land on every page of the public site, so authorship has
      *  to be auditable. */
     hasBuildAssets: z.boolean().default(false),
-    /** See `PluginDefinition.deferralsOperation`. Release-signed only:
-     *  withholding a module changes what visitors see. */
+    /** See `PluginDefinition.deferralsOperation`. Requires the
+     *  `client_assets` capability: withholding a module changes what
+     *  visitors see. */
     hasDeferrals: z.boolean().default(false),
+    /** See `PluginDefinition.deferralPlaceholders` (#1729): reviewed
+     *  markup a deferral verdict names instead of returning its own. */
+    deferralPlaceholders: deferralPlaceholders.optional(),
     /** See `PluginDefinition.contentVariantsOperation` (#592). Requires
      *  the `content_variants` capability: it changes what every page
      *  renders. */
@@ -1398,6 +1426,14 @@ export const pluginManifest = z
      *  `link_resolve` capability: it changes where every internal link
      *  on a page goes. */
     hasLinkResolve: z.boolean().default(false),
+    /**
+     * #1729 — see `PluginDefinition.linkResolveReads`: the private tables
+     * (and columns) the link-resolve answer is computed from. Required for
+     * every plugin with `hasLinkResolve`, so core keeps the answer per
+     * render scope and asks only about what changed (O(request), #1269).
+     * Optional in the schema: only a link resolver carries it.
+     */
+    linkResolveReads: linkResolveReadsSchema.optional(),
     /** See `PluginDefinition.shareImagesOperation` (#1452). Requires the
      *  `head_contributions` capability: it changes every affected page's
      *  head. */
@@ -2976,9 +3012,25 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * Withholding is per MODULE, not per placement: a video module
    * classified once is withheld everywhere it appears, including from
    * a layout. Return only the modules actually withheld — an absent id
-   * renders normally.
+   * renders normally. Called once per render pass for the whole site; the
+   * host splits the modules into calls of about 512 KB.
    */
   readonly deferralsOperation?: string;
+  /**
+   * #1729 — the markup a verdict of `deferralsOperation` may name, by name:
+   * a withheld module's built-in placeholder and an omitted one's editor
+   * notice. Part of the reviewed artifact (the manifest), checked at review
+   * like module HTML: no script, no element or attribute that loads
+   * anything, no CSS `url()` or `@import`. `{{name}}` slots take the text a
+   * verdict hands over, which core escapes, so a verdict carries data and
+   * never markup.
+   *
+   * @example
+   *   deferralPlaceholders: {
+   *     consent: { html: '<div><p>Loads with your consent to {{label}}.</p><button data-consent-grant="{{key}}">Allow</button></div>', css: "" },
+   *   }
+   */
+  readonly deferralPlaceholders?: DeferralPlaceholders;
   /**
    * #592 — the content-variants composition point: which content a
    * placement shows on THIS page. An operation in `operations` taking
@@ -3034,10 +3086,12 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * columns of them that matter. When declared, core keeps the answer per
    * render scope and asks again only for pages it has not asked about, or
    * after a journaled change to these tables (an update counts only when
-   * it changed one of `columns`; inserts and deletes always count). Every
-   * preview otherwise asks about every page of the site. Declare exactly
-   * what the operation reads: an answer that also depends on something
-   * else would be served stale.
+   * it changed one of `columns`; inserts and deletes always count).
+   * Required with `linkResolveOperation` (#1729): without it every preview
+   * would ask about every page of the site. Declare exactly what the
+   * operation reads: an answer that also depends on something else would
+   * be served stale. An answer computed from the page ids alone declares
+   * `tables: []`.
    *
    * `pageColumns` names, per table, the column of the page a row answers
    * for, when a row of that table changes the answer of that page and of
@@ -3327,8 +3381,14 @@ export function manifestFromDefinition(def: {
   readonly staticRender?: unknown;
   readonly buildAssets?: unknown;
   readonly deferralsOperation?: string;
+  readonly deferralPlaceholders?: DeferralPlaceholders;
   readonly contentVariantsOperation?: string;
   readonly linkResolveOperation?: string;
+  readonly linkResolveReads?: {
+    readonly tables: ReadonlyArray<string>;
+    readonly columns?: ReadonlyArray<string>;
+    readonly pageColumns?: Readonly<Record<string, string>>;
+  };
   readonly shareImagesOperation?: string;
   readonly auditFindingsOperation?: string;
   readonly writeHintsOperation?: string;
@@ -3398,8 +3458,22 @@ export function manifestFromDefinition(def: {
       : {}),
     hasBuildAssets: Boolean(def.buildAssets),
     hasDeferrals: Boolean(def.deferralsOperation),
+    ...(def.deferralPlaceholders && Object.keys(def.deferralPlaceholders).length > 0
+      ? { deferralPlaceholders: structuredClone(def.deferralPlaceholders) }
+      : {}),
     hasContentVariants: Boolean(def.contentVariantsOperation),
     hasLinkResolve: Boolean(def.linkResolveOperation),
+    ...(def.linkResolveReads
+      ? {
+          linkResolveReads: {
+            tables: [...def.linkResolveReads.tables],
+            ...(def.linkResolveReads.columns ? { columns: [...def.linkResolveReads.columns] } : {}),
+            ...(def.linkResolveReads.pageColumns
+              ? { pageColumns: { ...def.linkResolveReads.pageColumns } }
+              : {}),
+          },
+        }
+      : {}),
     hasShareImages: Boolean(def.shareImagesOperation),
     hasListResolve: Boolean(def.listResolveOperation),
     ...(def.auditFindingsOperation ? { auditFindingsOperation: def.auditFindingsOperation } : {}),

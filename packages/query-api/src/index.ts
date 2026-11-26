@@ -131,6 +131,7 @@ export {
   type PluginOperationGroup,
   pluginAccessOf,
   pluginAccessProblems,
+  pluginOperationAllowlistRefusal,
 } from "./plugin-access.js";
 export {
   joinHeldTransaction,

@@ -76,6 +76,8 @@ const plugin = definePlugin({
   adminSchema: { links: { label: "text", data: "jsonb" } },
   requestedCapabilities: ["cms_admin_schema", "link_resolve"],
   linkResolveOperation: "resolve",
+  // The answer is a fixed table of the test, not stored rows.
+  linkResolveReads: { tables: [] },
   linkLocationsOperation: "link_locations",
   operations: {
     resolve: async (_ctx, args) => {
