@@ -35,6 +35,7 @@ import { sql } from "drizzle-orm";
 import { lockPluginRow } from "../locks.js";
 import { registerAdminOps } from "../register.js";
 import { externalPluginFlow, FLOW_SYSTEM } from "./_external-plugin-flow.js";
+import { rawSystemSql } from "./_raw-system-sql.js";
 
 let adapter: DatabaseAdapter;
 let pluginsRoot: string;
@@ -120,10 +121,7 @@ beforeAll(async () => {
 afterAll(async () => {
   resetPluginHost();
   await flow.dropRows();
-  await adapter.withAdminTransaction(FLOW_SYSTEM, async (tx) => {
-    await tx.execute(sql.raw("SET LOCAL caelo.actor_kind = 'system'"));
-    await tx.execute(sql.raw(`DELETE FROM lists WHERE slug LIKE '${PFX}-%'`));
-  });
+  await rawSystemSql((tx) => tx.unsafe(`DELETE FROM lists WHERE slug LIKE '${PFX}-%'`));
   await rm(pluginsRoot, { recursive: true, force: true });
   await adapter.close();
 });

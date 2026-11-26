@@ -36,6 +36,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import { sql } from "drizzle-orm";
 import { lockPluginRow } from "../locks.js";
 import { registerAdminOps } from "../register.js";
+import { rawSystemSql } from "./_raw-system-sql.js";
 import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
 import { runSeoPass } from "./fixtures/seo-pass.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
@@ -132,21 +133,16 @@ async function call(
 
 /** The plugin's rows and this file's pages and media, which outlive the per-file reset. */
 const cleanup = () =>
-  adapter.withAdminTransaction(system, async (tx) => {
-    await tx.execute(sql.raw("SET LOCAL caelo.actor_kind = 'system'"));
-    await tx.execute(sql.raw(`DELETE FROM pages WHERE slug LIKE '${PFX}-%'`));
-    await tx.execute(
-      sql.raw(
-        `DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE '${PFX}-%')`,
-      ),
+  rawSystemSql(async (tx) => {
+    await tx.unsafe(`DELETE FROM pages WHERE slug LIKE '${PFX}-%'`);
+    await tx.unsafe(
+      `DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE '${PFX}-%')`,
     );
-    await tx.execute(sql.raw(`DELETE FROM templates WHERE slug LIKE '${PFX}-%'`));
-    await tx.execute(
-      sql.raw(
-        `DELETE FROM media_variants WHERE asset_id IN (SELECT id FROM media_assets WHERE original_name LIKE '${PFX}-%')`,
-      ),
+    await tx.unsafe(`DELETE FROM templates WHERE slug LIKE '${PFX}-%'`);
+    await tx.unsafe(
+      `DELETE FROM media_variants WHERE asset_id IN (SELECT id FROM media_assets WHERE original_name LIKE '${PFX}-%')`,
     );
-    await tx.execute(sql.raw(`DELETE FROM media_assets WHERE original_name LIKE '${PFX}-%'`));
+    await tx.unsafe(`DELETE FROM media_assets WHERE original_name LIKE '${PFX}-%'`);
   });
 
 async function owner() {

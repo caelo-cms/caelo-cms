@@ -40,6 +40,7 @@ import { sql } from "drizzle-orm";
 import { attachPluginGatedExecute } from "../ai/tools/gated-tools.js";
 import { lockPluginRow } from "../locks.js";
 import { registerAdminOps } from "../register.js";
+import { rawSystemSql } from "./_raw-system-sql.js";
 import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
 
 let adapter: DatabaseAdapter;
@@ -160,19 +161,16 @@ afterAll(async () => {
 
 /** The plugin's schema and the rows this file creates, which outlive the per-file reset. */
 const cleanup = () =>
-  adapter.withAdminTransaction(system, async (tx) => {
-    await tx.execute(sql.raw(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`));
-    await tx.execute(sql.raw("SET LOCAL caelo.actor_kind = 'system'"));
-    await tx.execute(sql.raw("DELETE FROM url_migration_pending_actions"));
-    await tx.execute(
-      sql.raw(
-        `DELETE FROM pending_redirects WHERE from_path LIKE '/${PFX}-%' OR to_path LIKE '/de/${PFX}-%'`,
-      ),
+  rawSystemSql(async (tx) => {
+    await tx.unsafe(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+    await tx.unsafe("DELETE FROM url_migration_pending_actions");
+    await tx.unsafe(
+      `DELETE FROM pending_redirects WHERE from_path LIKE '/${PFX}-%' OR to_path LIKE '/de/${PFX}-%'`,
     );
-    await tx.execute(sql.raw(`DELETE FROM domains WHERE hostname = '${DOMAIN}'`));
-    await tx.execute(sql.raw(`DELETE FROM pages WHERE slug LIKE '${PFX}-%'`));
-    await tx.execute(sql.raw(`DELETE FROM templates WHERE slug LIKE '${PFX}-%'`));
-    await tx.execute(sql.raw(`DELETE FROM layouts WHERE slug LIKE '${PFX}-%'`));
+    await tx.unsafe(`DELETE FROM domains WHERE hostname = '${DOMAIN}'`);
+    await tx.unsafe(`DELETE FROM pages WHERE slug LIKE '${PFX}-%'`);
+    await tx.unsafe(`DELETE FROM templates WHERE slug LIKE '${PFX}-%'`);
+    await tx.unsafe(`DELETE FROM layouts WHERE slug LIKE '${PFX}-%'`);
   });
 
 async function call(
@@ -368,10 +366,9 @@ it("an installed plugin's URL tables shape addresses, change only when approved,
     await call("url_migrations.execute_proposal", { proposalId: proposed.proposalId }, ownerCtx),
   ).toMatchObject({ redirectsCreated: 1 });
   expect(await storedPath(pricing)).toBe(`/de/${PFX}-pricing`);
-  const redirects = (await adapter.withAdminTransaction(system, (tx) =>
-    tx.execute(
-      sql`SELECT to_path, status_code FROM pending_redirects WHERE from_path = ${`/${PFX}-pricing`}`,
-    ),
+  const redirects = (await rawSystemSql(
+    (tx) =>
+      tx`SELECT to_path, status_code FROM pending_redirects WHERE from_path = ${`/${PFX}-pricing`}`,
   )) as unknown as { to_path: string; status_code: number }[];
   expect(redirects).toEqual([{ to_path: `/de/${PFX}-pricing`, status_code: 301 }]);
 

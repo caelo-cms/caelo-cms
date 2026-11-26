@@ -10,6 +10,7 @@
 import { activateApprovedExternalPlugin } from "@caelo-cms/plugin-host";
 import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import { rawSystemSql } from "./_raw-system-sql.js";
 
 /** The system actor every flow step runs as, unless it acts for an Owner. */
 export const FLOW_SYSTEM = {
@@ -150,30 +151,23 @@ export function externalPluginFlow(opts: {
 
   /** The plugins' schemas and the rows this file creates, which outlive the per-file reset. */
   async function dropRows(): Promise<void> {
-    await opts.adapter().withAdminTransaction(FLOW_SYSTEM, async (tx) => {
+    await rawSystemSql(async (tx) => {
       for (const schema of opts.schemas) {
-        await tx.execute(sql.raw(`DROP SCHEMA IF EXISTS ${schema} CASCADE`));
+        await tx.unsafe(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
       }
-      await tx.execute(sql.raw("SET LOCAL caelo.actor_kind = 'system'"));
-      await tx.execute(
-        sql.raw(
-          `DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE '${prefix}-%')`,
-        ),
+      await tx.unsafe(
+        `DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE '${prefix}-%')`,
       );
-      await tx.execute(sql.raw(`DELETE FROM pages WHERE slug LIKE '${prefix}-%'`));
-      await tx.execute(
-        sql.raw(
-          `DELETE FROM layout_modules WHERE layout_id IN (SELECT id FROM layouts WHERE slug LIKE '${prefix}-%')`,
-        ),
+      await tx.unsafe(`DELETE FROM pages WHERE slug LIKE '${prefix}-%'`);
+      await tx.unsafe(
+        `DELETE FROM layout_modules WHERE layout_id IN (SELECT id FROM layouts WHERE slug LIKE '${prefix}-%')`,
       );
-      await tx.execute(sql.raw(`DELETE FROM modules WHERE slug LIKE '%${prefix}%'`));
-      await tx.execute(
-        sql.raw(
-          `DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE '${prefix}-%')`,
-        ),
+      await tx.unsafe(`DELETE FROM modules WHERE slug LIKE '%${prefix}%'`);
+      await tx.unsafe(
+        `DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE '${prefix}-%')`,
       );
-      await tx.execute(sql.raw(`DELETE FROM templates WHERE slug LIKE '${prefix}-%'`));
-      await tx.execute(sql.raw(`DELETE FROM layouts WHERE slug LIKE '${prefix}-%'`));
+      await tx.unsafe(`DELETE FROM templates WHERE slug LIKE '${prefix}-%'`);
+      await tx.unsafe(`DELETE FROM layouts WHERE slug LIKE '${prefix}-%'`);
     });
   }
 
