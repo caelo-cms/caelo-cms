@@ -111,14 +111,16 @@ export const JOB_TIMING: Readonly<Record<ReportingJobKind, JobTiming>> = {
   // change files, which stay until a release holds them, and keeps every
   // finished shard (index-shards.ts), so an attempt that runs out of time
   // is followed by one that goes on. Six hours an attempt, like an import:
-  // a task stops starting shards in its last ten minutes. Five attempts:
-  // asking for more tasks ends one; the four after it carry one task
-  // through 800,000 passages at its slowest measured pace.
+  // a task starts shards for about 5 h 45 min of it. Eight attempts: at
+  // the slowest pace measured on one 2-vCPU task (6 passages a second,
+  // one thread) an attempt embeds about 124,000, so seven carry one task
+  // through 800,000 passages (two threads, 10 a second and more, need
+  // four), and asking for more tasks may end one before them.
   collection_index: {
     firstLeaseSeconds: 15 * 60,
     leaseSeconds: 10 * 60,
     renewEverySeconds: 60,
-    maxAttempts: 5,
+    maxAttempts: 8,
     maxRunSeconds: 6 * 60 * 60,
     reportTimeoutSeconds: 10 * 60,
   },

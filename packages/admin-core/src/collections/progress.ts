@@ -36,7 +36,8 @@ export const indexLimitSchema = z
     wantedTasks: z.number().int().min(1).max(64),
     quotaVcpu: z.number().int().min(0).max(1_000_000),
     quotaNeededVcpu: z.number().int().min(1).max(1_000_000),
-    projectId: z.string().regex(/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/),
+    // Display only; legacy domain-scoped ids (`example.com:project`) too.
+    projectId: z.string().min(1).max(100),
     region: z.string().regex(/^[a-z]+-[a-z]+\d+$/),
   })
   .strict();

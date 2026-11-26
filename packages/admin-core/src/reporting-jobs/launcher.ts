@@ -46,6 +46,22 @@ import {
 } from "./protocol.js";
 import { type RunCapacity, readRunCapacity } from "./run-capacity.js";
 
+/**
+ * The kinds whose work the CPU quota sizes: the quality check's Lighthouse
+ * runs and a large search index's tasks. Every other kind runs one task and
+ * starts without the read, so a Service Usage hiccup never fails a build,
+ * an import or a plugin batch.
+ */
+const CAPACITY_KINDS: ReadonlySet<ReportingJobKind> = new Set([
+  "quality_audit",
+  "collection_index",
+]);
+
+/** Whether a start of `kind` reads the CPU quota ({@link CAPACITY_KINDS}). */
+export function kindUsesCapacity(kind: ReportingJobKind): boolean {
+  return CAPACITY_KINDS.has(kind);
+}
+
 /** Starts one attempt's execution. */
 export interface JobLauncher {
   /** Names where it runs in messages (`Cloud Run job caelo-production-audit-run`). */
@@ -286,7 +302,7 @@ export async function startReportingJob(
     // launch the backstop retries, not a lost start.
     const execution = await withinLaunchTimeout(
       (async () => {
-        const capacity = await launcher.capacity?.();
+        const capacity = kindUsesCapacity(kind) ? await launcher.capacity?.() : undefined;
         const maxTasks = capacity ? capacity.indexTasks : (launcher.maxTasks ?? 1);
         const tasks = Math.min(begun.tasks, maxTasks);
         const order: JobOrder = {

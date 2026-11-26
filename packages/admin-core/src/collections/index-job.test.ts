@@ -443,6 +443,22 @@ describe("the index job at scale", () => {
     expect(first.applied.file).toBe(single.applied.file);
   });
 
+  it("a retry's first report already counts the shards an earlier attempt wrote", async () => {
+    const t = await bigBuild();
+    const e = fakeEmbedders("granite@aaaaaaaaaaaa");
+    await indexCollection(store, t, { embedders: e.source, slot: { index: 1, count: 2, max: 32 } });
+    const reports: number[] = [];
+    await indexCollection(store, t, {
+      embedders: e.source,
+      slot: { index: 1, count: 2, max: 32 },
+      onProgress: async (p) => {
+        reports.push(p.embedded);
+      },
+    });
+    // Not a 0 that reads as "starting over" for the next 20 seconds.
+    expect(reports[0]).toBeGreaterThan(0);
+  });
+
   it("the next attempt embeds only the shares a dead attempt left missing", async () => {
     const t = await bigBuild();
     const e = fakeEmbedders("granite@aaaaaaaaaaaa");
@@ -473,6 +489,57 @@ describe("the index job at scale", () => {
     ).rejects.toThrow(/2 of 4 pieces of the search index, of task\(s\) 1, 2 of 3, did not arrive/);
   });
 
+  it("a later Stage with one text more keeps the shards an unfinished index wrote", async () => {
+    // A first index that did not finish (here: its attempt's time ran out
+    // after two of four shards) and the next Stage, one passage more: only
+    // the shard the new text falls in, and the ones never written, embed.
+    const e = fakeEmbedders("granite@aaaaaaaaaaaa");
+    let clock = 0;
+    const slow: EmbedderSource = async (model) => {
+      const inner = await e.source(model);
+      return {
+        ...inner,
+        embed: async (texts, kind) => {
+          clock += 60_000;
+          return inner.embed(texts, kind);
+        },
+      };
+    };
+    await expect(
+      indexCollection(store, await bigBuild(), {
+        embedders: slow,
+        slot: { index: 0, count: 1, max: 1 },
+        shardDeadline: 70 * 60_000,
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      }),
+    ).rejects.toThrow(/not embedded within this attempt's time/);
+    const written = e.embedded.length;
+    e.embedded.length = 0;
+    const docs = [
+      ...Array.from({ length: 601 }, (_, d) =>
+        page(
+          `p${d}`,
+          Array.from({ length: 10 }, (_, s) => `Seite ${d} Abschnitt ${s}`),
+        ),
+      ),
+      page("extra", ["Ein neuer Abschnitt"]),
+    ];
+    const next = await task({
+      maxDocuments: 1_000,
+      changeKeys: [
+        await change({ upserts: docs, deletes: [], replaceAll: false, profile: semantic }),
+      ],
+    });
+    const out = await build(next, e.source, { slot: { index: 0, count: 1, max: 1 } });
+    expect(out.stats).toMatchObject({ passagesEmbedded: 6_011 });
+    // At least one of the two written shards was kept: a shard is ~1,500.
+    expect(6_011 - e.embedded.length).toBeGreaterThan(1_000);
+    expect(6_011 - e.embedded.length).toBeLessThanOrEqual(written);
+  });
+
   it("on one task a build too large for one attempt goes on where the last attempt stopped", async () => {
     // The quota leaves one task (max 1): every attempt embeds shards until
     // its time is up, and the next one only the rest, so a narrow width
@@ -494,8 +561,8 @@ describe("the index job at scale", () => {
       return indexCollection(store, t, {
         embedders: slow,
         slot: { index: 0, count: 1, max: 1 },
-        // 2,000 texts are 63 calls of 32: a shard takes 63 minutes here, and
-        // none starts after minute 60.
+        // 6,010 texts are 4 shards of about 1,500 (47 calls of 32): a shard
+        // takes about 47 minutes here, and none starts after minute 60.
         shardDeadline: start + 70 * 60_000,
         now: () => clock,
         sleep: async (ms) => {
@@ -506,8 +573,10 @@ describe("the index job at scale", () => {
     await expect(attempt()).rejects.toThrow(
       /pieces of the search index were not embedded within this attempt's time/,
     );
+    // Two whole shards, about half.
     const first = e.embedded.length;
-    expect(first).toBe(2_000);
+    expect(first).toBeGreaterThan(2_500);
+    expect(first).toBeLessThan(3_500);
     let out: Awaited<ReturnType<typeof attempt>> | null = null;
     for (let i = 0; i < 5 && out === null; i++) {
       try {
@@ -586,15 +655,18 @@ describe("what the index job reports", () => {
     const actions = calls.map((c) => c.action);
     expect(actions).not.toContain("done");
     expect(actions).not.toContain("failed");
-    // Its share is shards 1 and 3 of 4 (2,000 + 10 of 6,010). It reports at
+    // Its share is shards 1 and 3 of 4 (about half of 6,010). It reports at
     // once, so its share counts before its first batch, and with the plan's total.
+    const firstReport = calls[0]?.payload as { toEmbed: number };
     expect(calls[0]).toMatchObject({
       action: "progress",
-      payload: { task: 1, tasks: 2, embedded: 0, toEmbed: 2_010, planned: 6_010 },
+      payload: { task: 1, tasks: 2, embedded: 0, planned: 6_010 },
     });
+    expect(firstReport.toEmbed).toBeGreaterThan(2_500);
+    expect(firstReport.toEmbed).toBeLessThan(3_500);
     expect(calls.at(-1)).toMatchObject({
       action: "progress",
-      payload: { task: 1, embedded: 2_010, toEmbed: 2_010 },
+      payload: { task: 1, embedded: firstReport.toEmbed, toEmbed: firstReport.toEmbed },
     });
     // Without a quota limit (no capacity: inside the admin) no limit is reported.
     expect(calls.some((c) => (c.payload as { limit?: unknown }).limit)).toBe(false);

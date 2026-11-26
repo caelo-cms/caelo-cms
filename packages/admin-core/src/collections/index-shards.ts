@@ -14,10 +14,12 @@
  * first task then waits for every shard, adds them to its pool and builds
  * the release, embedding nothing more.
  *
- * A shard file is named after the model and the texts it holds, and a
- * finished one is never embedded again. So an attempt that died or ran out
- * of time leaves its finished shards to the next one, also one with another
- * width: a narrow width (a small quota) only takes longer. The files live
+ * A shard file is named after the model and the texts it holds (a hash
+ * bucket of them, {@link planShards}), and a finished one is never embedded
+ * again. So an attempt that died or ran out of time leaves its finished
+ * shards to the next one, also one with another width, and a later Stage
+ * with nearly the same texts to embed keeps most of them: a narrow width (a
+ * small quota) only takes longer. The files live
  * under the collection's prefix and go with the clean-up like every file no
  * release names (gc.ts), never while an index job of the collection runs.
  */
@@ -102,24 +104,36 @@ export interface ShardPlan {
 }
 
 /**
- * Splits `missing` into shards of {@link SHARD_PASSAGES}, the same way in
- * every task and every attempt of the build.
+ * Splits `missing` into shards of about {@link SHARD_PASSAGES}, the same way
+ * in every task and every attempt of the build.
+ *
+ * A text's shard is a hash bucket of its key, not a position in the sorted
+ * list: one text more or less changes only its own shard, so a later Stage
+ * whose index still lacks most of the same texts (a first index that did
+ * not finish before the next Stage) finds the other shards already written.
+ * The bucket count is the power of two that keeps shards at most
+ * {@link SHARD_PASSAGES}; only crossing one renames them all.
  */
 export function planShards(fingerprint: string, missing: ReadonlyMap<string, string>): ShardPlan {
-  const keys = [...missing.keys()].sort();
-  const shards: (readonly [string, string])[][] = [];
-  for (let i = 0; i < keys.length; i += SHARD_PASSAGES) {
-    shards.push(keys.slice(i, i + SHARD_PASSAGES).map((k) => [k, missing.get(k) as string]));
+  let buckets = 1;
+  while (missing.size / buckets > SHARD_PASSAGES) buckets *= 2;
+  const byBucket: (readonly [string, string])[][] = Array.from({ length: buckets }, () => []);
+  for (const key of [...missing.keys()].sort()) {
+    const b = createHash("sha256").update(key).digest().readUInt32BE(0) % buckets;
+    byBucket[b]?.push([key, missing.get(key) as string]);
   }
-  const names = shards.map((shard) => {
+  const used = byBucket
+    .map((texts, bucket) => ({ texts, bucket }))
+    .filter((s) => s.texts.length > 0);
+  const names = used.map(({ texts, bucket }) => {
     const h = createHash("sha256");
-    h.update(fingerprint);
-    for (const [k] of shard) h.update(`\u0000${k}`);
+    h.update(`${fingerprint}\u0000${buckets}\u0000${bucket}`);
+    for (const [k] of texts) h.update(`\u0000${k}`);
     return `vectors/v-${h.digest("hex").slice(0, 32)}.bin`;
   });
   return {
     names,
-    texts: (i) => shards[i] ?? [],
+    texts: (i) => used[i]?.texts ?? [],
     shardsOf: (index, count) => names.map((_, i) => i).filter((i) => i % count === index),
   };
 }
@@ -145,18 +159,19 @@ export async function embedShards(
   embedder: Embedder,
   o: EmbedShardsOptions,
 ): Promise<number> {
+  // What earlier attempts (or Stages) left counts from the first report on.
+  const todo: number[] = [];
   let done = 0;
-  let embeddedHere = 0;
-  await o.onEmbedded(0);
   for (const shard of shards) {
+    if (await store.has(plan.names[shard] as string)) done += plan.texts(shard).length;
+    else todo.push(shard);
+  }
+  await o.onEmbedded(done);
+  let embeddedHere = 0;
+  for (const shard of todo) {
+    if (o.timeUp()) break;
     const name = plan.names[shard] as string;
     const texts = plan.texts(shard);
-    if (await store.has(name)) {
-      done += texts.length;
-      await o.onEmbedded(done);
-      continue;
-    }
-    if (o.timeUp()) break;
     const entries: [string, EncodedVector][] = [];
     for (let i = 0; i < texts.length; i += SHARD_EMBED_BATCH) {
       const batch = texts.slice(i, i + SHARD_EMBED_BATCH);

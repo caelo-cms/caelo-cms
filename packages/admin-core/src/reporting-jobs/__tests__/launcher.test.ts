@@ -10,7 +10,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import type { GoogleDeps } from "../../security/operator-access/google-iam.js";
 import { reportingJobKind } from "../kinds.js";
-import { gcpReportingJobLauncher, launcherFor, setInProcessJobLauncher } from "../launcher.js";
+import {
+  gcpReportingJobLauncher,
+  kindUsesCapacity,
+  launcherFor,
+  setInProcessJobLauncher,
+} from "../launcher.js";
 import { JOB_ORDER_ENV_VAR, type JobOrder, jobOrderSchema, MAX_JOB_TASKS } from "../protocol.js";
 
 const def = reportingJobKind("quality_audit");
@@ -127,6 +132,14 @@ describe("gcpReportingJobLauncher", () => {
       tasks: 8,
       maxTasks: 32,
     });
+  });
+
+  it("#1764 — reads the quota only for the kinds it sizes, so a Service Usage hiccup never fails a build", () => {
+    expect(kindUsesCapacity("quality_audit")).toBe(true);
+    expect(kindUsesCapacity("collection_index")).toBe(true);
+    for (const kind of ["build", "site_import", "plugin_batch"] as const) {
+      expect(kindUsesCapacity(kind)).toBe(false);
+    }
   });
 
   it("#1764 — reads the capacity from the job's project and region", async () => {
