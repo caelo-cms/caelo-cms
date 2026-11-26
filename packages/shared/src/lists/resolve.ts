@@ -202,6 +202,13 @@ export interface ListPageContext {
   resolveField(field: ListFieldSpec, value: unknown, holder: ListHolder): ListFieldResolution;
   /** `{{page.*}}`: the rendering page as a record scope; null outside a page. */
   pageScope(): ScopeValue | null;
+  /**
+   * #1717 — the type of the rendering page's `{{page.props.<name>}}`: its
+   * own page type's declaration, else the types other page types declare
+   * it with (`link|text` when they disagree). Null outside a page or when
+   * no page type declares `name` (a select option flag is no declaration).
+   */
+  pagePropertyType(name: string): string | null;
   /** A module `link` field's value as a scope (`{{f.href}}`, `{{f.title}}`, #1433). */
   linkScope(link: { readonly href: string; readonly target?: string }): ScopeValue;
   /**
@@ -861,6 +868,18 @@ function createPageContext(
   };
 
   /**
+   * #1717 / #1727 — the type of page `p`'s `props.<name>`: its own page
+   * type's declaration, else the types other page types declare it with
+   * (`link|text` when they disagree); null when no page type declares it.
+   */
+  const propertyTypeOf = (p: ListPageRecord, name: string): string | null => {
+    const own = data.pageTypes.get(p.pageTypeSlug)?.def.properties.find((d) => d.name === name);
+    if (own) return own.type;
+    const elsewhere = s.pageProps.types(name);
+    return elsewhere.length > 0 ? elsewhere.join("|") : null;
+  };
+
+  /**
    * Page-shaped entries. `ancestor` overrides `is_ancestor` where the
    * source knows better than the page tree: a breadcrumb trail's home
    * crumb sits above the current page without being its parent.
@@ -880,6 +899,7 @@ function createPageContext(
         depth: 1,
         get: (key) =>
           (key === "is_ancestor" ? isAncestor : undefined) ?? get(key) ?? positionValue(key, pos),
+        propertyType: (name) => propertyTypeOf(p, name),
       };
     });
 
@@ -1382,6 +1402,7 @@ function createPageContext(
       return linkValue(link, data);
     },
     breadcrumbTrail: () => trail,
+    pagePropertyType: (name) => (current === null ? null : propertyTypeOf(current, name)),
     pageScope: () => {
       if (pageScopeMemo === undefined) {
         if (current === null) pageScopeMemo = null;

@@ -231,6 +231,9 @@ describe("get_plugin", () => {
         nextRetryAt: "2026-11-03T10:00:08.000Z",
         lastError: "HandlerError: canceling statement due to statement timeout",
       },
+      unscheduledWorkers: [
+        { workerName: "weekly_digest", cron: "0 0 * * SUN6", reason: "CronPattern: Syntax error" },
+      ],
       callCost: {
         since: "2026-11-03T09:00:00.000Z",
         calls: 12,
@@ -261,6 +264,10 @@ describe("get_plugin", () => {
     expect(r.content).toContain("health: failing (servers: 1 loaded, 1 failing)");
     expect(r.content).toContain("problem: [activate, plugin] 2x");
     expect(r.content).toContain("SMTP host refused");
+    // #1728 — a worker off the schedule, as current state (not the error history).
+    expect(r.content).toContain(
+      'worker off the schedule: weekly_digest (cron "0 0 * * SUN6": CronPattern: Syntax error).',
+    );
     // #1390 — the consumer's backoff and the broker call time.
     expect(r.content).toContain(
       "change consumer backing off: failed 4x in a row, retried at 2026-11-03T10:00:08.000Z",
@@ -290,6 +297,7 @@ describe("get_plugin", () => {
             problem: null,
             recentErrors: [],
             consumerBackoff: null,
+            unscheduledWorkers: [],
             callCost: { since: null, calls: 0, totalMs: 0, ops: [] },
           },
         },

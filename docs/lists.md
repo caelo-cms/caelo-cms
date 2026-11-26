@@ -587,6 +587,29 @@ is in the render data, in the preview and in a build), never a page.
 Changing a page type rebuilds the whole site, so no render dependency
 tracks it.
 
+**A `{{page.*}}` key or path the page cannot answer (#1717,
+`lists/page-paths.ts`).** The page object has a fixed set of keys (`id`,
+`title`, `short_title`, `link`, `published_at`, `updated_at`, `summary`,
+`image`, `page_type`, `props`, `terms`, `is_current`, `is_ancestor`), and
+each value answers fixed paths (a `link` its `href`, `target`, `title`; a
+`media` its `url`, `alt`, `width`, `height`; a `date` its `formatted`).
+Anything else is a broken placeholder, never copy, so it fails like an
+unknown property: `page-key-unknown:<key>` for `{{page.titel}}`, and
+`page-path-unknown:<path>:<type>` for a path the value at `page.<path>`
+cannot answer (`{{page.props.stand.formatted}}` on a `text` property is
+`page-path-unknown:props.stand:text`) or a value with no text used as a
+tag (`{{page.props}}`, `{{page.terms.tags}}`). The `<type>` is the page
+key's, the property's declared type (`link|text` when page types
+disagree), or the kind of a value further down. The tag or section stays
+raw; the preview lists it, the audit files `render/page-key-unknown` /
+`render/page-path-unknown` (fix: `update_modules_many`), and Publish live
+refuses the build. Outside a page render (no rendering page) `{{page.*}}`
+keeps `field-not-declared`. On a page a list iterates (a query, the
+breadcrumbs, the children) `{{props.<name>…}}` gets the same
+`page-path-unknown:props.<name>:<type>` and repair (#1727); a wrong path
+into such a page's `link` (`{{link.label}}`) stays `field-path-unknown`,
+like any link field's.
+
 Details the table leaves open:
 
 - `items` is reserved: on a node without a source it is an empty list, so

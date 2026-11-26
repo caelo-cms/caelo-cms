@@ -112,4 +112,28 @@ describe("indexCheckedQuery", () => {
     const q = indexCheckedQuery(manifest, "schema", inner);
     await expect(q.list("notes", {})).rejects.toThrow('table "notes" is not declared in schema');
   });
+
+  it("checks an upsert's key like a read, as the host does (#1659)", async () => {
+    const calls: unknown[][] = [];
+    const q = indexCheckedQuery(manifest, "adminSchema", {
+      list: async () => rows,
+      upsert: async (...args: unknown[]) => {
+        calls.push(args);
+        return { id: "r3", created: true };
+      },
+    });
+    const key = { locale_code: "de", address: "a" };
+    expect(await q.upsert("notes", key, {}, { ifExists: "keep" })).toEqual({
+      id: "r3",
+      created: true,
+    });
+    expect(calls).toEqual([["notes", key, {}, { ifExists: "keep" }]]);
+    await expect(q.upsert("notes", { address: "a" }, {})).rejects.toThrow(
+      'plugin_storage.upsert: no index covers this read of "notes" (it filters by address)',
+    );
+  });
+
+  it("adds no upsert to a fake that has none", () => {
+    expect("upsert" in indexCheckedQuery(manifest, "adminSchema", inner)).toBe(false);
+  });
 });

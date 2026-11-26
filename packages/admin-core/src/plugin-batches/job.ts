@@ -107,7 +107,18 @@ export function remoteBatchContext(order: BatchOrder, call: Call): PluginContext
   const ctx = {
     query: handles(call, "query", QUERY_METHODS),
     ...(order.handles.hasAdminQuery
-      ? { adminQuery: handles(call, "adminQuery", QUERY_METHODS) }
+      ? {
+          adminQuery: Object.freeze({
+            ...handles(call, "adminQuery", QUERY_METHODS),
+            // #1659 — private storage only; options left out stay out of
+            // the report (JSON would send them as null, which is refused).
+            upsert: (table: string, key: unknown, values: unknown, options?: unknown) =>
+              call(
+                "adminQuery.upsert",
+                options === undefined ? [table, key, values] : [table, key, values, options],
+              ),
+          }),
+        }
       : {}),
     ...(order.handles.hasPrivateFiles
       ? { privateFiles: handles(call, "privateFiles", FILE_METHODS) }

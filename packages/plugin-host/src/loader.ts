@@ -90,6 +90,7 @@ import {
   inPhase,
   PluginLoadError,
   PluginNotInReleaseError,
+  recordPluginError,
   stopRuntimeHeartbeat,
 } from "./runtime-health.js";
 import { runSandbox } from "./sandbox-runtime.js";
@@ -286,7 +287,9 @@ export async function verifyInMemoryPlugin(tp: InMemoryPlugin): Promise<Verified
       `manifest projection failed for "${tp.definition.slug}": ${(e as Error).message}`,
     );
   }
-  const manifestCheck = validateManifest(manifest);
+  // #1720 — a load: a worker cron croner refuses is recorded per worker at
+  // registration, not a reason to refuse the plugin.
+  const manifestCheck = validateManifest(manifest, { workerCron: "record" });
   if (manifestCheck.failures.length > 0) {
     throw new Error(
       `validator rejected manifest: ${manifestCheck.failures.map((f) => f.kind).join(", ")}`,
@@ -725,7 +728,8 @@ export async function verifyDiskPlugin(
     throw new Error("missing dist/index.js (run `bun run build` in the plugin dir)");
   }
   validateDistDirectory(resolvePath(opts.pluginDir, "dist"), opts.slug);
-  const manifestCheck = validateManifest(opts.rawManifest);
+  // #1720 — as for in-memory plugins: a bad worker cron is recorded, not refused.
+  const manifestCheck = validateManifest(opts.rawManifest, { workerCron: "record" });
   if (manifestCheck.failures.length > 0) {
     throw new Error(
       `validator rejected manifest: ${manifestCheck.failures.map((f) => f.kind).join(", ")}`,
@@ -1593,12 +1597,30 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
         ).then((ctx) => Promise.resolve(renderer.render(ctx as PluginContext))),
     });
   }
-  if (def.workers && def.workers.length > 0) {
-    pluginWorkerScheduler.schedule({
-      pluginSlug: def.slug,
-      workers: def.workers,
-      dispatch: runPluginOperation,
-      pluginActorId,
+  // Always, also without workers: scheduling replaces what an earlier load
+  // of the plugin registered, so a release that drops a worker (or fixes
+  // the cron of one that was off the schedule, #1728) leaves nothing stale.
+  const unscheduledWorkers = pluginWorkerScheduler.schedule({
+    pluginSlug: def.slug,
+    workers: def.workers ?? [],
+    dispatch: runPluginOperation,
+    pluginActorId,
+  });
+  // #1720 — a cron croner refuses (an artifact approved under an older
+  // croner; every review refuses one now) keeps only that worker off the
+  // schedule. The plugin loads; the problem is the plugin's, recorded
+  // here for its history and reported in its health for as long as the
+  // worker is off (#1728, the runtime record), never a failed load (#1008).
+  for (const w of unscheduledWorkers) {
+    await recordPluginError({
+      infra: opts.infra,
+      systemActorId: opts.systemActorId,
+      slug: def.slug,
+      pluginId,
+      phase: "worker",
+      error: new Error(
+        `worker "${w.workerName}" is not scheduled: its cron "${w.cron}" is not a pattern the scheduler accepts (${w.reason}). The plugin's other workers run; this one runs once a release of the plugin fixes its pattern.`,
+      ),
     });
   }
 

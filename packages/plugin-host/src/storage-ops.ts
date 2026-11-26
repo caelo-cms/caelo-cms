@@ -54,6 +54,7 @@ import {
   privateUpdate,
   privateUpdateMany,
 } from "./private-storage.js";
+import { privateUpsert, upsertKeyPlan } from "./private-upsert.js";
 
 /** Identifiers interpolated into SQL: lowercase, underscore, ≤63 chars. */
 const IDENT_RE = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -90,6 +91,17 @@ const updateManyInput = z
     patch: z.record(z.string(), z.unknown()),
   })
   .strict();
+/** #1659 — `upsert`: the key's columns, the values, and what to do with an existing row. */
+const upsertInput = z
+  .object({
+    ...base,
+    key: z.record(z.string(), z.unknown()),
+    values: z.record(z.string(), z.unknown()),
+    ifExists: z.enum(["update", "keep"]),
+  })
+  .strict();
+/** Key columns one upsert takes at most: an index holds at most four. */
+const UPSERT_KEY_MAX = 4;
 const casInput = z
   .object({
     ...base,
@@ -158,6 +170,70 @@ function patchFragments(
   }
   if (sets.length === 0) return `${op}: patch must include at least one declared column`;
   return { patch, sets };
+}
+
+/**
+ * #1659 — one key value in the one spelling its column stores, or the
+ * reason it is refused. Two spellings of one value (`"01"` and `1` for an
+ * int, an upper- and a lowercase uuid) would take two locks and miss each
+ * other's pending row, so a key takes only the column's own type, and a
+ * uuid is lowercased as Postgres prints it. A timestamp or jsonb column
+ * names no row by equality and cannot be part of a key.
+ */
+function keyValueOf(
+  op: string,
+  column: string,
+  spec: string,
+  v: unknown,
+): string | number | boolean | { problem: string } {
+  const refuse = (what: string) => ({
+    problem: `${op}: key value for column "${column}" is ${v === null ? "null" : JSON.stringify(v)} — the ${spec} column takes ${what} as a key`,
+  });
+  if (spec === "uuid" || spec.startsWith("ref:")) {
+    return typeof v === "string" && UUID_RE.test(v) ? v.toLowerCase() : refuse("a uuid string");
+  }
+  if (spec === "int") return Number.isInteger(v) ? (v as number) : refuse("an integer");
+  if (spec === "bool") return typeof v === "boolean" ? v : refuse("true or false");
+  if (spec === "string" || spec === "text" || spec.startsWith("enum:")) {
+    return typeof v === "string" ? v : refuse("a string");
+  }
+  return { problem: `${op}: the ${spec} column "${column}" cannot be part of a key` };
+}
+
+/**
+ * #1659 — the key of an upsert, or the reason the call is refused: 1–4
+ * declared key columns, each value in its column's spelling
+ * ({@link keyValueOf}), and values on other declared columns.
+ */
+function upsertKeyOf(
+  op: string,
+  columns: Readonly<Record<string, string>>,
+  rawKey: Readonly<Record<string, unknown>>,
+  values: Readonly<Record<string, unknown>>,
+): Record<string, string | number | boolean> | string {
+  const entries = Object.entries(rawKey);
+  if (entries.length === 0 || entries.length > UPSERT_KEY_MAX) {
+    return `${op}: key must name 1..${UPSERT_KEY_MAX} columns`;
+  }
+  const key: Record<string, string | number | boolean> = {};
+  // A table may declare `id`, but it is the row's primary key: an update
+  // never writes it (patchFragments), and neither does an upsert.
+  const noId = `${op}: "id" is the row's primary key, which an upsert never writes — name the row by its other columns in key, and leave id out of key and values`;
+  for (const [k, v] of entries) {
+    if (k === "id") return noId;
+    const problem = checkColumn(op, columns, k);
+    if (problem) return problem;
+    const value = keyValueOf(op, k, columns[k] as string, v);
+    if (typeof value === "object") return value.problem;
+    key[k] = value;
+  }
+  for (const [k, v] of Object.entries(values)) {
+    if (k === "id") return noId;
+    const problem = checkColumn(op, columns, k) ?? undefinedValueProblem(op, "data", k, v);
+    if (problem) return problem;
+    if (k in key) return `${op}: column "${k}" is in the key — values cannot change it`;
+  }
+  return key;
 }
 
 type Zone = "private" | "public";
@@ -595,6 +671,64 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
   return [insert, list, update, updateMany, remove, compareAndSwap];
 }
 
+/**
+ * #1659 — `plugin_storage.upsert`: the one row of a key, inserted or
+ * updated in one transaction (private-upsert.ts). Private zone only: a
+ * public table declares a `unique` index instead (docs/plugin-indexes.md),
+ * which the private zone cannot hold.
+ */
+function makeUpsertOp(locker: PluginRowLocker | undefined) {
+  const op = STORAGE_OPS.private.upsert;
+  return defineOperation({
+    name: op,
+    readScope: "request",
+    // Why plugin-only: see insert.
+    actorScope: ["plugin"],
+    database: "cms_admin",
+    input: upsertInput,
+    output: z.object({ id: z.string(), created: z.boolean() }),
+    handler: async (ctx, input, tx) => {
+      if (ctx.actorKind !== "plugin" || !ctx.pluginId) {
+        return fail(op, `${op}: only a plugin can use its own storage`);
+      }
+      const refused = await privateStorageRefusal(tx, ctx);
+      if (refused) return fail(op, `${op}: ${refused}`);
+      const key = upsertKeyOf(op, input.columns, input.key, input.values);
+      if (typeof key === "string") return fail(op, key);
+      // #1292 — the key is read like a list filter: an index must drive it.
+      const unindexed = listIndexRefusal({
+        label: op,
+        zone: "adminSchema",
+        table: input.table,
+        leads: await rememberedIndexLeadColumns(
+          tx,
+          ctx.pluginId,
+          "private",
+          input.schema,
+          input.table,
+        ),
+        access: listAccessOf(upsertKeyPlan(key)),
+      });
+      if (unindexed) return fail(op, unindexed);
+      const r = await privateUpsert(
+        tx,
+        ctx,
+        input,
+        {
+          key,
+          values: input.values,
+          bind: (column, value) => valueSql(input.columns, column, value),
+          ifExists: input.ifExists,
+        },
+        locker,
+        op,
+      );
+      if (r.ok) return ok(r.value);
+      throw new OperationAbortError({ kind: "HandlerError", operation: op, message: r.message });
+    },
+  });
+}
+
 /** Operation names by zone, for the host broker. */
 export const STORAGE_OPS = {
   private: {
@@ -604,6 +738,7 @@ export const STORAGE_OPS = {
     updateMany: "plugin_storage.update_many",
     delete: "plugin_storage.delete",
     compareAndSwap: "plugin_storage.compare_and_swap",
+    upsert: "plugin_storage.upsert",
   },
   public: {
     insert: "plugin_public_storage.insert",
@@ -628,6 +763,7 @@ export function registerPluginStorageOps(
   if (registry.has(STORAGE_OPS.private.insert)) return;
   for (const op of [
     ...makeOps("private", deps.lockPluginRow),
+    makeUpsertOp(deps.lockPluginRow),
     ...makeOps("public", deps.lockPluginRow),
   ]) {
     // The registry stores every op as OperationDefinition<unknown, unknown>.

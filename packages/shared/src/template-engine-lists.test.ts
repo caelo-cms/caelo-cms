@@ -19,6 +19,7 @@ import {
   PAGE,
   TERM,
 } from "./lists/list-fixtures.test.js";
+import { PAGE_KEY_TYPES } from "./lists/page-paths.js";
 import type { LoadedPageType } from "./lists/render-data.js";
 import { createListRenderContext, type ListPageContext } from "./lists/resolve.js";
 import {
@@ -520,6 +521,15 @@ describe("lists — {{page.*}}", () => {
       const news = render(html, [], {}, typedCtx(PAGE.newsA, { extraTypes }));
       expect(news.html).toBe("[||none]");
       expect(news.missingSlots).toEqual([]);
+      // A path none of them has names both types (#1717).
+      const wrong = render(
+        "{{page.props.cta.label}}",
+        [],
+        {},
+        typedCtx(PAGE.newsA, { extraTypes }),
+      );
+      expect(wrong.html).toBe("{{page.props.cta.label}}");
+      expect(wrong.missingSlots).toEqual(["page-path-unknown:props.cta:link|text"]);
     });
 
     it("query entries read another type's property as absent and an unknown one loudly", () => {
@@ -552,6 +562,118 @@ describe("lists — {{page.*}}", () => {
       );
       expect(typo.html).toBe("{{props.ratng}};{{props.ratng}};");
       expect(typo.missingSlots).toContain("page-prop-unknown:ratng");
+    });
+  });
+
+  // #1717 — the page object's keys and each value's paths are a fixed set:
+  // anything else is a broken placeholder that blocks Publish live, never
+  // the lenient `field-not-declared` of a module-level `{{name}}`.
+  describe("a key or path the page cannot answer (#1717)", () => {
+    it("renders every page key and its paths unchanged", () => {
+      const r = render(
+        "{{page.id}}|{{page.title}}|{{page.short_title}}|{{page.link.href}}|{{page.published_at.formatted}}|" +
+          "{{page.updated_at}}|{{page.summary}}|{{page.image.alt}}|{{page.page_type}}|{{page.is_current}}|" +
+          "{{page.is_ancestor}}|{{page.props.rating}}|{{page.props.event_date.formatted}}|" +
+          "{{#page.terms.tags}}{{name}}{{/page.terms.tags}}",
+        [],
+        {},
+        ctx(PAGE.newsA),
+      );
+      expect(r.missingSlots).toEqual([]);
+      expect(r.html).not.toContain("{{");
+      expect(r.html).toContain("|Launch day|");
+      // The marker table names exactly the keys the page answers.
+      for (const key of Object.keys(PAGE_KEY_TYPES)) {
+        const k = render(`{{#page.${key}}}x{{/page.${key}}}`, [], {}, ctx(PAGE.newsA));
+        expect(k.missingSlots).toEqual([]);
+      }
+    });
+
+    it("an unknown page key stays raw and fails, in a tag, a section and a path", () => {
+      for (const html of [
+        "{{page.titel}}",
+        "{{#page.titel}}x{{/page.titel}}",
+        "{{^page.titel}}x{{/page.titel}}",
+        "{{page.titel.x}}",
+      ]) {
+        const r = render(html, [], {}, ctx(PAGE.newsA));
+        expect(r.html).toBe(html);
+        expect(r.missingSlots).toEqual(["page-key-unknown:titel"]);
+      }
+    });
+
+    it("a path a value cannot answer names the value's type", () => {
+      const cases: [string, string][] = [
+        ["{{page.props.rating.formatted}}", "page-path-unknown:props.rating:number"],
+        ["{{page.props.event_date.nope}}", "page-path-unknown:props.event_date:date"],
+        ["{{page.title.text}}", "page-path-unknown:title:text"],
+        ["{{page.link.label}}", "page-path-unknown:link:link"],
+        ["{{page.image.src}}", "page-path-unknown:image:media"],
+        ["{{page.link.href.x}}", "page-path-unknown:link.href:text"],
+        ["{{#page.terms.nope}}x{{/page.terms.nope}}", "page-path-unknown:terms:terms"],
+      ];
+      for (const [html, marker] of cases) {
+        const r = render(html, [], {}, ctx(PAGE.newsA));
+        expect(r.html).toBe(html);
+        expect(r.missingSlots).toEqual([marker]);
+      }
+    });
+
+    it("a value with no text of its own fails as a tag", () => {
+      for (const [html, marker] of [
+        ["{{page.props}}", "page-path-unknown:props:props"],
+        ["{{page.terms}}", "page-path-unknown:terms:terms"],
+        ["{{page.terms.tags}}", "page-path-unknown:terms.tags:term"],
+      ] as const) {
+        const r = render(html, [], {}, ctx(PAGE.newsA));
+        expect(r.html).toBe(html);
+        expect(r.missingSlots).toEqual([marker]);
+      }
+    });
+
+    it("blocks Publish live like the other broken paths", () => {
+      expect(isFieldPathMarker("page-key-unknown:titel")).toBe(true);
+      expect(isFieldPathMarker("page-path-unknown:props.stand:text")).toBe(true);
+    });
+
+    it("keeps the old marker outside a page render", () => {
+      const r = render("{{page.titel}}", [], {}, ctx(null));
+      expect(r.html).toBe("{{page.titel}}");
+      expect(r.missingSlots).toEqual(["field-not-declared:page.titel"]);
+    });
+
+    // #1727 — the same for `{{props.<name>…}}` on a page a list iterates.
+    it("a page in a list of pages: a property path names the type, a link path stays", () => {
+      const fields: TemplateField[] = [
+        {
+          name: "latest",
+          kind: "list",
+          listType: "links",
+          bind: "source",
+          source: {
+            kind: "query",
+            editable: [],
+            defaults: { page_type: "news", order: "prop_asc:rating", limit: 5 },
+          },
+        },
+      ];
+      const listed = (inner: string) =>
+        render(`{{#latest}}${inner};{{/latest}}`, fields, {}, ctx(PAGE.home));
+      const ok = listed("{{props.rating}}|{{props.event_date.formatted}}|{{link.href}}");
+      expect(ok.missingSlots).toEqual([]);
+      expect(ok.html).not.toContain("{{");
+      for (const [inner, marker] of [
+        ["{{props.rating.formatted}}", "page-path-unknown:props.rating:number"],
+        ["{{props.event_date.nope}}", "page-path-unknown:props.event_date:date"],
+        ["{{props}}", "page-path-unknown:props:props"],
+      ] as const) {
+        const r = listed(inner);
+        expect(r.html).toBe(`${inner};${inner};`);
+        expect(new Set(r.missingSlots)).toEqual(new Set([marker]));
+      }
+      // A page entry's link is a link: its wrong path keeps the link-field marker.
+      const link = listed("{{link.label}}");
+      expect(new Set(link.missingSlots)).toEqual(new Set(["field-path-unknown:latest.link.label"]));
     });
   });
 

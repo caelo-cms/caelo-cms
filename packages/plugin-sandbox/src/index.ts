@@ -44,10 +44,14 @@ export {
   VISITOR_TABLE_PRIVILEGES,
 } from "./schema.js";
 export {
+  cronPatternProblem,
+  parseWorkerCron,
   type ValidationFailure,
   type ValidationFailureKind,
   type ValidationResult,
   validateManifest,
   validatePlugin,
   validateSource,
+  type WorkerCronCheck,
+  type WorkerCronParse,
 } from "./validate.js";

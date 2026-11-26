@@ -39,6 +39,8 @@ export const sandboxMethod = z.enum([
   "adminQuery.updateMany",
   "adminQuery.compareAndSwap",
   "adminQuery.delete",
+  // #1659 — private storage only: `query.upsert` does not exist.
+  "adminQuery.upsert",
   "query.insert",
   "query.list",
   "query.update",

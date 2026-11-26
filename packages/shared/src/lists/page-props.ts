@@ -50,6 +50,12 @@ export interface PagePropertyIndex {
    * `key`.
    */
   absent(key: string): ScopeValue | undefined;
+  /**
+   * #1717 — the types the site's page types declare `key` with, sorted
+   * (`["link", "text"]` when two disagree); empty when none declares it.
+   * Names the property's type when a path into it cannot be answered.
+   */
+  types(key: string): readonly string[];
 }
 
 /** Build the {@link PagePropertyIndex} of a render's page types. */
@@ -66,7 +72,10 @@ export function pagePropertyIndex(
   }
   const absent = new Map<string, ScopeValue>();
   for (const [name, defs] of byName) absent.set(name, absentValueOf(defs));
-  return { absent: (key) => absent.get(key) ?? (flags.has(key) ? FALSE : undefined) };
+  return {
+    absent: (key) => absent.get(key) ?? (flags.has(key) ? FALSE : undefined),
+    types: (key) => [...new Set((byName.get(key) ?? []).map((d) => d.type))].sort(),
+  };
 }
 
 /**

@@ -17,6 +17,12 @@
  * the first call's reads (`pages.list_shared_content` twice, every variant
  * row), so the audit's cost grew with batches × site and a 299-page site
  * ran out of the check's time.
+ *
+ * #1721 — and a batch call is no longer handed every page of the build:
+ * the first answer says `batchPages: "own"`, so each batch call carries
+ * its own pages and the audit run, by which it reads the few other pages
+ * its rules name (`quality_audits.staged_pages`). The page list crosses
+ * once per audit, with the first call.
  */
 
 import type {
@@ -53,6 +59,7 @@ import {
 import type { NeutralTermRow } from "./neutral-terms.js";
 import type { GlossaryRow } from "./page-translation.js";
 import { chunked, listAll, listWhereAnyOf, STORE_READ_MAX } from "./store-reads.js";
+import { onePerValueAddress } from "./translation-rows.js";
 
 /** Most findings one answer may carry (the SDK contract). */
 const MAX_FINDINGS_PER_ANSWER = 499;
@@ -71,6 +78,10 @@ const auditArgShape = {
   // The Stage's deploy run. Unread: the audit reads the main line the
   // staged build was rendered from, not one run's output.
   runId: z.string().optional(),
+  // #1721 — a batch call with only its own pages, and the audit run the
+  // other pages of the build are read by (quality_audits.staged_pages).
+  batchPages: z.literal("own").optional(),
+  auditRunId: z.string().optional(),
   // Core builds the facts (admin-core quality/checks/page-facts.ts); the
   // SDK type is the contract, checked here for the fields the rules read.
   facts: z
@@ -133,7 +144,8 @@ export async function pluginTextsKeptAsIs(
   }
   const unitByAddress = new Map(units.map((u) => [u.address, u]));
   const out = new Map<string, Set<string>>();
-  for (const r of rows) {
+  // #1659 — rows that share a key read as the one every reader takes.
+  for (const r of onePerValueAddress(rows).rows) {
     const u = unitByAddress.get(r.address);
     if (!u || r.source_hash !== u.hash || r.value?.trim() !== u.text.trim()) continue;
     const kept = out.get(r.locale_code) ?? new Set<string>();
@@ -190,15 +202,23 @@ export async function loadSiteRuleState(
  * groups, and the pages that covers (a page without a row is in no group,
  * which is known too). Past one read of ids the whole table instead, as
  * `loadVariantsByPage` does (#1212): pages that link half the site name
- * more rows by id, in more reads, than the narrow table holds — the
- * model then knows every page.
+ * more rows by id, in more reads, than the narrow table holds. The rows
+ * of the other groups the table holds are then read too, and `members`
+ * still names only the pages of the groups `pageIds` are in.
  */
 async function variantsAround(
   deps: ChromeDeps,
   pageIds: readonly string[],
-): Promise<{ variants: PageVariantRow[]; knownPages?: Set<string> }> {
+): Promise<{ variants: PageVariantRow[]; members: Set<string>; wholeTable: boolean }> {
   if (pageIds.length > STORE_READ_MAX) {
-    return { variants: (await listAll(deps.q, "page_variants")) as PageVariantRow[] };
+    const variants = (await listAll(deps.q, "page_variants")) as PageVariantRow[];
+    const named = new Set(pageIds);
+    const groups = new Set(variants.filter((v) => named.has(v.page_id)).map((v) => v.group_id));
+    return {
+      variants,
+      members: new Set(variants.filter((v) => groups.has(v.group_id)).map((v) => v.page_id)),
+      wholeTable: true,
+    };
   }
   const own = (await listWhereAnyOf(
     deps.q,
@@ -212,7 +232,7 @@ async function variantsAround(
     "group_id",
     own.map((v) => v.group_id),
   )) as PageVariantRow[];
-  return { variants, knownPages: new Set([...pageIds, ...variants.map((v) => v.page_id)]) };
+  return { variants, members: new Set(variants.map((v) => v.page_id)), wholeTable: false };
 }
 
 /**
@@ -240,13 +260,101 @@ async function sharedContentOn(
   return { chromeModuleIds, sharedModulesOn };
 }
 
+/**
+ * Where a batch call reads the pages of the build (#1721): from `pages`
+ * when core passed every page, or by the audit run when the first answer
+ * asked for batch calls with their own pages only (`batchPages: "own"`).
+ */
+export type BatchPages =
+  | { readonly kind: "all"; readonly stagedPages: readonly StagedPageRef[] }
+  | { readonly kind: "own"; readonly auditRunId: string; readonly own: readonly StagedPageRef[] };
+
+/**
+ * #1721 — the staged pages among `pageIds` and `paths`, read by the
+ * audit run (`quality_audits.staged_pages`): one read per 1000 ids and
+ * 1000 paths, none when nothing is asked.
+ */
+async function stagedPagesOf(
+  deps: ChromeDeps,
+  auditRunId: string,
+  ask: { readonly pageIds: readonly string[]; readonly paths: readonly string[] },
+): Promise<StagedPageRef[]> {
+  const ids = chunked([...new Set(ask.pageIds)]);
+  const paths = chunked([...new Set(ask.paths)]);
+  const out: StagedPageRef[] = [];
+  for (let i = 0; i < Math.max(ids.length, paths.length); i++) {
+    const r = await deps.cms.call<{ pages: StagedPageRef[] }>("quality_audits.staged_pages", {
+      auditRunId,
+      ...(ids[i] ? { pageIds: ids[i] } : {}),
+      ...(paths[i] ? { paths: paths[i] } : {}),
+    });
+    out.push(...r.pages);
+  }
+  return out;
+}
+
+/** Every site path a page's facts name: its canonical, hreflang alternates and links. */
+function pathsNamedBy(facts: readonly PluginAuditPageFacts[]): string[] {
+  const out = new Set<string>();
+  for (const f of facts) {
+    if (f.canonical?.path) out.add(f.canonical.path);
+    for (const a of f.alternates) if (a.path) out.add(a.path);
+    for (const l of f.links) if (l.path) out.add(l.path);
+  }
+  return [...out];
+}
+
+/**
+ * #1721 — the pages of the build a batch's rules ask about, when the
+ * batch call carries only its own: its pages, the staged pages at the
+ * paths its facts name, the site home, and the language versions of all
+ * of these (variant groups). Two reads by the audit run: the named paths
+ * (and the home), then the versions not known yet. Costs what the batch
+ * names, whatever the size of the site.
+ */
+async function buildPagesOwn(
+  deps: ChromeDeps,
+  pages: Extract<BatchPages, { kind: "own" }>,
+  facts: readonly PluginAuditPageFacts[],
+  siteHomePageId: string | null,
+): Promise<{
+  variants: PageVariantRow[];
+  stagedPages: StagedPageRef[];
+  knownPages: Set<string>;
+  knownPaths: Set<string>;
+}> {
+  const known = new Map<string, string>();
+  for (const p of [...pages.own, ...facts.map((f) => ({ pageId: f.pageId, path: f.path }))]) {
+    known.set(p.pageId, p.path);
+  }
+  const ownPaths = new Set(known.values());
+  const named = pathsNamedBy(facts).filter((path) => !ownPaths.has(path));
+  const home = siteHomePageId && !known.has(siteHomePageId) ? [siteHomePageId] : [];
+  for (const p of await stagedPagesOf(deps, pages.auditRunId, { pageIds: home, paths: named })) {
+    known.set(p.pageId, p.path);
+  }
+  const namedIds = [...known.keys(), ...home];
+  const { variants, members } = await variantsAround(deps, namedIds);
+  const unread = [...members].filter((id) => !known.has(id));
+  for (const p of await stagedPagesOf(deps, pages.auditRunId, { pageIds: unread, paths: [] })) {
+    known.set(p.pageId, p.path);
+  }
+  return {
+    variants,
+    stagedPages: [...known].map(([pageId, path]) => ({ pageId, path })),
+    knownPages: new Set([...namedIds, ...members]),
+    knownPaths: new Set([...ownPaths, ...named, ...known.values()]),
+  };
+}
+
 /** What the page rules read for one fact batch: what its pages name, nothing more. */
 export async function loadPageRuleState(
   deps: ChromeDeps,
-  stagedPages: readonly StagedPageRef[],
+  pages: BatchPages,
   facts: readonly PluginAuditPageFacts[],
 ): Promise<PageRuleState> {
-  const [pages, glossary, neutralTerms, chrome, sameOnPurpose] = await Promise.all([
+  const anyPage = pages.kind === "all" ? pages.stagedPages[0] : pages.own[0];
+  const [site, glossary, neutralTerms, chrome, sameOnPurpose] = await Promise.all([
     sitePages(deps),
     listAll(deps.q, "glossary") as Promise<GlossaryRow[]>,
     listAll(deps.q, "neutral_terms") as Promise<NeutralTermRow[]>,
@@ -254,22 +362,27 @@ export async function loadPageRuleState(
       deps,
       facts.map((f) => f.pageId),
     ),
-    pluginTextsKeptAsIs(deps, stagedPages[0]?.pageId),
+    pluginTextsKeptAsIs(deps, anyPage?.pageId),
   ]);
-  const { variants, knownPages } = await variantsAround(
-    deps,
-    pagesNamedBy(facts, stagedPages, pages.siteHomePageId),
-  );
-  return {
+  const common = {
     locales: deps.locales,
-    variants,
-    ...(knownPages ? { knownPages } : {}),
-    stagedPages,
-    ...pages,
+    ...site,
     glossary,
     neutralTerms,
     sameOnPurpose,
     ...chrome,
+  };
+  if (pages.kind === "own") {
+    return { ...common, ...(await buildPagesOwn(deps, pages, facts, site.siteHomePageId)) };
+  }
+  const named = pagesNamedBy(facts, pages.stagedPages, site.siteHomePageId);
+  const { variants, members, wholeTable } = await variantsAround(deps, named);
+  return {
+    ...common,
+    variants,
+    // The whole table read: the model knows every page's group.
+    ...(wholeTable ? {} : { knownPages: new Set([...named, ...members]) }),
+    stagedPages: pages.stagedPages,
   };
 }
 
@@ -321,11 +434,15 @@ async function listTranslationFindings(
 export async function auditFindings(
   deps: ChromeDeps,
   args: unknown,
-): Promise<{ findings: PluginAuditFinding[]; factBatches?: string[][] }> {
+): Promise<{
+  findings: PluginAuditFinding[];
+  factBatches?: string[][];
+  batchPages?: "own";
+}> {
   const parsed = parseAuditArgs(args);
   if (parsed.facts) {
     const facts = parsed.facts as unknown as PluginAuditPageFacts[];
-    const model = new BuildModel(await loadPageRuleState(deps, parsed.pages, facts));
+    const model = new BuildModel(await loadPageRuleState(deps, batchPagesOf(parsed), facts));
     return { findings: capFindings(pageFindings(model, facts)) };
   }
   const [variants, shared] = await Promise.all([
@@ -340,6 +457,20 @@ export async function auditFindings(
   });
   return {
     findings: capFindings([...listed, ...siteFindings(model)]),
-    ...(batches.length > 0 ? { factBatches: batches } : {}),
+    // #1721 — the batch calls need only their own pages: the others their
+    // rules name are read by the audit run, so a batch call costs the same
+    // on a site of 500 pages and one of 50,000.
+    ...(batches.length > 0 ? { factBatches: batches, batchPages: "own" as const } : {}),
   };
+}
+
+/** Where a batch call's pages come from, as core said (`batchPages`, `auditRunId`). */
+function batchPagesOf(parsed: z.infer<typeof auditArgs>): BatchPages {
+  if (parsed.batchPages !== "own") return { kind: "all", stagedPages: parsed.pages };
+  if (!parsed.auditRunId) {
+    throw new Error(
+      'international-site audit: a batch call with only its own pages (batchPages "own") carries no auditRunId to read the other pages of the build by. Report it with bug_report.',
+    );
+  }
+  return { kind: "own", auditRunId: parsed.auditRunId, own: parsed.pages };
 }

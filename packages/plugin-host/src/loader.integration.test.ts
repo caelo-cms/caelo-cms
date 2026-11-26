@@ -19,7 +19,8 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { registerAdminOps } from "@caelo-cms/admin-core";
-import { definePlugin } from "@caelo-cms/plugin-sdk";
+import { releaseManifestDigest } from "@caelo-cms/plugin-sandbox";
+import { definePlugin, manifestFromDefinition } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, defineOperation, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { type ExecutionContext, ok } from "@caelo-cms/shared";
 import { SQL } from "bun";
@@ -292,6 +293,173 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
 
     resetPluginHost();
     expect(pluginWorkerScheduler.list()).toHaveLength(0);
+  });
+
+  it("#1720 — a worker cron croner refuses is recorded; the plugin and its other workers load", async () => {
+    // As an artifact approved under croner 11.0.0 would carry it: "SUN6"
+    // read as 6 there, and 11.0.1 refuses it.
+    const slug = "test-p115-bad-cron";
+    const def = definePlugin({
+      ...helloPluginDef,
+      slug,
+      requestedCapabilities: [
+        ...(helloPluginDef.requestedCapabilities ?? []),
+        "background_workers",
+      ],
+      workers: [
+        { name: "nightly", cron: "0 0 * * *", operationName: "greet" },
+        { name: "weekly_digest", cron: "0 0 * * SUN6", operationName: "greet" },
+      ],
+    });
+    const report = await bootstrap({
+      infra,
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: def }],
+    });
+    expect(report.failed).toEqual([]);
+    expect(report.loaded.map((p) => p.slug)).toContain(slug);
+    expect(
+      pluginWorkerScheduler
+        .list()
+        .filter((w) => w.pluginSlug === slug)
+        .map((w) => w.workerName),
+    ).toEqual(["nightly"]);
+
+    // list_plugins reads plugins.list: the problem is in the plugin's health,
+    // the plugin is not failing, and its status stays the Owner's (#1008).
+    const listed = await execute(
+      registry,
+      adapter,
+      { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t-1720-list" },
+      "plugins.list",
+      {},
+    );
+    if (!listed.ok) throw new Error(JSON.stringify(listed.error));
+    const row = (
+      listed.value as {
+        plugins: {
+          slug: string;
+          status: string;
+          health: {
+            state: string;
+            recentErrors: { phase: string; errorClass: string; message: string }[];
+          };
+        }[];
+      }
+    ).plugins.find((p) => p.slug === slug);
+    expect(row?.status).toBe("active");
+    expect(row?.health.state).not.toBe("failing");
+    const problem = row?.health.recentErrors.find((e) => e.phase === "worker");
+    expect(problem?.errorClass).toBe("plugin");
+    expect(problem?.message).toContain('worker "weekly_digest" is not scheduled');
+    expect(problem?.message).toContain('"0 0 * * SUN6"');
+  });
+
+  it("#1728 — health reports a worker off the schedule for as long as it is off, and a fixed cron clears it", async () => {
+    const slug = "test-p115-off-schedule";
+    const withWorkers = (weekly: string) =>
+      definePlugin({
+        ...helloPluginDef,
+        slug,
+        requestedCapabilities: [
+          ...(helloPluginDef.requestedCapabilities ?? []),
+          "background_workers",
+        ],
+        workers: [
+          { name: "nightly", cron: "0 0 * * *", operationName: "greet" },
+          { name: "weekly_digest", cron: weekly, operationName: "greet" },
+        ],
+      });
+    const health = async () => {
+      const listed = await execute(
+        registry,
+        adapter,
+        { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t-1728-list" },
+        "plugins.list",
+        {},
+      );
+      if (!listed.ok) throw new Error(JSON.stringify(listed.error));
+      return (
+        listed.value as {
+          plugins: {
+            slug: string;
+            health: {
+              recentErrors: { phase: string }[];
+              unscheduledWorkers: { workerName: string; cron: string; reason: string }[];
+            };
+          }[];
+        }
+      ).plugins.find((p) => p.slug === slug)?.health;
+    };
+
+    await bootstrap({
+      infra,
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: withWorkers("0 0 * * SUN6") }],
+    });
+    const asSystem = async (statement: (tx: SQL) => Promise<unknown>) => {
+      const sql = new SQL(ADMIN_URL);
+      try {
+        await sql.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          await statement(tx);
+        });
+      } finally {
+        await sql.end();
+      }
+    };
+    // The load was long ago: its error-log entry is older than health's
+    // 7-day window, while this server still keeps the worker off.
+    await asSystem(
+      (tx) => tx`UPDATE plugin_errors SET first_seen_at = now() - interval '30 days',
+                   last_seen_at = now() - interval '30 days'
+                 WHERE plugin_slug = ${slug}`,
+    );
+    const off = await health();
+    expect(off?.recentErrors.filter((e) => e.phase === "worker")).toEqual([]);
+    expect(off?.unscheduledWorkers).toHaveLength(1);
+    expect(off?.unscheduledWorkers[0]).toMatchObject({
+      workerName: "weekly_digest",
+      cron: "0 0 * * SUN6",
+    });
+    expect(off?.unscheduledWorkers[0]?.reason).toContain("CronPattern");
+
+    // A release with the pattern fixed, approved by the Owner (#1332): the
+    // reload registers the worker, and health stops reporting it; the
+    // error-log entry stays as history.
+    resetPluginHost();
+    const fixed = withWorkers("0 0 * * SUN");
+    await asSystem(
+      (tx) => tx`UPDATE plugins
+                 SET approved_manifest_digest = ${releaseManifestDigest(manifestFromDefinition(fixed))}
+                 WHERE slug = ${slug}`,
+    );
+    await bootstrap({
+      infra,
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: fixed }],
+    });
+    expect(
+      pluginWorkerScheduler
+        .list()
+        .filter((w) => w.pluginSlug === slug)
+        .map((w) => w.workerName),
+    ).toEqual(["nightly", "weekly_digest"]);
+    expect((await health())?.unscheduledWorkers).toEqual([]);
+    const history = new SQL(ADMIN_URL);
+    try {
+      const rows = await history.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return tx`SELECT count(*)::int AS n FROM plugin_errors
+                  WHERE plugin_slug = ${slug} AND phase = 'worker'`;
+      });
+      expect(rows[0]?.n).toBe(1);
+    } finally {
+      await history.end();
+    }
   });
 
   it("failure isolation: one bad plugin doesn't block the rest", async () => {

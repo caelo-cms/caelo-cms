@@ -17,8 +17,17 @@
 -- (provisioning self-hosted-roles.ts). It refuses an admin database other
 -- than the one it runs in, so a call with another install's names fails
 -- instead of granting there. Same grants and policies as 0270, verbatim.
-
-DROP FUNCTION IF EXISTS caelo_grant_platform_updater();
+--
+-- Expand only: the previous release's self-hosted convergence (v0.12.14,
+-- self-hosted-roles.ts) still calls the version without arguments, also
+-- after a rollback onto this schema. So 0270's function stays, as a
+-- wrapper that passes this install's names (renamed by the runner like the
+-- call at the end). A later release drops it (#1722). In a database
+-- copied from a template the wrapper names the template, so the template
+-- copy drops it (template-rebind.ts `DROP_IN_COPY_SQL`): copies exist only
+-- since this release (install-from-template.ts), so no older release's
+-- convergence ever runs against one. Called in a copy anyway, it would
+-- fail: the 3-argument function refuses the template's admin database.
 
 CREATE OR REPLACE FUNCTION caelo_grant_platform_updater(
   updater name,
@@ -75,6 +84,17 @@ $fn$;
 
 -- Only the migration runner and the superuser's role convergence call it.
 REVOKE ALL ON FUNCTION caelo_grant_platform_updater(name, name, name) FROM PUBLIC;
+
+-- The previous release's convergence calls this one (see the header).
+CREATE OR REPLACE FUNCTION caelo_grant_platform_updater() RETURNS void
+LANGUAGE plpgsql
+AS $fn$
+BEGIN
+  PERFORM caelo_grant_platform_updater('platform_updater', 'cms_admin', 'cms_public');
+END
+$fn$;
+
+REVOKE ALL ON FUNCTION caelo_grant_platform_updater() FROM PUBLIC;
 
 -- The runner renames these three names to the install's (#1689).
 SELECT caelo_grant_platform_updater('platform_updater', 'cms_admin', 'cms_public');

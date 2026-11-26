@@ -10,7 +10,7 @@
  * draft, with its pending history); `"system"` on main.
  */
 
-import type { FixtureRefs } from "./fixture.js";
+import { type FixtureRefs, RR_PREFIX } from "./fixture.js";
 
 /** One measured call. */
 export interface RowsReadInput {
@@ -41,6 +41,17 @@ export function inputKey(entry: RowsReadInput): string {
 }
 
 export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
+  // #1721 — a plugin's Stage-audit batch call reads the pages it names by
+  // the audit run: by id and by path, the same request on every size.
+  {
+    op: "quality_audits.staged_pages",
+    ctx: "system",
+    input: (r) => ({
+      auditRunId: r.auditRunId,
+      pageIds: [r.pageId],
+      paths: [`/${RR_PREFIX}search-target`],
+    }),
+  },
   // Single-entity reads: the editor and the AI read these on every turn.
   { op: "pages.get", ctx: "chat", input: (r) => ({ pageId: r.pageId }) },
   { op: "pages.get_with_modules", ctx: "chat", input: (r) => ({ pageId: r.pageId }) },

@@ -35,6 +35,17 @@ What is translated (a *unit*):
 | local list in a content instance (a module's `list` field) | `instance/<ciId>/<field>/item/<itemId>/<itemField>` — only for the languages of the pages the instance is placed on | `list_value_translations` |
 | page property of a language version | `page/<pageId>/props/<field>` — the group's source page holds the text | `page_prop_translations` |
 
+Each table holds one row per language and address (or entry, or page
+property). Every write goes through `ctx.adminQuery.upsert`, so two chats
+translating the same text at once, or a chat and the change consumer's
+`missing` placeholder, leave one row: in the shared draft the later
+write meets the earlier one as a draft conflict, clears it with the read
+the conflict names, and wins (#1659,
+[docs/branch-aware-plugin-storage.md](../../../docs/branch-aware-plugin-storage.md)).
+Rows that came to share a key before read as one — a stored translation
+before a placeholder, then the current status, then the later insert —
+and the next write of the key deletes the others (`src/translation-rows.ts`).
+
 A field is translated when it is `text` or `richtext` and its list type
 does not say otherwise: `ext: { "international-site": { translate: false } }`
 on the field (the plugin declares this attribute through `listExt`;
@@ -217,7 +228,17 @@ pages (`onPageIds`), the variant rows of its pages and of the pages their
 links, hreflang and canonical name (the whole table once that is more
 than one read of ids), and the site's term lists. A batch model that read
 only some variant rows refuses to answer for any other page instead of
-calling it "no group". A module is shared content on a page when it sits
+calling it "no group".
+
+The page list crosses once per audit, with the first call (#1721): its
+answer says `batchPages: "own"`, so a batch call carries only its own
+pages and the audit run's id. It reads the other pages its rules name by
+that id (`quality_audits.staged_pages`): first the pages at the paths its
+links, hreflang and canonical name (and the site home), then the language
+versions of those pages that no path named. A batch model then knows only
+those pages and paths, and refuses a lookup of any other path or page the
+same way. Core makes up to four batch calls at once; each depends on its
+own facts only. A module is shared content on a page when it sits
 in a layout, or when the page places it synced; placed unsynced, its text
 is the page's own and is judged with the page. What core's `links` and
 `references` checks report is not repeated; these rules name the

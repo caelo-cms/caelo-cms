@@ -203,6 +203,8 @@ export {
   listIndexRefusal,
   rememberedIndexLeadColumns,
 } from "./index-coverage.js";
+// #1659 — the Stage keeps an upserted key of a private table at one row.
+export { type MergedPluginRow, mergePluginRows, type WrittenPluginRow } from "./key-merge.js";
 export {
   applyPluginLifecycle,
   deregisterPlugin,
@@ -387,6 +389,7 @@ export { brokerSandboxCall, runSandbox } from "./sandbox-runtime.js";
 export {
   pluginWorkerScheduler,
   type ScheduledWorker,
+  type UnscheduledWorker,
 } from "./scheduler.js";
 export { type ResolvedShareImages, resolveShareImages } from "./share-images.js";
 export {
@@ -401,6 +404,7 @@ export {
   type RegisteredPluginTool,
 } from "./tools-registry.js";
 export type { AICompletion, AIMessage, AIObjectCompletion, AIProvider } from "./types.js";
+export { STAGE_KEY_LOCKS_PER_TABLE } from "./upsert-key-locks.js";
 export {
   collectUrlAnnotations,
   type DecodedPagePath,

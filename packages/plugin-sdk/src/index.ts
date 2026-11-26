@@ -236,7 +236,15 @@ export type PluginToolPermission = (typeof PLUGIN_TOOL_PERMISSIONS)[number];
 /** Tier 1 background worker spec (cron-style). */
 export const pluginWorkerSpec = z.object({
   name: z.string().min(1).max(120),
-  /** Cron expression. Same vocabulary as the existing scheduled-publish work. */
+  /**
+   * Cron expression in croner's syntax: 5 fields (minute hour day month
+   * weekday), 6 with seconds first, or a nickname such as `@hourly`. The
+   * plugin validator parses it with croner in every review and refuses a
+   * pattern croner cannot parse, naming the worker (#1720). This schema
+   * checks only the string: stored manifests are parsed with it on every
+   * load, and an approved artifact must not stop loading because a later
+   * croner reads its pattern more strictly.
+   */
   cron: z.string().min(1).max(120),
   /** Operation name to dispatch on tick. Must exist in `operations`. */
   operationName: z.string().min(1).max(120),
@@ -865,6 +873,14 @@ export const MAX_AUDIT_FACT_BATCH_PAGES = 200;
  * needs them side by side (a page and its language versions in one
  * batch). Core then calls the operation once per batch with `facts`, and
  * files the findings of every call. A plugin that needs no facts omits it.
+ *
+ * `batchPages` (answer to the first call only, #1721): what `pages` the
+ * batch calls carry. `"all"` (the default): every page of the build, on
+ * every batch call, as the first call had them. `"own"`: only the batch's
+ * own pages, plus the `auditRunId` with which the plugin reads any other
+ * page of the build it needs through the core operation
+ * `quality_audits.staged_pages` (by id or by path). With `"own"` a batch
+ * call costs the same on a site of 500 pages and one of 50,000.
  */
 export const pluginAuditFindings = z
   .object({
@@ -873,6 +889,7 @@ export const pluginAuditFindings = z
       .array(z.array(z.string().uuid()).min(1).max(MAX_AUDIT_FACT_BATCH_PAGES))
       .max(5_000)
       .optional(),
+    batchPages: z.enum(["all", "own"]).optional(),
   })
   .strict();
 
@@ -954,6 +971,11 @@ export interface PluginAuditPageFacts {
 
 /** What an `auditFindingsOperation` is called with: the staged build's pages. */
 export interface PluginAuditFindingsArgs {
+  /**
+   * The staged build's pages: every page on the first call, and on each
+   * batch call unless the first answer said `batchPages: "own"`; then the
+   * batch's own pages only (#1721, see {@link pluginAuditFindings}).
+   */
   readonly pages: readonly { readonly pageId: string; readonly path: string }[];
   /** #1651 — the Stage's deploy run the audit checks (its collection releases, say). */
   readonly runId?: string;
@@ -962,6 +984,18 @@ export interface PluginAuditFindingsArgs {
    * of one batch's pages, in the order requested.
    */
   readonly facts?: readonly PluginAuditPageFacts[];
+  /**
+   * #1721 — `"own"` on the batch calls of a plugin whose first answer
+   * said so: `pages` holds only the batch's pages. Absent otherwise.
+   */
+  readonly batchPages?: "own";
+  /**
+   * #1721 — with `batchPages: "own"`: the audit run whose staged pages
+   * `quality_audits.staged_pages` answers (`{auditRunId, pageIds?,
+   * paths?}`). Bound to the run: once the audit has ended, the operation
+   * refuses it.
+   */
+  readonly auditRunId?: string;
 }
 
 /**
@@ -1814,7 +1848,79 @@ export interface PluginQuery {
  * in `adminSchema` (FKs to core tables are declared as `ref:` columns,
  * enforced by Postgres, never written through this handle).
  */
-export interface PluginAdminQuery extends PluginQuery {}
+export interface PluginAdminQuery extends PluginQuery {
+  /**
+   * #1659 — write THE row of `table` whose `key` columns hold these
+   * values: insert it when the key has none, else update it with
+   * `values`. Use it for every row that exists once per key (a translation
+   * per language and address, a setting per name). A `list` followed by an
+   * `insert` cannot promise that: two writers each find no row and each
+   * insert one, and a chat's row is invisible to the main line and to
+   * other branches until it is staged.
+   *
+   * Every write of a key through `upsert` keeps it at one row, on main and
+   * on every chat branch:
+   * - writes of one key run one after the other, so the later one finds
+   *   the earlier one's row;
+   * - in the shared draft the key's row is one row for every chat; a write
+   *   over another chat's change this chat has not seen is a conflict, as
+   *   for `update` — the error names `get_plugin_draft_rows`, and the write
+   *   repeated after that read goes through (the later write wins);
+   * - a row a branch creates is invisible to the main line and to other
+   *   branches until its Stage, so two lines can each hold a row of the
+   *   key; the Stage lands the branch's row on the key's main row (the
+   *   branch's state wins, as at every merge) and drops its own;
+   * - rows that already share the key in the caller's view (written by
+   *   `insert`) are folded: one of them is updated, the others are
+   *   deleted. With `ifExists: "keep"` nothing changes once the caller
+   *   sees a row.
+   *
+   * `key`: 1–4 declared columns, each value of its column's type (a
+   * string for string, text and enum columns, an integer for int, a
+   * boolean for bool, a uuid string for uuid and ref: columns; a timestamp
+   * or jsonb column cannot be part of a key), one of which leads a
+   * declared index (the read rule of `list`, docs/plugin-indexes.md).
+   * `values`: other declared columns, written on insert and on update;
+   * columns in neither get their default on insert. `id` is in neither:
+   * the key names the row. A plugin that writes a key with `upsert`
+   * writes it with `upsert` only, and a table has one key (the latest
+   * upsert's counts at the Stage).
+   *
+   * @returns the key's row and whether it was created.
+   *
+   * @example
+   * ```ts
+   * await ctx.adminQuery.upsert(
+   *   "translations",
+   *   { locale_code: "de", address: "list/…/item/…/label" },
+   *   { value: "Preise", status: "translated" },
+   * );
+   * ```
+   */
+  upsert<TableName extends string>(
+    table: TableName,
+    key: Record<string, string | number | boolean>,
+    values: Record<string, unknown>,
+    options?: PluginUpsertOptions,
+  ): Promise<PluginUpsertResult>;
+}
+
+/** #1659 — how {@link PluginAdminQuery.upsert} treats a key that has a row. */
+export interface PluginUpsertOptions {
+  /**
+   * `"update"` (the default) writes `values` over the key's row. `"keep"`
+   * leaves an existing row as it is and only creates the row when the key
+   * has none: a placeholder that must never replace a stored value.
+   */
+  readonly ifExists?: "update" | "keep";
+}
+
+/** The key's row after {@link PluginAdminQuery.upsert}. */
+export interface PluginUpsertResult {
+  readonly id: string;
+  /** True when the caller saw no row for the key, so the call wrote one. */
+  readonly created: boolean;
+}
 
 // ---------------------------------------------------------------------------
 // #390 — URL composition point.
@@ -2923,10 +3029,15 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * report; an identical finding from two calls is filed once.
    *
    * Each call has its own time budget (60 s, #1632), and the check as a
-   * whole has the audit's ceiling for one check (5 minutes). So read
-   * site-wide data in the first call, and in a batch call only what its
-   * pages show: a batch then costs the same on a small and a large site,
-   * and the batches add up to the site's size, not batches × site.
+   * whole has the audit's ceiling for one check (5 minutes); core makes
+   * up to 4 batch calls at once (#1721), so a batch call must not depend
+   * on another's. Read site-wide data in the first call, and in a batch
+   * call only what its pages show: a batch then costs the same on a small
+   * and a large site, and the batches add up to the site's size, not
+   * batches × site. A plugin whose batch calls need only some pages of
+   * the build answers `batchPages: "own"` (see {@link pluginAuditFindings})
+   * and reads them through `quality_audits.staged_pages`: the page list
+   * then crosses once per audit, not with every batch.
    *
    * @example
    *   audit_findings: async (_ctx, { pages }) => ({

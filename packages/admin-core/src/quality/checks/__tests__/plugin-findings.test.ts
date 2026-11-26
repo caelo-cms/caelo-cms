@@ -8,13 +8,15 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { PluginAuditFinding } from "@caelo-cms/plugin-sdk";
+import type { PluginAuditFinding, PluginAuditFindingsArgs } from "@caelo-cms/plugin-sdk";
 import type { StagedPage } from "../check.js";
 import {
   collectPluginFindings,
   createPluginAuditCheck,
   fileOnce,
+  PLUGIN_AUDIT_BATCH_CONCURRENCY,
   type PluginAuditAnswer,
+  type PluginAuditCall,
   type PluginAuditSource,
   withPluginAuditChecks,
 } from "../plugin-findings.js";
@@ -173,7 +175,7 @@ describe("plugin audit contributions (epic #1107)", () => {
       "international-site",
       pages,
       async () => [],
-      100,
+      { callTimeoutMs: 100, concurrency: 1 },
     );
     expect(labels).toEqual(["pages", "facts batch 1", "facts batch 2", "facts batch 3"]);
     expect(found).toHaveLength(3);
@@ -188,7 +190,7 @@ describe("plugin audit contributions (epic #1107)", () => {
       "international-site",
       pages,
       async () => [],
-      100,
+      { callTimeoutMs: 100 },
     );
     await expect(hung).rejects.toThrow(
       'plugin "international-site" (facts batch 2) did not finish within 100 ms',
@@ -197,6 +199,156 @@ describe("plugin audit contributions (epic #1107)", () => {
     expect(createPluginAuditCheck("international-site", source({})).timeoutMs).toBe(
       MAX_CHECK_CALL_TIMEOUT_MS,
     );
+  });
+
+  it("#1721 — batch calls run a few at a time, and the findings come back in batch order", async () => {
+    // Twelve batches whose calls end in a scrambled order: the answer is the
+    // same at every concurrency, and never more calls run than allowed.
+    const site = Array.from({ length: 12 }, (_, i) => ({
+      pageId: `00000000-0000-4000-8000-${String(100 + i).padStart(12, "0")}`,
+      path: `/p${i}`,
+    }));
+    const delays = [7, 1, 12, 3, 9, 2, 11, 5, 0, 8, 4, 6];
+    const run = async (concurrency: number) => {
+      let running = 0;
+      let most = 0;
+      const call: PluginAuditCall = async (args, label) => {
+        if (!args.facts) {
+          return {
+            findings: [{ ...MISSING, pageId: undefined, message: "Site: first." }],
+            factBatches: site.map((p) => [p.pageId]),
+          };
+        }
+        running += 1;
+        most = Math.max(most, running);
+        const i = Number(label.replace("facts batch ", "")) - 1;
+        await new Promise((r) => setTimeout(r, delays[i]));
+        running -= 1;
+        return {
+          findings: args.facts.map((f) => ({
+            ...MISSING,
+            pageId: f.pageId,
+            message: `Page: ${f.path}.`,
+          })),
+        };
+      };
+      const found = await collectPluginFindings(
+        call,
+        "international-site",
+        site,
+        async (ids) => ids.map((id) => factsOf(id, site)),
+        { concurrency },
+      );
+      return { messages: found.map((f) => f.message), most };
+    };
+    const one = await run(1);
+    expect(one.most).toBe(1);
+    expect(one.messages).toEqual(["Site: first.", ...site.map((p) => `Page: ${p.path}.`)]);
+    for (const n of [2, PLUGIN_AUDIT_BATCH_CONCURRENCY, 12, 50]) {
+      const many = await run(n);
+      expect(many.messages).toEqual(one.messages);
+      expect(many.most).toBe(Math.min(n, site.length));
+    }
+    await expect(
+      collectPluginFindings(
+        async () => ({ findings: [] }),
+        "x",
+        site,
+        async () => [],
+        {
+          concurrency: 0,
+        },
+      ),
+    ).rejects.toThrow("concurrency must be a whole number of at least 1");
+  });
+
+  it("#1721 — with several failing batches, the lowest one's failure, at any concurrency", async () => {
+    const site = Array.from({ length: 8 }, (_, i) => ({
+      pageId: `00000000-0000-4000-8000-${String(200 + i).padStart(12, "0")}`,
+      path: `/q${i}`,
+    }));
+    for (const concurrency of [1, 3, 8]) {
+      const started: string[] = [];
+      const failing = collectPluginFindings(
+        async (args, label) => {
+          if (!args.facts) return { findings: [], factBatches: site.map((p) => [p.pageId]) };
+          started.push(label);
+          // Batch 5 fails at once, batch 3 later: the report names batch 3.
+          if (label === "facts batch 5") throw new Error("batch 5 broke");
+          await new Promise((r) => setTimeout(r, 15));
+          if (label === "facts batch 3") throw new Error("batch 3 broke");
+          return { findings: [] };
+        },
+        "international-site",
+        site,
+        async (ids) => ids.map((id) => factsOf(id, site)),
+        { concurrency },
+      );
+      await expect(failing).rejects.toThrow("batch 3 broke");
+      // No batch starts after a failure is known.
+      expect(started.length).toBeLessThanOrEqual(Math.max(5, concurrency));
+    }
+  });
+
+  it('#1721 — with batchPages "own" a batch call carries its own pages, the same size on any site', async () => {
+    const sizeOfBatchCall = async (sitePages: number) => {
+      const site = Array.from({ length: sitePages }, (_, i) => ({
+        pageId: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+        path: `/page-${String(i).padStart(6, "0")}`,
+      }));
+      const calls: PluginAuditFindingsArgs[] = [];
+      await collectPluginFindings(
+        async (args) => {
+          calls.push(args);
+          return args.facts
+            ? { findings: [] }
+            : {
+                findings: [],
+                factBatches: [site.slice(0, 3).map((p) => p.pageId)],
+                batchPages: "own",
+              };
+        },
+        "international-site",
+        site,
+        async (ids) => ids.map((id) => factsOf(id, site)),
+      );
+      const batch = calls[1] as PluginAuditFindingsArgs;
+      expect(batch.batchPages).toBe("own");
+      expect(batch.pages).toEqual(site.slice(0, 3));
+      return { first: JSON.stringify(calls[0]).length, batch: JSON.stringify(batch).length };
+    };
+    const small = await sizeOfBatchCall(10);
+    const large = await sizeOfBatchCall(10_000);
+    expect(large.batch).toBe(small.batch);
+    // The page list crosses once, with the first call.
+    expect(large.first).toBeGreaterThan(100 * small.first);
+
+    // Without "own", every batch call carries the whole build, as before.
+    const calls: PluginAuditFindingsArgs[] = [];
+    await collectPluginFindings(
+      async (args) => {
+        calls.push(args);
+        return args.facts ? { findings: [] } : { findings: [], factBatches: [[PAGE]] };
+      },
+      "legacy",
+      pages,
+      async (ids) => ids.map((id) => factsOf(id, pages)),
+    );
+    expect(calls[1]?.pages).toEqual([{ pageId: PAGE, path: "/docs" }]);
+    expect(calls[1]?.batchPages).toBeUndefined();
+  });
+
+  it("#1721 — a batch call answering batchPages or factBatches again fails the check", async () => {
+    const again = collectPluginFindings(
+      async (args) =>
+        args.facts
+          ? { findings: [], batchPages: "own" }
+          : { findings: [], factBatches: [[PAGE]], batchPages: "own" },
+      "international-site",
+      pages,
+      async (ids) => ids.map((id) => factsOf(id, pages)),
+    );
+    await expect(again).rejects.toThrow("answered batchPages again in facts batch 1");
   });
 
   it("files a finding two fact batches report once, and caps a flood with a note", () => {
@@ -222,3 +374,27 @@ describe("plugin audit contributions (epic #1107)", () => {
     expect(filed.at(-1)?.ruleId).toBe("plugin.international-site/limit-reached");
   });
 });
+
+/** Minimal page facts of `pageId` (what the tests above read: id and path). */
+function factsOf(
+  pageId: string,
+  site: readonly { readonly pageId: string; readonly path: string }[],
+): NonNullable<PluginAuditFindingsArgs["facts"]>[number] {
+  const path = site.find((p) => p.pageId === pageId)?.path ?? "/";
+  return {
+    pageId,
+    path,
+    lang: null,
+    title: null,
+    metaDescription: null,
+    canonical: null,
+    robots: null,
+    ogLocale: null,
+    ogLocaleAlternates: [],
+    alternates: [],
+    sitemapAlternates: "no-sitemap",
+    links: [],
+    texts: [],
+    truncated: false,
+  };
+}

@@ -16,6 +16,9 @@
  *   term_translations        (locale_code, list_id, item_id, name, slug, source_hash, status, orphaned_at)
  *   page_prop_translations   (locale_code, page_id, field, value, source_hash, status, orphaned_at)
  *   list_item_visibility     (locale_code, address, hidden)
+ * One row per key in each (#1659): every write goes through
+ * `ctx.adminQuery.upsert`, never a `list` then an `insert`, and rows that
+ * came to share a key before read as one (translation-rows.ts).
  */
 
 import {
@@ -47,6 +50,12 @@ import {
   unitStatus,
 } from "./list-translation.js";
 import { chunked, listAll } from "./store-reads.js";
+import {
+  onePerHiddenEntry,
+  onePerPageProp,
+  onePerTerm,
+  onePerValueAddress,
+} from "./translation-rows.js";
 
 /** A stored list value translation. */
 export interface ValueTranslationRow {
@@ -288,21 +297,23 @@ export function translationIndexOf(rows: {
   readonly visibility: readonly VisibilityRow[];
 }): { index: TranslationIndex; hiddenByOperator: Map<string, Set<string>> } {
   const index = new Map<string, StoredTranslation>();
-  for (const r of rows.values)
+  // #1659 — rows that share a key (written before upsert) read as the one
+  // every reader takes (translation-rows.ts), not as whichever came last.
+  for (const r of onePerValueAddress(rows.values).rows)
     index.set(indexKey(r.locale_code, r.address), { value: r.value, hash: r.source_hash });
-  for (const r of rows.terms) {
+  for (const r of onePerTerm(rows.terms).rows) {
     const base = `list/${r.list_id}/item/${r.item_id}`;
     index.set(indexKey(r.locale_code, `${base}/name`), { value: r.name, hash: r.source_hash });
     index.set(indexKey(r.locale_code, `${base}/slug`), { value: r.slug, hash: r.source_hash });
   }
-  for (const r of rows.props) {
+  for (const r of onePerPageProp(rows.props).rows) {
     index.set(indexKey(r.locale_code, `page/${r.page_id}/props/${r.field}`), {
       value: r.value,
       hash: r.source_hash,
     });
   }
   const hiddenByOperator = new Map<string, Set<string>>();
-  for (const r of rows.visibility) {
+  for (const r of onePerHiddenEntry(rows.visibility).rows) {
     if (!r.hidden) continue;
     const set = hiddenByOperator.get(r.locale_code) ?? new Set<string>();
     set.add(r.address);
@@ -490,25 +501,6 @@ export function listWorkTargets(
   }));
 }
 
-/** Upsert by the given match columns; returns nothing (rows are re-read on demand). */
-async function upsertRow(
-  deps: ChromeDeps,
-  table: string,
-  match: Record<string, unknown>,
-  row: Record<string, unknown>,
-): Promise<void> {
-  const existing = (await deps.q.list(table, { ...match, limit: 2 })) as unknown as {
-    id: string;
-  }[];
-  if (existing.length > 1) {
-    throw new Error(
-      `international-site: ${table} holds two rows for ${JSON.stringify(match)} — a write race; delete one and retry`,
-    );
-  }
-  if (existing[0]) await deps.q.update(table, existing[0].id, row);
-  else await deps.q.insert(table, { ...match, ...row });
-}
-
 /** What {@link checkListTranslations} hands the write. */
 interface CheckedListTranslations {
   readonly unitByAddress: ReadonlyMap<string, SourceUnit>;
@@ -608,13 +600,16 @@ export async function writeListTranslations(
   for (const [address, value] of answers) {
     const unit = unitByAddress.get(address) as SourceUnit;
     if (unit.link && value === unit.text) {
-      // The source's own address: no language value, its edits flow here again.
-      const row = state.values.find((r) => r.locale_code === locale.code && r.address === address);
-      if (row) await deps.q.delete("list_value_translations", row.id);
+      // The source's own address: no language value, its edits flow here
+      // again. Every row of the key goes (#1659: there can be two).
+      for (const row of state.values) {
+        if (row.locale_code === locale.code && row.address === address) {
+          await deps.q.delete("list_value_translations", row.id);
+        }
+      }
       written += 1;
     } else if (unit.store === "value") {
-      await upsertRow(
-        deps,
+      await deps.q.upsert(
         "list_value_translations",
         { locale_code: locale.code, address },
         {
@@ -627,8 +622,7 @@ export async function writeListTranslations(
       );
       written += 1;
     } else if (unit.store === "pageProp" && unit.pageProp) {
-      await upsertRow(
-        deps,
+      await deps.q.upsert(
         "page_prop_translations",
         { locale_code: locale.code, page_id: unit.pageProp.pageId, field: unit.pageProp.field },
         { value, source_hash: unit.hash, status: "translated", orphaned_at: null },
@@ -637,19 +631,20 @@ export async function writeListTranslations(
     }
   }
   for (const w of termWrites.values()) {
-    if (!w.unit.term) continue;
-    const stored = state.terms.find(
-      (r) =>
-        r.locale_code === locale.code &&
-        r.list_id === w.unit.term?.listId &&
-        r.item_id === w.unit.term?.itemId,
-    );
+    const term = w.unit.term;
+    if (!term) continue;
+    // The part not answered keeps the stored one: the row every read takes.
+    const stored = onePerTerm(
+      state.terms.filter(
+        (r) =>
+          r.locale_code === locale.code && r.list_id === term.listId && r.item_id === term.itemId,
+      ),
+    ).rows[0];
     const name = w.name ?? stored?.name ?? null;
     const slug = w.slug ?? stored?.slug ?? null;
-    await upsertRow(
-      deps,
+    await deps.q.upsert(
       "term_translations",
-      { locale_code: locale.code, list_id: w.unit.term.listId, item_id: w.unit.term.itemId },
+      { locale_code: locale.code, list_id: term.listId, item_id: term.itemId },
       {
         name,
         slug,
@@ -718,21 +713,20 @@ export async function setListItemVisibility(
     );
   }
   for (const it of args.items) {
-    const existing = state.visibility.find(
-      (r) => r.locale_code === it.localeCode && r.address === it.address,
-    );
     if (it.hidden) {
-      if (existing) await deps.q.update("list_item_visibility", existing.id, { hidden: true });
-      else {
-        await deps.q.insert("list_item_visibility", {
-          locale_code: it.localeCode,
-          address: it.address,
-          hidden: true,
-        });
+      await deps.q.upsert(
+        "list_item_visibility",
+        { locale_code: it.localeCode, address: it.address },
+        { hidden: true },
+      );
+      continue;
+    }
+    // Shown again = no decision left: the default rules apply. Every row
+    // of the entry goes (#1659: there can be two).
+    for (const row of state.visibility) {
+      if (row.locale_code === it.localeCode && row.address === it.address) {
+        await deps.q.delete("list_item_visibility", row.id);
       }
-    } else if (existing) {
-      // Shown again = no decision left: the default rules apply.
-      await deps.q.delete("list_item_visibility", existing.id);
     }
   }
   return { updated: args.items.map((i) => ({ ...i })) };

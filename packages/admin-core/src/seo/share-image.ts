@@ -8,7 +8,9 @@
  *
  * The site default is the active theme's `socialShare` slot, read raw: an
  * asset deleted after binding then reads as a level with no URL here, and
- * stops the build there, instead of quietly dropping to no image.
+ * the build refuses it (a Stage reports it on every page it would show on
+ * and Publish live refuses that build, #1719), instead of quietly dropping
+ * to no image.
  */
 
 import type { RenderScope } from "@caelo-cms/plugin-host";
@@ -25,7 +27,7 @@ export interface PageShareImage {
   /**
    * The image's `/_caelo/media` URL (the build rewrites it to `/_assets`).
    * Null with an `assetId` when the asset was deleted or has no variants:
-   * the next Stage stops on it.
+   * the next Stage reports it and Publish live refuses that build (#1719).
    */
   readonly url: string | null;
 }
@@ -36,7 +38,8 @@ export type ShortRead = <T>(fn: (tx: TransactionRunner) => Promise<T>) => Promis
 /**
  * Why an asset cannot be a default share image, or null when it can: the
  * build publishes it on every page without its own, so one it refuses would
- * stop every Stage. Written for the AI: it names the next step.
+ * block Publish live on every such page. Written for the AI: it names the
+ * next step.
  */
 export async function shareImageAssetIssue(
   tx: TransactionRunner,

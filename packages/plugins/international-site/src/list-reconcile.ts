@@ -426,39 +426,37 @@ async function reconcileTargets(
     await deps.q.update(row.table, u.id, { status: u.status, orphaned_at: u.orphanedAt });
     updatedCount += 1;
   }
+  // #1659 — a placeholder only where the key has no main row: never over a
+  // translation written meanwhile. A chat's unstaged translation of the key
+  // lands on this placeholder at its Stage instead of beside it. (Rows that
+  // came to share a key before are left to the next write of the key, which
+  // folds them under the key's lock with what it writes; until then every
+  // read takes the same one, translation-rows.ts.)
+  const missing = { source_hash: null, status: "missing", orphaned_at: null } as const;
+  const placeholder = { ifExists: "keep" } as const;
   for (const ins of plan.inserts) {
     const u = ins.unit;
     if (u.store === "value") {
-      await deps.q.insert("list_value_translations", {
-        locale_code: ins.locale,
-        address: u.address,
-        target: targetOfAddress(u.address),
-        value: null,
-        source_hash: null,
-        status: "missing",
-        orphaned_at: null,
-      });
+      await deps.q.upsert(
+        "list_value_translations",
+        { locale_code: ins.locale, address: u.address },
+        { target: targetOfAddress(u.address), value: null, ...missing },
+        placeholder,
+      );
     } else if (u.store === "term" && u.term) {
-      await deps.q.insert("term_translations", {
-        locale_code: ins.locale,
-        list_id: u.term.listId,
-        item_id: u.term.itemId,
-        name: null,
-        slug: null,
-        source_hash: null,
-        status: "missing",
-        orphaned_at: null,
-      });
+      await deps.q.upsert(
+        "term_translations",
+        { locale_code: ins.locale, list_id: u.term.listId, item_id: u.term.itemId },
+        { name: null, slug: null, ...missing },
+        placeholder,
+      );
     } else if (u.store === "pageProp" && u.pageProp) {
-      await deps.q.insert("page_prop_translations", {
-        locale_code: ins.locale,
-        page_id: u.pageProp.pageId,
-        field: u.pageProp.field,
-        value: null,
-        source_hash: null,
-        status: "missing",
-        orphaned_at: null,
-      });
+      await deps.q.upsert(
+        "page_prop_translations",
+        { locale_code: ins.locale, page_id: u.pageProp.pageId, field: u.pageProp.field },
+        { value: null, ...missing },
+        placeholder,
+      );
     }
   }
   return {

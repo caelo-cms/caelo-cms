@@ -604,7 +604,12 @@ export const preparePluginActivationOp = defineOperation({
     }
     if (
       r?.tier === 2 &&
-      !validatePlugin({ manifest: r.manifest_json, source: r.source_code ?? "" }).ok
+      // #1720 — a stored artifact (see plugins.execute_activation).
+      !validatePlugin({
+        manifest: r.manifest_json,
+        source: r.source_code ?? "",
+        workerCron: "record",
+      }).ok
     ) {
       return err({
         kind: "HandlerError",
@@ -770,7 +775,12 @@ export const activatePluginOp = defineOperation({
     }
     if (
       r?.tier === 2 &&
-      !validatePlugin({ manifest: r.manifest_json, source: r.source_code ?? "" }).ok
+      // #1720 — a stored artifact (see plugins.execute_activation).
+      !validatePlugin({
+        manifest: r.manifest_json,
+        source: r.source_code ?? "",
+        workerCron: "record",
+      }).ok
     ) {
       return err({
         kind: "HandlerError",

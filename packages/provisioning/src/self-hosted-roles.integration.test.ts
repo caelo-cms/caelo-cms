@@ -110,6 +110,35 @@ describe("self-hosted role convergence against Postgres (#613 review, #635)", ()
   });
 });
 
+describe("the previous release's convergence on this schema (expand only, #1722)", () => {
+  it("still re-applies the upgrader role's grants through caelo_grant_platform_updater()", async () => {
+    // v0.12.14's convergenceSql, verbatim: after a rollback it runs against
+    // a database migrated by this release (cms_admin 0780), which must keep
+    // the argument-less function until a later release drops it.
+    const previous =
+      "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'caelo_grant_platform_updater') THEN PERFORM caelo_grant_platform_updater(); END IF; END $$;";
+    const r = await psql(
+      [
+        "\\set ON_ERROR_STOP on",
+        "\\connect cms_admin",
+        "REVOKE SELECT ON platform_update_requests FROM platform_updater;",
+        previous,
+        "",
+      ].join("\n"),
+    );
+    expect(r).toEqual({ exitCode: 0, stderr: "" });
+    const admin = new SQL(env.ADMIN_DATABASE_URL as string);
+    try {
+      const [row] = (await admin`
+        SELECT has_table_privilege('platform_updater', 'platform_update_requests', 'SELECT') AS ok
+      `) as { ok: boolean }[];
+      expect(row?.ok).toBe(true);
+    } finally {
+      await admin.end();
+    }
+  });
+});
+
 describe("the install's bootstrap.sh (#696 Phase 4c)", () => {
   it("runs as the Postgres entrypoint would and creates the agent's login, idempotently", async () => {
     const script = selfHostedBootstrapScript({ agent: true });

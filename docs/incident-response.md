@@ -107,8 +107,9 @@ stays what the Owner decided, and the failure is recorded instead (#1008).
 ```sql
 -- What each running server makes of each plugin (heartbeat within 2 min = it served
 -- a request lately; a server confirms its rows at request start, so an idle one
--- is missing here until its next request, #1361).
-SELECT plugin_slug, instance_id, state, heartbeat_at
+-- is missing here until its next request, #1361). `unscheduled_workers`: workers
+-- the server keeps off the schedule because their cron does not parse (#1728).
+SELECT plugin_slug, instance_id, state, unscheduled_workers, heartbeat_at
 FROM plugin_runtime WHERE heartbeat_at > now() - interval '2 minutes' ORDER BY plugin_slug;
 
 -- Every recorded problem: phase, whose fault (transient / plugin / core), how often.

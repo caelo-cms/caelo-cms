@@ -30,9 +30,18 @@ import {
   isCaeloFaultMarker,
   isLinkFailureMarker,
   type MediaFailure,
+  type MediaReferenceFailure,
   mediaUrlForRef,
+  type OgImageFailure,
+  PAGE_KEY_TYPES,
+  PAGE_KEY_UNKNOWN,
+  PAGE_PATH_UNKNOWN,
   PAGE_PROP_UNKNOWN,
+  PAGE_VALUE_PATHS,
   parseMediaFailureMarker,
+  parseMediaReferenceMarker,
+  parseOgImageFailureMarker,
+  parsePagePathUnknown,
   renderFailureKind,
   renderFailureMarker,
   replacementMediaUrls,
@@ -111,9 +120,18 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   const others = new Set<string>();
   // #1600 — the media pass sees the composed page, not the module.
   const imagePages = new Set<string>();
+  // #1719 — reference images on a page; share images by what is wrong.
+  const referencePages = new Set<string>();
+  const shareImagePages = { missing: new Set<string>(), reference: new Set<string>() };
   for (const f of failures) {
+    const page = `${f.pageTitle} (${f.pagePath})`;
+    const og = parseOgImageFailureMarker(f.reason);
     if (parseMediaFailureMarker(f.reason) !== null) {
-      imagePages.add(`${f.pageTitle} (${f.pagePath})`);
+      imagePages.add(page);
+    } else if (parseMediaReferenceMarker(f.reason) !== null) {
+      referencePages.add(page);
+    } else if (og !== null) {
+      shareImagePages[og.problem].add(page);
     } else if (isLinkFailureMarker(renderFailureMarker(f.reason))) {
       const problem = linkProblem(f);
       const g = byProblem.get(problem) ?? { places: new Set(), pages: new Set() };
@@ -129,13 +147,25 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
       `${problem} — linked from ${[...g.places].join(", ")} of ${[...g.pages].join(", ")}`,
     );
   }
-  if (imagePages.size > 0) {
-    const pages = [...imagePages];
-    const more = pages.length > PLACES_LISTED ? ` and ${pages.length - PLACES_LISTED} more` : "";
-    lines.push(
-      `An image points at a size or file the media library does not have — on ${pages.slice(0, PLACES_LISTED).join(", ")}${more}`,
-    );
-  }
+  const onPages = (problem: string, pages: ReadonlySet<string>): void => {
+    if (pages.size === 0) return;
+    const listed = [...pages];
+    const more = listed.length > PLACES_LISTED ? ` and ${listed.length - PLACES_LISTED} more` : "";
+    lines.push(`${problem} — on ${listed.slice(0, PLACES_LISTED).join(", ")}${more}`);
+  };
+  onPages("An image points at a size or file the media library does not have", imagePages);
+  onPages(
+    "An image is a reference image (a guide for making images), which is never published",
+    referencePages,
+  );
+  onPages(
+    "The image shown when the page is shared was deleted or has no image file",
+    shareImagePages.missing,
+  );
+  onPages(
+    "The image shown when the page is shared is a reference image, which is never published",
+    shareImagePages.reference,
+  );
   const listed = [...others];
   for (const place of listed.slice(0, PLACES_LISTED)) lines.push(`${place} could not be rendered`);
   if (listed.length > PLACES_LISTED) lines.push(`and ${listed.length - PLACES_LISTED} more`);
@@ -171,6 +201,62 @@ export function pagePropUnknownHint(name: string, mod: string): string {
 }
 
 /**
+ * #1717 — how the AI repairs a `{{page.*}}` marker (`page-prop-unknown`,
+ * `page-key-unknown`, `page-path-unknown`, shared `lists/page-paths.ts`),
+ * or undefined for any other marker. Shared by the Stage's report, the
+ * audit's fix and `inspect_page_render`'s next steps.
+ *
+ * @param mod the place in the AI's terms (`module "hero"`).
+ */
+export function pageMarkerHint(marker: string, mod: string): string | undefined {
+  const kind = renderFailureKind(marker);
+  const body = renderFailureMarker(marker).slice(kind.length + 1);
+  switch (kind) {
+    case PAGE_PROP_UNKNOWN:
+      return pagePropUnknownHint(body, mod);
+    case PAGE_KEY_UNKNOWN:
+      return (
+        `{{page.${body}}} in ${mod}: the page has no key "${body}". It has ${Object.keys(PAGE_KEY_TYPES).join(", ")}; ` +
+        "a page type's property is {{page.props.<name>}} (list_page_types). Correct the module HTML with update_modules_many."
+      );
+    case PAGE_PATH_UNKNOWN: {
+      const { path, type } = parsePagePathUnknown(body);
+      // #1727 — a property path comes from the rendering page or from a
+      // page a list iterates; the marker does not say which, so the hint
+      // names both forms.
+      const inList =
+        path === "props" || path.startsWith("props.")
+          ? ` (or {{${path}.…}} in a list of pages, the same paths without "page.")`
+          : "";
+      return `{{page.${path}.…}}${inList} in ${mod}: page.${path} (${type.split("|").join(" or ")}) ${pageValueAnswers(path, type)}. Correct the module HTML with update_modules_many.`;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** What the value at `page.<path>` of type `type` answers, for {@link pageMarkerHint}. */
+function pageValueAnswers(path: string, type: string): string {
+  const tag = `{{page.${path}}}`;
+  if (type === "props") {
+    return "holds the page type's properties: write {{page.props.<name>}} with a name list_page_types shows";
+  }
+  if (type === "terms") {
+    return "holds the page's vocabularies: iterate {{#page.terms.<vocabulary slug>}}{{name}}{{/page.terms.<vocabulary slug>}} with a slug list_lists shows";
+  }
+  if (type === "term" || type === "list") {
+    return `is a list of entries: iterate it with {{#page.${path}}}{{name}}{{/page.${path}}}`;
+  }
+  const paths = [...new Set(type.split("|").flatMap((t) => PAGE_VALUE_PATHS[t] ?? []))];
+  const select = type.split("|").includes("select")
+    ? `, or the option flag {{#page.${path}_<option>}}`
+    : "";
+  return paths.length === 0
+    ? `has no paths: write ${tag}${select}`
+    : `answers ${tag} and ${paths.map((p) => `{{page.${path}.${p}}}`).join(", ")}${select}`;
+}
+
+/**
  * How the AI repairs one failure. The markers are the engine's (shared
  * template-engine.ts names them); a kind without its own entry gets the
  * content repair, which shows the stored value first.
@@ -182,6 +268,10 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
   const mod = f.moduleSlug ? `module "${f.moduleSlug}"` : "the module";
   const media = parseMediaFailureMarker(marker);
   if (media !== null) return mediaRepair(media);
+  const reference = parseMediaReferenceMarker(marker);
+  if (reference !== null) return mediaReferenceRepair(reference);
+  const og = parseOgImageFailureMarker(marker);
+  if (og !== null) return shareImageRepair(og);
   if (isLinkFailureMarker(marker)) {
     return {
       tool: "check_links",
@@ -215,6 +305,9 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
         tool: "list_page_types",
         hint: pagePropUnknownHint(path, mod),
       };
+    case PAGE_KEY_UNKNOWN:
+    case PAGE_PATH_UNKNOWN:
+      return { tool: "update_modules_many", hint: pageMarkerHint(marker, mod) as string };
     default:
       return { tool: "set_content_instance_values_many", hint: `${REFERENCE_REPAIR}.` };
   }
@@ -249,6 +342,44 @@ function mediaRepair(media: MediaFailure): RenderRepair {
     tool: "set_content_instance_values_many",
     hint: `${url} names size "${media.variant}", which this image does not have (it has: ${media.variants.join(", ") || "none"}): ${write}, ${MEDIA_WRITTEN_IN}; regenerate_media_variants makes a size the source is wide enough for.`,
   };
+}
+
+/** #1719 — how the AI repairs a reference image a page shows (#531). */
+function mediaReferenceRepair(f: MediaReferenceFailure): RenderRepair {
+  const url = mediaUrlForRef(f.ref, f.variant);
+  return {
+    tool: "find_media",
+    hint: `${url} is a reference image (a guide for image generation and editing), which is never published: replace it with a library image from find_media, ${MEDIA_WRITTEN_IN}; or, if the operator wants this image on the page, mark it a library image with set_media_visibility_many.`,
+  };
+}
+
+/**
+ * #1719 — how the AI repairs a share image the build could not publish, by
+ * the level that chose it (#1452): the page's own (pages SEO), its
+ * language's default (a plugin's setting) or the site default (the theme).
+ */
+function shareImageRepair(f: OgImageFailure): RenderRepair {
+  const what =
+    f.problem === "missing"
+      ? "was deleted or has no image file (regenerate_media_variants re-makes the files of an image that still has its original)"
+      : "is a reference image, which is never published (set_media_visibility_many makes it a library image, if the operator wants it shown)";
+  switch (f.source) {
+    case "page":
+      return {
+        tool: "set_page_seo_many",
+        hint: `The page's own share image (og:image, media ${f.assetId}) ${what}. Set ogImageAssetId to a library image from find_media with set_page_seo_many, or to null so the language or site default applies.`,
+      };
+    case "language":
+      return {
+        tool: "list_plugins",
+        hint: `The page's language default share image (og:image, media ${f.assetId}) ${what}. Set another one with the tool of the plugin that sets language defaults (list_plugins, then get_plugin for its tools), or give the page its own image with set_page_seo_many (ogImageAssetId from find_media).`,
+      };
+    case "site":
+      return {
+        tool: "set_theme_asset",
+        hint: `The site's default share image (og:image, media ${f.assetId}) ${what}. Bind a library image from find_media to the theme slot socialShare with set_theme_asset, or clear the slot; a page with its own image (set_page_seo_many) is not affected.`,
+      };
+  }
 }
 
 /** Each distinct repair once, in the order the failures need them. */
@@ -325,12 +456,15 @@ export interface RenderFault {
  * @returns `operator`: titles, paths and places only; `ai`: the failures as
  *   the generator named them, with the tools that repair them; `caeloFault`:
  *   set when the failures include a Caelo bug — a production build's link
- *   the check before it should have refused, or a render without its context.
+ *   the check before it should have refused, or a render without its context;
+ *   `nextAction`: the error's next step for the AI (#1718,
+ *   {@link renderRepairTools}).
  */
 export function describeRenderFailures(failures: readonly RenderFailure[]): {
   readonly operator: string;
   readonly ai: string;
   readonly caeloFault: RenderFault | null;
+  readonly nextAction: { readonly tool: string; readonly reason: string };
 } {
   const lines = operatorPlaces(failures);
   const contextless = failures.some((f) => isCaeloFaultMarker(f.reason));
@@ -353,12 +487,45 @@ export function describeRenderFailures(failures: readonly RenderFailure[]): {
     : links
       ? "This is a Caelo bug: the check before the build should have caught this, and it has been reported."
       : "The editor preview flags the same spots; ask the AI to repair them, then build again.";
+  const tools = renderRepairTools(failures);
+  const ai =
+    `The generator refused the build: ${technicalLines(failures, failures.length)}. ` +
+    `Repair: ${repairHints(failures)} Then build again.` +
+    (tools.length > 1 ? ` Tools these repairs need, most needed first: ${tools.join(", ")}.` : "") +
+    (caeloFault ? ` File it with bug_report: ${caeloFault.title.toLowerCase()}.` : "");
   return {
     operator: `The build stopped: ${lines.join("; ")}. ${next}`,
-    ai:
-      `The generator refused the build: ${technicalLines(failures, failures.length)}. ` +
-      `Repair: ${repairHints(failures)} Then build again.` +
-      (caeloFault ? ` File it with bug_report: ${caeloFault.title.toLowerCase()}.` : ""),
+    ai,
     caeloFault,
+    nextAction: { tool: firstTool(tools), reason: ai },
   };
+}
+
+/** The most needed tool; a stopped build has at least one failure, so at least one tool. */
+function firstTool(tools: readonly string[]): string {
+  const [first] = tools;
+  if (first === undefined)
+    throw new Error("describeRenderFailures: a stopped build names no failure");
+  return first;
+}
+
+/**
+ * #1718 — the tools a stopped build's failures need, by how many failures
+ * of each kind there are (most first; a tie keeps the order the build
+ * named them in): each kind's {@link renderRepairOf} tool, `check_links`
+ * for a link, and `bug_report` for a render without its context (a Caelo
+ * bug no content edit repairs). Counted per kind and tool: a share image's
+ * tool follows the level that chose it (#1719), so one kind can need two.
+ */
+export function renderRepairTools(failures: readonly RenderFailure[]): string[] {
+  const byKind = new Map<string, { tool: string; count: number }>();
+  for (const f of failures) {
+    const tool = isCaeloFaultMarker(f.reason) ? "bug_report" : renderRepairOf(f).tool;
+    const key = `${renderFailureKind(f.reason)}|${tool}`;
+    const hit = byKind.get(key) ?? { tool, count: 0 };
+    hit.count += 1;
+    byKind.set(key, hit);
+  }
+  const ranked = [...byKind.values()].sort((a, b) => b.count - a.count);
+  return [...new Set(ranked.map((k) => k.tool))];
 }

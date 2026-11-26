@@ -10,10 +10,20 @@
  *   ]
  *
  * At plugin activation the host calls `pluginWorkerScheduler.schedule(...)`,
- * which REGISTERS each worker: its cron pattern (parsed with `croner`, so a
- * bad pattern fails the load loudly) and a `run()` that invokes the plugin's
+ * which REGISTERS each worker: its cron pattern (parsed with `croner`, the
+ * same way the validator parses it) and a `run()` that invokes the plugin's
  * named operation via the dispatcher with system actor scope + the plugin's
  * actor row + caelo.plugin_id session vars set.
+ *
+ * #1720 — a pattern croner refuses keeps only that worker off the schedule.
+ * The validator refuses such a pattern in every review, so only an artifact
+ * approved under an older croner can carry one; `schedule()` returns those
+ * workers for the loader to record as the plugin's problem (#1008), and the
+ * plugin's other workers register as usual. #1728 — the scheduler also keeps
+ * them (`unscheduled()`) for as long as they are off: the runtime record
+ * carries them into plugin health, which would otherwise show them only for
+ * the 7 days its error log covers. The next `schedule()` of the plugin (a
+ * reload, a release with a fixed pattern) replaces them.
  *
  * Nothing here runs on a timer (#1140). The admin's scheduler tick asks
  * which workers exist, keeps each one's next occurrence in its due-table
@@ -29,9 +39,25 @@
  * row and the worker stays scheduled; its next occurrence runs as usual.
  */
 
+import { parseWorkerCron } from "@caelo-cms/plugin-sandbox";
 import type { PluginWorkerSpec } from "@caelo-cms/plugin-sdk";
-import { Cron } from "croner";
+import type { Cron } from "croner";
 import type { runPluginOperation } from "./dispatch.js";
+import {
+  clearUnscheduledWorkers,
+  setUnscheduledWorkers,
+  type UnscheduledWorker,
+  unscheduledWorkersOf,
+} from "./unscheduled-workers.js";
+
+export type { UnscheduledWorker } from "./unscheduled-workers.js";
+
+interface ScheduleOpts {
+  pluginSlug: string;
+  workers: ReadonlyArray<PluginWorkerSpec>;
+  dispatch: typeof runPluginOperation;
+  pluginActorId: string;
+}
 
 /** One registered plugin worker. */
 export interface ScheduledWorker {
@@ -56,58 +82,83 @@ interface Entry {
   readonly run: () => Promise<void>;
 }
 
+/** One run of worker `w`: the plugin operation it names, on each public database it works on. */
+function workerRun(opts: ScheduleOpts, w: PluginWorkerSpec): () => Promise<void> {
+  return async () => {
+    // #1333 — `publicDatabases: "each"` runs once per public database,
+    // live first; each run sees only its own environment's tables.
+    const targets: ReadonlyArray<"live" | "staging"> =
+      w.publicDatabases === "each" ? ["live", "staging"] : ["live"];
+    const failures: string[] = [];
+    for (const target of targets) {
+      const r = await opts.dispatch({
+        pluginSlug: opts.pluginSlug,
+        operationName: w.operationName,
+        args: { _trigger: "worker", workerName: w.name },
+        pluginActorId: opts.pluginActorId,
+        // Workers act on main by design (CMS_REQUIREMENTS §14.7).
+        invocation: { origin: "worker", actorId: opts.pluginActorId },
+        ...(target === "staging" ? { publicTarget: "staging" as const } : {}),
+      });
+      // A failed live run must not keep the staging run from its turn,
+      // and neither failure may pass unnoticed: the due-table row says so.
+      if (!r.ok) failures.push(`${target}: ${r.error.message}`);
+    }
+    if (failures.length > 0) {
+      throw new Error(`worker ${opts.pluginSlug}/${w.name} failed (${failures.join("; ")})`);
+    }
+  };
+}
+
 class WorkerScheduler {
   readonly #byPlugin = new Map<string, Entry[]>();
   readonly #paused = new Set<string>();
 
-  schedule(opts: {
-    pluginSlug: string;
-    workers: ReadonlyArray<PluginWorkerSpec>;
-    dispatch: typeof runPluginOperation;
-    pluginActorId: string;
-  }): void {
+  /**
+   * Register a plugin's workers, replacing any it had.
+   *
+   * @returns the workers left off the schedule because croner refused their
+   *   cron; empty when every worker registered.
+   */
+  schedule(opts: ScheduleOpts): ReadonlyArray<UnscheduledWorker> {
     // A plugin loaded again (a reload, an update, two load paths racing)
     // replaces its workers (#1008).
     this.unschedulePlugin(opts.pluginSlug);
-    if (opts.workers.length === 0) return;
-    const list: Entry[] = opts.workers.map((w) => ({
-      pluginSlug: opts.pluginSlug,
-      workerName: w.name,
-      cron: w.cron,
-      operationName: w.operationName,
-      // A pattern only: paused and without a callback, croner never fires it.
-      pattern: new Cron(w.cron, { paused: true }),
-      run: async () => {
-        // #1333 — `publicDatabases: "each"` runs once per public database,
-        // live first; each run sees only its own environment's tables.
-        const targets: ReadonlyArray<"live" | "staging"> =
-          w.publicDatabases === "each" ? ["live", "staging"] : ["live"];
-        const failures: string[] = [];
-        for (const target of targets) {
-          const r = await opts.dispatch({
-            pluginSlug: opts.pluginSlug,
-            operationName: w.operationName,
-            args: { _trigger: "worker", workerName: w.name },
-            pluginActorId: opts.pluginActorId,
-            // Workers act on main by design (CMS_REQUIREMENTS §14.7).
-            invocation: { origin: "worker", actorId: opts.pluginActorId },
-            ...(target === "staging" ? { publicTarget: "staging" as const } : {}),
-          });
-          // A failed live run must not keep the staging run from its turn,
-          // and neither failure may pass unnoticed: the due-table row says so.
-          if (!r.ok) failures.push(`${target}: ${r.error.message}`);
-        }
-        if (failures.length > 0) {
-          throw new Error(`worker ${opts.pluginSlug}/${w.name} failed (${failures.join("; ")})`);
-        }
-      },
-    }));
-    this.#byPlugin.set(opts.pluginSlug, list);
+    const list: Entry[] = [];
+    const unscheduled: UnscheduledWorker[] = [];
+    for (const w of opts.workers) {
+      const parsed = parseWorkerCron(w.cron);
+      if (!parsed.ok) {
+        unscheduled.push({ workerName: w.name, cron: w.cron, reason: parsed.problem });
+        continue;
+      }
+      list.push({
+        pluginSlug: opts.pluginSlug,
+        workerName: w.name,
+        cron: w.cron,
+        operationName: w.operationName,
+        pattern: parsed.pattern,
+        run: workerRun(opts, w),
+      });
+    }
+    if (list.length > 0) this.#byPlugin.set(opts.pluginSlug, list);
+    // #1728 — kept (unscheduled-workers.ts) for the runtime record.
+    setUnscheduledWorkers(opts.pluginSlug, unscheduled);
+    return unscheduled;
+  }
+
+  /**
+   * #1728 — the workers of `pluginSlug` that are off the schedule because
+   * croner refused their cron; empty when every worker is registered.
+   */
+  unscheduled(pluginSlug: string): ReadonlyArray<UnscheduledWorker> {
+    return unscheduledWorkersOf(pluginSlug);
   }
 
   unschedulePlugin(pluginSlug: string): void {
     this.#byPlugin.delete(pluginSlug);
     this.#paused.delete(pluginSlug);
+    setUnscheduledWorkers(pluginSlug, []);
   }
 
   /**
@@ -140,6 +191,7 @@ class WorkerScheduler {
   shutdown(): void {
     this.#byPlugin.clear();
     this.#paused.clear();
+    clearUnscheduledWorkers();
   }
 }
 
