@@ -44,6 +44,7 @@ import {
   invalidateGatewaySettings,
   setGatewayAdapter,
 } from "../src/server.js";
+import { publishTestIndex, removeTestIndexes } from "./test-index.js";
 
 function required(name: string): string {
   const v = process.env[name];
@@ -102,6 +103,7 @@ async function restore(): Promise<void> {
     await tx`DELETE FROM list_types WHERE slug LIKE 'site-search-%'
              AND (plugin_id IS NULL OR plugin_id NOT IN (SELECT id FROM plugins))`;
   });
+  await removeTestIndexes(ADMIN_URL, [SLUG]);
   if (before)
     await onDb(ADMIN_URL, async (tx) => {
       const approved = JSON.stringify(before.approved_capabilities);
@@ -169,8 +171,6 @@ async function prepare(): Promise<DatabaseAdapter> {
   );
   // Release the main line as a Stage plus Publish live does, as loaded.
   await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, undefined, "as-loaded");
-  resetPluginHost();
-  await adminAdapter.close();
 
   // The release the index job would have built and Publish live copied.
   const live = scopedStore(directoryStore(join(root, "live")), `${SLUG}/pages`);
@@ -210,10 +210,18 @@ async function prepare(): Promise<DatabaseAdapter> {
     },
   );
   await Promise.all(writes);
-  await onDb(PUBLIC_ADMIN_URL, async (tx) => {
-    await tx`DELETE FROM published_collections`;
-    await tx`INSERT INTO published_collections (plugin_id, collection, release_key) VALUES (${pluginId}::uuid, 'pages', ${built.file})`;
-  });
+  await publishTestIndex(
+    { admin: ADMIN_URL, publicAdmin: PUBLIC_ADMIN_URL },
+    adminAdapter,
+    STAGING_ADAPTER,
+    {
+      pluginId,
+      collection: "pages",
+      releaseKey: built.file,
+    },
+  );
+  resetPluginHost();
+  await adminAdapter.close();
 
   const urls = gatewayDatabaseUrls({
     PUBLIC_DATABASE_URL: PUBLIC_URL,
@@ -285,6 +293,7 @@ function routes(pathname: string): Response {
 let gatewayAdapter: DatabaseAdapter;
 try {
   // What a crashed run left behind (orphaned list types, a published index).
+  await removeTestIndexes(ADMIN_URL, [SLUG]);
   await onDb(ADMIN_URL, async (tx) => {
     await tx`DELETE FROM list_types WHERE slug LIKE 'site-search-%'
              AND (plugin_id IS NULL OR plugin_id NOT IN (SELECT id FROM plugins))`;

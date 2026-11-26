@@ -13,6 +13,7 @@
  *   - a report whose sending failed is offered by the same button and is
  *     queued again (#982);
  *   - "Stop sending" takes back what has not left yet;
+ *   - the table has one status column, where the report went;
  *   - a suggestion (#1192) is labelled as one, not graded, and its payload
  *     carries `kind: "suggestion"`.
  *
@@ -152,6 +153,11 @@ test.describe("Detected bugs → Caelo team", () => {
     await card.getByRole("button", { name: "Stop sending" }).click();
     await expect(card).toContainText("Reports stay on this site");
     await expect(row(page, "E2E BF queued")).toContainText("This site only");
+    // One status column: where the report went, not a triage field that
+    // reads "new" on every row next to it.
+    await expect(page.getByRole("columnheader", { name: "Status" })).toHaveCount(1);
+    await expect(page.getByRole("columnheader", { name: "Caelo team" })).toHaveCount(0);
+    await expect(row(page, "E2E BF queued")).not.toContainText(/\bnew\b/);
   });
 
   test("a suggestion shows as one, and its payload says so (#1192)", async ({ page }) => {

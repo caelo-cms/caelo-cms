@@ -58,6 +58,20 @@ export interface ClusterRecord {
   lastIssueSyncAt: string | null;
   /** Install counts already announced in a milestone comment. */
   milestonesCommented: number[];
+  /**
+   * A stand-in for one report the matcher could not place yet (it was
+   * unavailable, see service.ts "Matcher outage"): it counts nothing, claims
+   * no fingerprint, never gets an issue and never enters the pool. Once the
+   * report is matched, `mergedInto` names its real cluster. Records stored
+   * before this field are never stand-ins.
+   */
+  awaitingMatch: boolean;
+  /**
+   * Ids of deferred reports already counted into this cluster, so a matching
+   * retried after a failed later step counts none twice. Records stored
+   * before this field have none.
+   */
+  countedDeferredReports: string[];
 }
 
 /**
@@ -135,6 +149,14 @@ export interface IntakeStore {
   clearIssuePending(kind: BugReportKind, clusterId: string): Promise<void>;
   /** Oldest queued cluster ids of a kind first. */
   pendingIssueClusters(kind: BugReportKind, limit: number): Promise<string[]>;
+  /**
+   * Queue a stored report the matcher could not place yet. Re-deferring keeps
+   * the original `since`, so reports are matched in the order they came.
+   */
+  deferReport(reportId: string, since: string): Promise<void>;
+  clearDeferredReport(reportId: string): Promise<void>;
+  /** Oldest deferred report ids first. */
+  deferredReports(limit: number): Promise<string[]>;
 }
 
 /** Every kind, in the order the intake drains their queues. */
@@ -184,7 +206,7 @@ export function clusterSummary(c: ClusterRecord): ClusterSummary {
  */
 export function poolFromClusters(clusters: ClusterRecord[], kind: BugReportKind): ClusterSummary[] {
   return clusters
-    .filter((c) => c.mergedInto === null && c.kind === kind)
+    .filter((c) => c.mergedInto === null && !c.awaitingMatch && c.kind === kind)
     .sort((a, b) => b.lastSeen.localeCompare(a.lastSeen) || a.id.localeCompare(b.id))
     .slice(0, MAX_CANDIDATES)
     .map(clusterSummary);
@@ -211,6 +233,8 @@ export class MemoryStore implements IntakeStore {
     defect: new Map(),
     suggestion: new Map(),
   };
+  /** Deferred report id → since. */
+  deferred = new Map<string, string>();
   #v = 0;
 
   async getInstallKey(id: string) {
@@ -290,6 +314,18 @@ export class MemoryStore implements IntakeStore {
   }
   async pendingIssueClusters(kind: BugReportKind, limit: number) {
     return [...this.pending[kind].entries()]
+      .sort((a, b) => a[1].localeCompare(b[1]) || a[0].localeCompare(b[0]))
+      .slice(0, limit)
+      .map(([id]) => id);
+  }
+  async deferReport(id: string, since: string) {
+    if (!this.deferred.has(id)) this.deferred.set(id, since);
+  }
+  async clearDeferredReport(id: string) {
+    this.deferred.delete(id);
+  }
+  async deferredReports(limit: number) {
+    return [...this.deferred.entries()]
       .sort((a, b) => a[1].localeCompare(b[1]) || a[0].localeCompare(b[0]))
       .slice(0, limit)
       .map(([id]) => id);
