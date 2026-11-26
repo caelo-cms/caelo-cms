@@ -84,10 +84,21 @@ padding:
 | 4 | 142.8 | 122.9 |
 | 8 | 100.3 | 124.1 |
 
-The M3 Pro has 5 performance and 6 efficiency cores. On a job with dedicated
-vCPUs, scaling should go on past 4 threads. At about 140 passages per second
-on 4 vCPUs, the first index of 50,000 pages (about 300,000 sections) takes
-about 35 minutes. After that, a Stage embeds only new and changed passages.
+The M3 Pro has 5 performance and 6 efficiency cores.
+
+**Correction (2026-11-26).** An earlier version of this page estimated the
+first index of 50,000 pages at about 35 minutes (300,000 sections at 140 a
+second). Measured on searchviu.com, both numbers were off: a real site has
+about 16 passages per page (5,152 for 320 pages), so 50,000 pages are about
+800,000 passages, and a 2-vCPU Cloud Run task embeds 10 to 19 of them a
+second, not 140 (and 6 to 8 while the thread count followed
+`os.availableParallelism()`, which rounds Cloud Run's quota of just under two
+CPUs down to one). One task would need 12 to 35 hours. The index job
+therefore spreads such a build over up to 32 tasks, about 20 to 40 minutes,
+and embeds only text it has not embedded before: after the first index, a
+Stage, a rebuild for a schema change and a Caelo update that re-renders every
+page embed only the passages whose text changed
+(`docs/plugin-collections.md`).
 
 ## WebAssembly under Bun
 

@@ -37,6 +37,7 @@ export {
   buildRelease,
   type CollectionChanges,
   DEFAULT_MERGE_POLICY,
+  locateDocs,
   lookupDocs,
   type MergePolicy,
   type OpenRelease,
@@ -94,6 +95,15 @@ export {
   scopedStore,
   storeFromUrl,
 } from "./store.js";
+export {
+  addReleaseVectors,
+  decodeVectorShard,
+  type EmbedTexts,
+  encodeVectorShard,
+  type PassageCounts,
+  type PassageVector,
+  VectorPool,
+} from "./vector-pool.js";
 export { binaryCode, type EncodedVector, encodeVector, normalize } from "./vectors.js";
 export { closestWord, editDistance } from "./vocabulary.js";
 export {

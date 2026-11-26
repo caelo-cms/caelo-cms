@@ -71,6 +71,7 @@ async function begin(subjectId: string, token = mintJobToken(), maxAttempts = 3)
   const r = await op<{
     started: boolean;
     attempt: number;
+    tasks?: number;
     reason?: string;
     lastError?: string | null;
     execution?: string | null;
@@ -235,6 +236,62 @@ describe("reporting_jobs.begin_attempt", () => {
         })
       ).finished,
     ).toBe(false);
+  });
+});
+
+describe("reporting_jobs.scale_out", () => {
+  // The index job asks for more tasks when one has too much to embed: the
+  // next attempt runs that many, at once, and a retry keeps the width.
+  it("ends the attempt now and makes the next ones run that many tasks", async () => {
+    const s = subject();
+    const first = await begin(s);
+    expect(first).toMatchObject({ started: true, attempt: 1, tasks: 1 });
+    const scaled = await op<{ scaled: boolean; tasks: number }>("reporting_jobs.scale_out", {
+      kind: KIND,
+      subjectId: s,
+      attempt: 1,
+      tasks: 8,
+      reason: "48,000 passages to embed: 8 tasks",
+    });
+    expect(scaled).toEqual({ scaled: true, tasks: 8 });
+    // The lease is released: the next attempt may begin without waiting.
+    expect(await row(s)).toMatchObject({ last_error: "48,000 passages to embed: 8 tasks" });
+    expect(((await row(s)) as { lease_left_s: number }).lease_left_s).toBeLessThanOrEqual(0);
+    expect(await begin(s)).toMatchObject({ started: true, attempt: 2, tasks: 8 });
+    // A retry after that attempt died runs as wide.
+    await expire(s);
+    expect(await begin(s)).toMatchObject({ started: true, attempt: 3, tasks: 8 });
+  });
+
+  it("never narrows the work, and a replaced attempt cannot scale it", async () => {
+    const s = subject();
+    await begin(s);
+    await op("reporting_jobs.scale_out", {
+      kind: KIND,
+      subjectId: s,
+      attempt: 1,
+      tasks: 8,
+      reason: "wide",
+    });
+    await begin(s);
+    expect(
+      await op("reporting_jobs.scale_out", {
+        kind: KIND,
+        subjectId: s,
+        attempt: 2,
+        tasks: 3,
+        reason: "narrower",
+      }),
+    ).toEqual({ scaled: true, tasks: 8 });
+    expect(
+      await op("reporting_jobs.scale_out", {
+        kind: KIND,
+        subjectId: s,
+        attempt: 1,
+        tasks: 16,
+        reason: "stale",
+      }),
+    ).toEqual({ scaled: false, tasks: 1 });
   });
 });
 

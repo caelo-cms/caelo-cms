@@ -22,6 +22,7 @@ import {
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { summarizeIndexProgress } from "../collections/progress.js";
 import {
   estimateStageEta,
   failedPhaseOf,
@@ -114,7 +115,8 @@ export const stageStatusOp = defineOperation({
       succeeded.length === 0
         ? []
         : ((await tx.execute(sql`
-            SELECT c.run_id::text AS run_id, p.slug AS plugin, c.collection, c.state, c.error
+            SELECT c.run_id::text AS run_id, p.slug AS plugin, c.collection, c.state, c.error,
+                   c.progress, now() AS now
               FROM collection_releases c JOIN plugins p ON p.id = c.plugin_id
              WHERE c.run_id = ANY(${uuidArray(succeeded)})
              ORDER BY p.slug, c.collection
@@ -124,6 +126,8 @@ export const stageStatusOp = defineOperation({
             collection: string;
             state: "pending" | "ready" | "failed";
             error: string | null;
+            progress: unknown;
+            now: string | Date;
           }[]);
     return ok({
       runs: rows.map((r) => {
@@ -133,12 +137,19 @@ export const stageStatusOp = defineOperation({
           ? run
           : {
               ...run,
-              searchIndexes: own.map((i) => ({
-                plugin: i.plugin,
-                collection: i.collection,
-                state: i.state,
-                error: i.error,
-              })),
+              searchIndexes: own.map((i) => {
+                const progress =
+                  i.state === "pending"
+                    ? summarizeIndexProgress(i.progress, Date.parse(iso(i.now)))
+                    : null;
+                return {
+                  plugin: i.plugin,
+                  collection: i.collection,
+                  state: i.state,
+                  error: i.error,
+                  ...(progress ? { progress } : {}),
+                };
+              }),
             };
       }),
     });

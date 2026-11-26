@@ -103,14 +103,17 @@ export const JOB_TIMING: Readonly<Record<ReportingJobKind, JobTiming>> = {
     maxRunSeconds: ADMIN_REQUEST_LIMIT_SECONDS + 5 * 60,
     reportTimeoutSeconds: ADMIN_REQUEST_LIMIT_SECONDS + 2 * 60,
   },
-  // A Stage's search index (#1648): seconds for a delta, up to about half an
-  // hour for the first index of 50,000 pages with vectors. A retry starts
-  // over from the run's change files, which stay until a release holds them.
+  // A Stage's search index (#1648): about a minute for a delta, 20 to 40
+  // minutes on 32 tasks for the first index of 50,000 pages with vectors
+  // (about 800,000 passages). A retry starts over from the run's change
+  // files, which stay until a release holds them, and keeps the vector
+  // shards a wide attempt wrote. Four attempts: asking for more tasks ends
+  // one, and two deaths after it are still retried.
   collection_index: {
     firstLeaseSeconds: 15 * 60,
     leaseSeconds: 10 * 60,
     renewEverySeconds: 60,
-    maxAttempts: 3,
+    maxAttempts: 4,
     maxRunSeconds: 60 * 60,
     reportTimeoutSeconds: 10 * 60,
   },
@@ -176,6 +179,14 @@ export function reportOrigin(raw: string): string {
   return u.origin;
 }
 
+/**
+ * The most tasks one attempt runs (Cloud Run `taskCount`). The index job
+ * asks for more than one when a build has more passages to embed than one
+ * task embeds in a few minutes; 32 tasks of 2 vCPU embed the about 800,000
+ * passages of a 50,000-page site's first index in about 25 minutes.
+ */
+export const MAX_JOB_TASKS = 32;
+
 /** What one job execution is told to do (its env, {@link JOB_ORDER_ENV_VAR}). */
 export const jobOrderSchema = z
   .object({
@@ -190,6 +201,13 @@ export const jobOrderSchema = z
     subjectId: z.string().uuid(),
     attempt: z.number().int().min(1).max(20),
     token: z.string().regex(TOKEN),
+    /**
+     * How many tasks this attempt runs, each with its own index
+     * (`CLOUD_RUN_TASK_INDEX`); absent: one. All of them share the token.
+     */
+    tasks: z.number().int().min(1).max(MAX_JOB_TASKS).optional(),
+    /** The most tasks the launcher could run an attempt with; absent: one (inside the admin). */
+    maxTasks: z.number().int().min(1).max(MAX_JOB_TASKS).optional(),
     /** The admin's origin behind IAP; absent when the job runs inside the admin. */
     adminUrl: z
       .string()

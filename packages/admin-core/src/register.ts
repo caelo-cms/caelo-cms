@@ -578,6 +578,7 @@ import {
   readReportingJobUploadOp,
   recordReportingJobLaunchOp,
   releaseReportingJobOp,
+  scaleOutReportingJobOp,
   sweepReportingJobsOp,
 } from "./ops/reporting_jobs.js";
 import {
@@ -1550,6 +1551,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(recordReportingJobLaunchOp);
   registry.register(authorizeReportingJobOp);
   registry.register(releaseReportingJobOp);
+  registry.register(scaleOutReportingJobOp);
   registry.register(finishReportingJobOp);
   registry.register(listExpiredReportingJobsOp);
   registry.register(putReportingJobUploadPartOp);

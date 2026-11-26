@@ -73,6 +73,19 @@ export const stageStatusRunSchema = z.object({
         collection: z.string(),
         state: z.enum(["pending", "ready", "failed"]),
         error: z.string().nullable(),
+        /**
+         * A pending index that embeds passages (semantic search): how many
+         * of how many, on how many tasks, and the time left from its pace
+         * (null before it can be measured). Absent while it embeds nothing.
+         */
+        progress: z
+          .object({
+            embedded: z.number().int().nonnegative(),
+            toEmbed: z.number().int().nonnegative(),
+            tasks: z.number().int().positive(),
+            remainingMs: z.number().int().nonnegative().nullable(),
+          })
+          .optional(),
       }),
     )
     .optional(),
@@ -108,6 +121,33 @@ export function describeStageEta(run: Pick<StageStatusRun, "eta" | "etaUnavailab
  * about 1 min 40 s left (from this run's pace)" or "Failed in generator
  * after 1 min 34 s: <reason>".
  */
+type SearchIndexStatus = NonNullable<StageStatusRun["searchIndexes"]>[number];
+
+/**
+ * A pending index's embedding for people and the AI: "semantic search
+ * 2,400 of 5,152 passages on 4 tasks, about 3 min left"; "" while it
+ * embeds nothing.
+ */
+export function describeSearchIndexProgress(p: SearchIndexStatus["progress"]): string {
+  if (!p || p.toEmbed === 0) return "";
+  const n = (v: number) => v.toLocaleString("en-US");
+  const tasks = p.tasks > 1 ? ` on ${p.tasks} tasks` : "";
+  const left =
+    p.embedded >= p.toEmbed
+      ? "writing the index"
+      : p.remainingMs === null
+        ? "time left not measured yet"
+        : `about ${formatStageDuration(p.remainingMs)} left`;
+  return `semantic search ${n(p.embedded)} of ${n(p.toEmbed)} passages${tasks}, ${left}`;
+}
+
+/** One pending index: "site-search/pages: semantic search 2,400 of 5,152 passages …". */
+export function describePendingSearchIndex(i: SearchIndexStatus): string {
+  const name = `${i.plugin}/${i.collection}`;
+  const progress = describeSearchIndexProgress(i.progress);
+  return progress ? `${name}: ${progress}` : name;
+}
+
 /** The search indexes' part of a succeeded Stage's line ("" without any). */
 function describeSearchIndexes(run: StageStatusRun): string {
   const indexes = run.searchIndexes ?? [];
@@ -117,8 +157,13 @@ function describeSearchIndexes(run: StageStatusRun): string {
   if (failed.length > 0)
     return `; search index FAILED (${failed.map((i) => `${i.plugin}/${i.collection}: ${i.error ?? "no reason recorded"}`).join("; ")}) — Publish live is refused until a Stage builds it`;
   if (pending.length > 0)
-    return `; search index still building (${pending.map((i) => `${i.plugin}/${i.collection}`).join(", ")}) — Publish live waits for it`;
+    return `; search index still building (${pending.map(describePendingSearchIndex).join("; ")}) — Publish live waits for it`;
   return "; search index ready";
+}
+
+/** Whether a succeeded Stage still waits for a search index (Publish live is closed until then). */
+export function searchIndexPending(run: StageStatusRun): boolean {
+  return (run.searchIndexes ?? []).some((i) => i.state === "pending");
 }
 
 export function describeStageRun(run: StageStatusRun): string {
