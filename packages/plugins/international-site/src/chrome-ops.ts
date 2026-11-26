@@ -368,7 +368,10 @@ export async function resolveChromeVariants(
                 ),
               }
             : (v.values ?? {});
-        perPage[pl.key] = { ...(moduleId ? { moduleId } : {}), values };
+        perPage[pl.key] = {
+          ...(moduleId ? { moduleId } : {}),
+          values: moduleId ? values : asPlacementData(pl.fields, values),
+        };
       } else if (
         translatableStrings(
           await fieldsOf(pl, key),
@@ -386,6 +389,52 @@ export async function resolveChromeVariants(
     if (Object.keys(perPage).length > 0) resolutions[page.pageId] = perPage;
   }
   return { resolutions };
+}
+
+/**
+ * #1729 — a variant's values as the host takes them (§4.5 of
+ * docs/dev/external-plugin-brokers.md): only the fields the placement's
+ * module declares (a field removed since the translation would otherwise
+ * be refused as undeclared), and a text field as plain text. The host
+ * escapes a text value a plugin hands a page, so a translation that kept
+ * the source's character references (`&amp;`) would show them literally;
+ * decoded here, it renders exactly as the source does.
+ */
+export function asPlacementData(
+  fields: ReadonlyArray<{ readonly name: string; readonly kind: string }>,
+  values: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const f of fields) {
+    if (!Object.hasOwn(values, f.name)) continue;
+    const v = values[f.name];
+    out[f.name] = f.kind === "text" && typeof v === "string" ? decodeCharacterReferences(v) : v;
+  }
+  return out;
+}
+
+const NAMED_REFERENCES: Readonly<Record<string, string>> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: "\u00a0",
+};
+
+/** `&amp;`, `&#39;`, `&#x2013;` and the other XML references as the characters they name. */
+function decodeCharacterReferences(text: string): string {
+  return text.replace(/&(#x[0-9a-fA-F]{1,6}|#[0-9]{1,7}|[a-zA-Z]+);/g, (whole, ref: string) => {
+    if (ref.startsWith("#x") || ref.startsWith("#X")) {
+      const code = Number.parseInt(ref.slice(2), 16);
+      return code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+    }
+    if (ref.startsWith("#")) {
+      const code = Number.parseInt(ref.slice(1), 10);
+      return code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+    }
+    return NAMED_REFERENCES[ref] ?? whole;
+  });
 }
 
 // ---------------------------------------------------------------------------

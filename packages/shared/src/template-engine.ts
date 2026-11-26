@@ -103,6 +103,7 @@ import { type SourceDef, sourceDefSchema } from "./lists/list-type.js";
 import { PAGE_KEY_UNKNOWN, PAGE_PATH_UNKNOWN } from "./lists/page-paths.js";
 import { PAGE_PROP_UNKNOWN } from "./lists/page-props.js";
 import type { ListPaginationSettings } from "./lists/pagination.js";
+import { refusedPluginValueMarker } from "./lists/plugin-values.js";
 import type { ListHolder, ListPageContext } from "./lists/resolve.js";
 import { parseLinkFieldValue } from "./lists/resolve-values.js";
 import { stripCdataGuards } from "./strip-cdata.js";
@@ -359,7 +360,23 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   const missing: string[] = [];
   const fieldByName = new Map<string, TemplateField>();
   for (const f of input.fields) fieldByName.set(f.name, f);
-  const cvs = input.contentValues ?? {};
+  // #1729 — a value a plugin handed the placement that the host refused
+  // (`plugin-value-refused`, §4.5): recorded as a render failure, which
+  // blocks Publish live, whether the HTML shows the field or not. Its spot
+  // stays raw — never the field's default, which would be a silent
+  // fallback — and a list renders no entries.
+  const refusedFields = new Set<string>();
+  const cvs: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(input.contentValues ?? {})) {
+    const marker = refusedPluginValueMarker(v);
+    if (marker === null) {
+      cvs[k] = v;
+      continue;
+    }
+    missing.push(marker);
+    refusedFields.add(k.toLowerCase());
+    if (SECTION_KINDS.has(fieldByName.get(k)?.kind ?? "text")) cvs[k] = [];
+  }
   const partialSource = input.partials ?? {};
   const partials: PartialResolver =
     typeof partialSource === "function"
@@ -431,7 +448,7 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   }
   for (const f of input.fields) {
     const lower = f.name.toLowerCase();
-    if (lower in view) continue;
+    if (lower in view || refusedFields.has(lower)) continue;
     if (SECTION_KINDS.has(f.kind) || f.kind === "module") continue;
     if (f.default !== undefined && f.default !== null) view[lower] = f.default;
   }
