@@ -51,6 +51,7 @@ import {
 } from "./published-state.js";
 import type { PluginRenderFailure } from "./render-failures.js";
 import { recordPluginError } from "./runtime-health.js";
+import { SANDBOX_KIND, type SandboxKind, type SandboxKindCarrier } from "./sandbox-kind.js";
 import { consumeExternalToolApproval } from "./tool-approval-binding.js";
 import type { AIProvider } from "./types.js";
 
@@ -327,6 +328,13 @@ export interface RunPluginOperationOpts {
    * attaches no other handle (capabilities.ts).
    */
   readonly publicTarget?: "live" | "staging";
+  /**
+   * #1729 — what a sandboxed (runtime-installed) plugin's call is for, when
+   * the origin alone does not say it: a change-journal batch or a rebuild
+   * chunk. Picks its slot pool and time budget (sandbox-kind.ts). Ignored
+   * for a plugin that runs in-process.
+   */
+  readonly sandboxKind?: SandboxKind;
 }
 
 /**
@@ -824,6 +832,10 @@ async function runPluginOperationNow(
       ok: false,
       error: { kind: "OperationNotPublic", message: `"${opts.operationName}" has no declared run` },
     };
+  }
+  if (opts.sandboxKind) {
+    const marked: SandboxKindCarrier = { [SANDBOX_KIND]: opts.sandboxKind };
+    ctx = Object.assign({}, ctx, marked);
   }
   try {
     const value = await handler(

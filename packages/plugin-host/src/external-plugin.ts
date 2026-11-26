@@ -18,7 +18,8 @@ import { z } from "zod";
 import type { PluginHostInfra } from "./dispatch.js";
 import { assertExternalApproval, type ExternalApproval } from "./external-authorization.js";
 import { publicOperationFromManifest } from "./manifest-definition.js";
-import { runSandbox } from "./sandbox-runtime.js";
+import { SANDBOX_KIND, type SandboxKind, type SandboxKindCarrier } from "./sandbox-kind.js";
+import { runSandbox, SANDBOX_AI_INTERACTIVE_MS } from "./sandbox-runtime.js";
 
 /** Build a definition containing host-generated handlers for only the reviewed operation names. */
 export function externalPluginDefinition(opts: {
@@ -55,16 +56,23 @@ export function externalPluginDefinition(opts: {
       { pluginId: opts.pluginId, externalApproval: opts.approval },
       opts.infra,
     );
-  const invoke = (operation: string) => (context: PluginContext, args: unknown) =>
-    runSandbox({
+  // An interactive call that may spend the install's AI waits on the model.
+  const spendsAi = (manifest.requestedCapabilities ?? []).some(
+    (c) => c === "image_generation" || c === "ai_provider",
+  );
+  const invoke = (operation: string) => (context: PluginContext, args: unknown) => {
+    const kind = sandboxKindOf(context);
+    return runSandbox({
       source: opts.source,
       manifest,
       operation,
       args,
       context,
       authorize,
-      timeoutMs: manifest.requestedCapabilities?.includes("image_generation") ? 240_000 : 30_000,
+      kind,
+      ...(kind === "interactive" && spendsAi ? { timeoutMs: SANDBOX_AI_INTERACTIVE_MS } : {}),
     });
+  };
   return Object.freeze({
     ...externalDeclarations(manifest),
     operations: Object.freeze(
@@ -74,6 +82,27 @@ export function externalPluginDefinition(opts: {
       ? { staticRender: invoke("$staticRender") as PluginDefinition["staticRender"] }
       : {}),
   });
+}
+
+/**
+ * What a call is for (#1729 Q10): the caller's explicit kind (a journal
+ * batch, a rebuild chunk), else the invocation's origin. A render with a
+ * `renderId` is one editor preview pass; any other render (a build, a Stage
+ * audit, a link migration) has the build budget.
+ */
+export function sandboxKindOf(context: PluginContext): SandboxKind {
+  const explicit = (context as PluginContext & SandboxKindCarrier)[SANDBOX_KIND];
+  if (explicit) return explicit;
+  switch (context.invocation.origin) {
+    case "worker":
+      return "worker";
+    case "batch":
+      return "batch";
+    case "render":
+      return context.invocation.renderId ? "preview" : "build";
+    default:
+      return "interactive";
+  }
 }
 
 /** The manifest's declarations, as a definition carries them: data only, no operation. */

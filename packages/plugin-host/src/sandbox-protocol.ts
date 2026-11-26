@@ -13,6 +13,12 @@ export const SANDBOX_CALL_LIMIT = 1024;
  */
 export const SANDBOX_BATCH_CALL_LIMIT = 200_000;
 
+/**
+ * SDK calls one background run (a worker, a journal batch, a rebuild chunk)
+ * may make (#1729): it pages through rows; its time budget bounds it.
+ */
+export const SANDBOX_BACKGROUND_CALL_LIMIT = 20_000;
+
 /** Only these SDK calls may cross the process boundary. */
 export const sandboxMethod = z.enum([
   "fonts.find",

@@ -382,8 +382,15 @@ export {
   refreshRuntimeHeartbeat,
   stopRuntimeHeartbeat,
 } from "./runtime-health.js";
+export type { SandboxKind } from "./sandbox-kind.js";
 export { SANDBOX_BATCH_CALL_LIMIT, sandboxMethod } from "./sandbox-protocol.js";
-export { brokerSandboxCall, runSandbox } from "./sandbox-runtime.js";
+export {
+  brokerSandboxCall,
+  runSandbox,
+  SANDBOX_BUDGETS,
+  SANDBOX_POOLS,
+  sandboxSlotsInUse,
+} from "./sandbox-runtime.js";
 export {
   pluginWorkerScheduler,
   type ScheduledWorker,

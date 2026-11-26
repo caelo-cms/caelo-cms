@@ -13,7 +13,10 @@ import {
 } from "@caelo-cms/plugin-sdk";
 import { z } from "zod";
 import { sandboxEntrySource, sandboxPreludeSource } from "./sandbox-entry.js";
+import type { SandboxKind } from "./sandbox-kind.js";
 import {
+  SANDBOX_BACKGROUND_CALL_LIMIT,
+  SANDBOX_BATCH_CALL_LIMIT,
   SANDBOX_CALL_LIMIT,
   SANDBOX_MESSAGE_BYTES,
   sandboxLines,
@@ -28,10 +31,129 @@ export interface SandboxInvocation {
   readonly args: unknown;
   readonly context: PluginContext;
   readonly authorize: () => Promise<void>;
+  /** What the call is for: its slot pool, time budget and call limit (default `interactive`). */
+  readonly kind?: SandboxKind;
+  /** Overrides the kind's time budget (a batch's `maxRunSeconds`, a probe's own limit). */
   readonly timeoutMs?: number;
   readonly denySdkCalls?: boolean;
-  /** SDK calls this invocation may make (default {@link SANDBOX_CALL_LIMIT}). */
+  /** Overrides the kind's SDK call limit. */
   readonly callLimit?: number;
+}
+
+type SandboxPoolName = "interactive" | "background";
+
+interface SandboxBudget {
+  readonly pool: SandboxPoolName;
+  readonly timeoutMs: number;
+  readonly callLimit: number;
+}
+
+/**
+ * Per kind: the pool, the time one invocation may take and the SDK calls it
+ * may make (Q10's table). A background run pages through its data in many
+ * calls; its time budget, not the call count, bounds it.
+ */
+export const SANDBOX_BUDGETS: Readonly<Record<SandboxKind, SandboxBudget>> = Object.freeze({
+  /** Chat, Owner panel, approved tool calls, activation, system calls. */
+  interactive: { pool: "interactive", timeoutMs: 30_000, callLimit: SANDBOX_CALL_LIMIT },
+  /** One composition point (and chunk) of an editor preview pass. */
+  preview: { pool: "interactive", timeoutMs: 5_000, callLimit: SANDBOX_CALL_LIMIT },
+  /** A render outside a preview pass: a build, a Stage audit, a link migration. */
+  build: { pool: "interactive", timeoutMs: 60_000, callLimit: SANDBOX_CALL_LIMIT },
+  /** One worker run, inside the tick's 5-minute lease. */
+  worker: { pool: "background", timeoutMs: 240_000, callLimit: SANDBOX_BACKGROUND_CALL_LIMIT },
+  /** One change-journal batch. */
+  journal: { pool: "background", timeoutMs: 60_000, callLimit: SANDBOX_BACKGROUND_CALL_LIMIT },
+  /** One resumable rebuild chunk. */
+  rebuild: { pool: "background", timeoutMs: 120_000, callLimit: SANDBOX_BACKGROUND_CALL_LIMIT },
+  /** A batch operation; the caller sets the budget from its `maxRunSeconds`. */
+  batch: { pool: "background", timeoutMs: 240_000, callLimit: SANDBOX_BATCH_CALL_LIMIT },
+});
+
+/** An interactive call that may spend the install's AI (`ai_provider`, `image_generation`). */
+export const SANDBOX_AI_INTERACTIVE_MS = 240_000;
+
+/**
+ * Slots per pool and how long a call waits for one before `SandboxBusy`.
+ * Each child is a Deno process with a 256 MB heap, so the pools bound the
+ * memory and CPU sandboxed plugins take from the admin at once.
+ */
+export const SANDBOX_POOLS: Readonly<
+  Record<SandboxPoolName, { readonly slots: number; readonly waitMs: number }>
+> = Object.freeze({
+  interactive: { slots: 4, waitMs: 2_000 },
+  background: { slots: 2, waitMs: 30_000 },
+});
+
+/**
+ * A bounded set of sandbox slots. A call waits at most `waitMs` for one;
+ * the wait is a timer within the caller's own request, never background
+ * work (CLAUDE.md §11.B).
+ */
+class SlotPool {
+  #active = 0;
+  readonly #waiting: Array<{ readonly grant: () => void }> = [];
+  constructor(
+    readonly name: SandboxPoolName,
+    readonly slots: number,
+    readonly waitMs: number,
+  ) {}
+
+  /** Resolves once the caller holds a slot; throws `SandboxBusy` after `waitMs`. */
+  acquire(): Promise<void> {
+    if (this.#active < this.slots) {
+      this.#active++;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve, reject) => {
+      const entry = {
+        grant: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+      };
+      const timer = setTimeout(() => {
+        const at = this.#waiting.indexOf(entry);
+        if (at >= 0) this.#waiting.splice(at, 1);
+        reject(
+          new Error(
+            `SandboxBusy: all ${this.slots} ${this.name} sandbox slots stayed taken for ${this.waitMs / 1000} s; retry once another plugin call has finished`,
+          ),
+        );
+      }, this.waitMs);
+      this.#waiting.push(entry);
+    });
+  }
+
+  /** Hands the slot to the next waiter, or frees it. */
+  release(): void {
+    const next = this.#waiting.shift();
+    if (next) next.grant();
+    else this.#active--;
+  }
+
+  /** Slots in use now (tests). */
+  get active(): number {
+    return this.#active;
+  }
+}
+
+const pools: Readonly<Record<SandboxPoolName, SlotPool>> = {
+  interactive: new SlotPool(
+    "interactive",
+    SANDBOX_POOLS.interactive.slots,
+    SANDBOX_POOLS.interactive.waitMs,
+  ),
+  background: new SlotPool(
+    "background",
+    SANDBOX_POOLS.background.slots,
+    SANDBOX_POOLS.background.waitMs,
+  ),
+};
+
+/** Slots in use per pool (tests and plugin health). */
+export function sandboxSlotsInUse(): Readonly<Record<SandboxPoolName, number>> {
+  return { interactive: pools.interactive.active, background: pools.background.active };
 }
 
 const table = z
@@ -294,7 +416,39 @@ async function broker(ctx: PluginContext, method: string, args: unknown[]): Prom
 /** The modules `caelo:entry` imports; nothing else may resolve into the namespace. */
 const BOOTSTRAP_IMPORTS: ReadonlySet<string> = new Set(["caelo:prelude", "caelo:plugin"]);
 
+/**
+ * Bundles by the SHA-256 of their source (#1729 §4.4). Validation and
+ * bundling are pure functions of the source, so a cached bundle is exactly
+ * what a fresh build would produce; the child is still new per call. Kept
+ * small: an installed plugin's source can be megabytes.
+ */
+const BUNDLE_CACHE_ENTRIES = 16;
+const bundles = new Map<string, Promise<string>>();
+
 async function bundle(source: string): Promise<string> {
+  const key = new Bun.CryptoHasher("sha256").update(source).digest("hex");
+  const cached = bundles.get(key);
+  if (cached) {
+    // Most recently used last, so the oldest is evicted first.
+    bundles.delete(key);
+    bundles.set(key, cached);
+    return cached;
+  }
+  const built = validateAndBundle(source);
+  bundles.set(key, built);
+  // A failed build is not kept: the next call reports its own reason.
+  built.catch(() => {
+    if (bundles.get(key) === built) bundles.delete(key);
+  });
+  while (bundles.size > BUNDLE_CACHE_ENTRIES) {
+    const oldest = bundles.keys().next().value;
+    if (oldest === undefined) break;
+    bundles.delete(oldest);
+  }
+  return built;
+}
+
+async function validateAndBundle(source: string): Promise<string> {
   const failures = validateSource({ source, filename: "external-plugin.ts" });
   if (failures.length)
     throw new Error(`SandboxSourceRejected: ${failures.map((f) => f.kind).join(", ")}`);
@@ -377,7 +531,6 @@ export async function buildIsolatedBundle(source: string): Promise<string> {
   return output.text();
 }
 
-let running = 0;
 /** Execute one operation with no filesystem, network, environment, subprocess or FFI permissions. */
 export function runSandbox(invocation: SandboxInvocation): Promise<unknown> {
   return runSandboxWithBundler(invocation, bundle);
@@ -445,8 +598,10 @@ export async function runSandboxWithBundler(
   invocation: SandboxInvocation,
   build: (source: string) => Promise<string>,
 ): Promise<unknown> {
-  if (running >= 4) throw new Error("SandboxBusy: retry after another invocation completes");
-  running++;
+  const budget = SANDBOX_BUDGETS[invocation.kind ?? "interactive"];
+  const callLimit = invocation.callLimit ?? budget.callLimit;
+  const pool = pools[budget.pool];
+  await pool.acquire();
   let directory: string | undefined;
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -505,7 +660,7 @@ export async function runSandboxWithBundler(
       timedOut = true;
       proc.kill("SIGKILL");
       rejectTimeout(new Error("SandboxTimeout"));
-    }, invocation.timeoutMs ?? 30_000);
+    }, invocation.timeoutMs ?? budget.timeoutMs);
     const bounded = async <T>(work: Promise<T>): Promise<T> => {
       outstanding = work;
       try {
@@ -539,7 +694,7 @@ export async function runSandboxWithBundler(
       hasPrivateFiles: Boolean((context as PluginContextTier1).privateFiles),
       hasSiteMedia: Boolean((context as PluginContextTier1).siteMedia),
       hasConsentPurposes: Boolean((context as PluginContextTier1).consentPurposes),
-      callLimit: invocation.callLimit ?? SANDBOX_CALL_LIMIT,
+      callLimit,
       hasConfig: Boolean(context.config),
       collections: Object.keys(context.collections ?? {}),
       hasChatTools: Boolean(context.chatTools),
@@ -564,7 +719,7 @@ export async function runSandboxWithBundler(
         await bounded(invocation.authorize());
         return message.value;
       }
-      if (message.id !== nextCall++ || nextCall > (invocation.callLimit ?? SANDBOX_CALL_LIMIT))
+      if (message.id !== nextCall++ || nextCall > callLimit)
         throw new Error("SandboxCallLimitOrSequence");
       await bounded(invocation.authorize());
       if (invocation.denySdkCalls) throw new Error("SandboxInstallationCannotCallSdk");
@@ -595,13 +750,9 @@ export async function runSandboxWithBundler(
     // reserved so repeatedly timing out cannot accumulate unbounded host work.
     if (outstanding)
       void outstanding.then(
-        () => {
-          running--;
-        },
-        () => {
-          running--;
-        },
+        () => pool.release(),
+        () => pool.release(),
       );
-    else running--;
+    else pool.release();
   }
 }
