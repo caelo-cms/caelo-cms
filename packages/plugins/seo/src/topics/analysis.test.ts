@@ -44,10 +44,10 @@ const rows: PageIndexRow[] = [
 ];
 
 const terms = [
-  { itemId: "seo", name: "SEO", topicPage: null },
-  { itemId: "jsonld", name: "JSON-LD", topicPage: "/topics/json-ld" },
-  { itemId: "seo-tools", name: "SEO Tools", topicPage: null },
-  { itemId: "seo-tool", name: "SEO-Tool", topicPage: null },
+  { itemId: "seo", name: "SEO", topicPage: null, topicPageId: null },
+  { itemId: "jsonld", name: "JSON-LD", topicPage: "/topics/json-ld", topicPageId: null },
+  { itemId: "seo-tools", name: "SEO Tools", topicPage: null, topicPageId: null },
+  { itemId: "seo-tool", name: "SEO-Tool", topicPage: null, topicPageId: null },
 ];
 
 describe("topic terms (#1759)", () => {
@@ -76,9 +76,9 @@ describe("topic terms (#1759)", () => {
       nearDuplicates(
         termUse(
           [
-            { itemId: "x", name: "Crawling", topicPage: "/topics/crawling" },
-            { itemId: "y", name: "Crawlling", topicPage: null },
-            { itemId: "z", name: "Ads", topicPage: null },
+            { itemId: "x", name: "Crawling", topicPage: "/topics/crawling", topicPageId: null },
+            { itemId: "y", name: "Crawlling", topicPage: null, topicPageId: null },
+            { itemId: "z", name: "Ads", topicPage: null, topicPageId: null },
           ],
           new Map(),
           5,

@@ -20,6 +20,8 @@ export interface TermInfo {
   readonly name: string;
   /** The term's overview page as a path, or null: a term without one has no URL. */
   readonly topicPage: string | null;
+  /** That page's id when the term links it as a page (the usual case), else null. */
+  readonly topicPageId: string | null;
 }
 
 /** A term with its use on the published site. */

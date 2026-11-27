@@ -44,18 +44,13 @@ export const TOPIC_LINK_HINTS: SeoWriteHintRule = {
     );
     const named = topics.filter((t) => mentions(text, t.name)).slice(0, 8);
     if (named.length === 0) return [];
-    // The stored write names pages by reference; the topic pages are read as paths.
-    const pages = await (ctx.cms?.call<
-      { paths: string[] },
-      { pages: { id: string; currentPath: string }[] }
-    >("pages.list", { paths: named.map((t) => t.topicPage as string) }) ??
-      Promise.resolve({ pages: [] }));
-    const idOf = new Map(pages.pages.map((p) => [p.currentPath.replace(/\/+$/, "") || "/", p.id]));
     const hints: string[] = [];
     for (const t of named) {
       const path = (t.topicPage as string).replace(/\/+$/, "") || "/";
-      const id = idOf.get(path);
-      if (refs.includes(path) || (id !== undefined && refs.includes(`caelo:page/${id}`))) continue;
+      // A stored write links pages by reference; a hand-written path counts too.
+      if (refs.includes(`"${path}"`) || refs.includes(`"${path}/"`)) continue;
+      if (t.topicPageId !== null && refs.toLowerCase().includes(`caelo:page/${t.topicPageId}`))
+        continue;
       hints.push(
         `The text mentions "${t.name}"; its topic page ${path} covers it — link it where the text names it (suggest_internal_links lists more pages to link).`,
       );

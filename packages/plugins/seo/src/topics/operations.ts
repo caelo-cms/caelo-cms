@@ -47,12 +47,21 @@ export interface Vocabulary {
   readonly terms: readonly TermInfo[];
 }
 
-function flatten(items: readonly ListItemRead[], out: TermInfo[] = []): TermInfo[] {
+const PAGE_REF_RE = /^caelo:page\/([0-9a-f-]{36})$/i;
+
+/** A term with its overview link as stored: a page reference, a path, or none. */
+interface RawTerm {
+  readonly itemId: string;
+  readonly name: string;
+  readonly href: string | null;
+}
+
+function flatten(items: readonly ListItemRead[], out: RawTerm[] = []): RawTerm[] {
   for (const item of items) {
     const name = typeof item.values.name === "string" ? item.values.name : "";
     const landing = item.values.landing_page as { href?: unknown } | undefined;
     const href = typeof landing?.href === "string" && landing.href !== "" ? landing.href : null;
-    out.push({ itemId: item.id, name, topicPage: href });
+    out.push({ itemId: item.id, name, href });
     flatten(item.children ?? [], out);
   }
   return out;
@@ -60,15 +69,53 @@ function flatten(items: readonly ListItemRead[], out: TermInfo[] = []): TermInfo
 
 /** Every vocabulary of the site with its terms (the caller's view). */
 export async function readVocabularies(ctx: Ctx): Promise<Vocabulary[]> {
-  const r = await cmsOf(ctx).call<
+  const cms = cmsOf(ctx);
+  const r = await cms.call<
     { role: "vocabulary"; includeItems: true },
     { lists: { id: string; slug: string; name: string; items?: ListItemRead[] }[] }
   >("lists.list", { role: "vocabulary", includeItems: true });
-  return r.lists.map((l) => ({
+  const lists = r.lists.map((l) => ({ ...l, raw: flatten(l.items ?? []) }));
+  // A term's overview link is stored as a page reference (internal links are
+  // references, docs/internal-links.md); the tools name the page by its path.
+  const ids = [
+    ...new Set(
+      lists.flatMap((l) =>
+        l.raw.flatMap((t) => {
+          const m = t.href ? PAGE_REF_RE.exec(t.href) : null;
+          return m ? [(m[1] as string).toLowerCase()] : [];
+        }),
+      ),
+    ),
+  ];
+  const pages =
+    ids.length === 0
+      ? []
+      : (
+          await cms.call<
+            { includeDeleted: false; pageIds: string[] },
+            { pages: { id: string; currentPath: string }[] }
+          >("pages.list", { includeDeleted: false, pageIds: ids })
+        ).pages;
+  const pathOf = new Map(pages.map((p) => [p.id.toLowerCase(), p.currentPath]));
+  const resolve = (href: string | null): Pick<TermInfo, "topicPage" | "topicPageId"> => {
+    const m = href ? PAGE_REF_RE.exec(href) : null;
+    if (m) {
+      const id = (m[1] as string).toLowerCase();
+      // A deleted overview page leaves the term without one.
+      const path = pathOf.get(id);
+      return path === undefined
+        ? { topicPage: null, topicPageId: null }
+        : { topicPage: path, topicPageId: id };
+    }
+    return href?.startsWith("/")
+      ? { topicPage: href, topicPageId: null }
+      : { topicPage: null, topicPageId: null };
+  };
+  return lists.map((l) => ({
     id: l.id,
     slug: l.slug,
     name: l.name,
-    terms: flatten(l.items ?? []),
+    terms: l.raw.map((t) => ({ itemId: t.itemId, name: t.name, ...resolve(t.href) })),
   }));
 }
 
