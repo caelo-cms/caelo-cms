@@ -943,8 +943,7 @@ export function moduleValueTags(
     if (close !== undefined) {
       // An inverted section renders its body without entries: module fields.
       const kind = kindOf((t.name.split(".")[0] as string).toLowerCase());
-      const entries =
-        kind === undefined || (ENTRY_SCOPE_KINDS.has(kind) && !t.name.includes("."));
+      const entries = kind === undefined || (ENTRY_SCOPE_KINDS.has(kind) && !t.name.includes("."));
       if (t.sigil === "#" && entries) i = close;
       continue;
     }
