@@ -72,6 +72,7 @@ export function validateInstallationPolicy(manifest: PluginManifest): void {
   requireCapability(manifest.hasContentVariants, "content_variants");
   requireCapability(manifest.hasLinkResolve, "link_resolve");
   requireCapability(manifest.hasShareImages, "head_contributions");
+  requireCapability(manifest.hasStructuredData === true, "structured_data");
   requireCapability(Boolean(manifest.skills?.length), "companion_skills");
   for (const capability of requested) {
     if (!manifest.capabilityReasons?.[capability])

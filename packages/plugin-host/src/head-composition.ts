@@ -339,7 +339,7 @@ async function askChunk(
  * agree byte for byte (#590). A page the view does not hold is absent.
  * O(targets): `pages.public_url_pages` reads them by id.
  */
-async function resolveTargetUrls(
+export async function resolveTargetUrls(
   pageIds: readonly string[],
   opts: PublicUrlContext & RenderScope,
 ): Promise<Map<string, string>> {

@@ -80,6 +80,12 @@ import {
 import { type PublicUrlContext, type PublicUrlPage, resolvePublicPageUrls } from "./public-urls.js";
 import { recordPluginError } from "./runtime-health.js";
 import { type ResolvedShareImages, resolveShareImages } from "./share-images.js";
+import {
+  type CollectedStructuredData,
+  collectStructuredData,
+  hasStructuredDataContributors,
+  type StructuredDataInput,
+} from "./structured-data.js";
 
 type ContentVariantPages = Parameters<typeof resolveContentVariants>[0];
 type DeferralCandidates = Parameters<typeof resolveModuleDeferrals>[0];
@@ -135,6 +141,13 @@ export interface BuildPluginServices {
   ): Promise<CollectedContributions>;
   /** #1452 — plugin default share images of pages without their own. */
   resolveShareImages(pageIds: string[]): Promise<ResolvedShareImages>;
+  /** #1753 — whether any running plugin adds structured data (else the build sends no page records). */
+  hasStructuredDataContributors(): Promise<boolean>;
+  /** #1753 — the plugins' checked parts of these pages' JSON-LD graphs. */
+  collectStructuredData(
+    input: StructuredDataInput,
+    urlContext: PublicUrlContext,
+  ): Promise<CollectedStructuredData>;
   resolvePublicPageUrls(
     pages: PublicUrlPage[],
     urlContext: PublicUrlContext,
@@ -195,6 +208,9 @@ export const localBuildPluginServices: BuildPluginServices = {
   collectContributions: (pageIds, urlContext) =>
     collectContributions(pageIds, { ...MAIN_RENDER, ...urlContext }),
   resolveShareImages: (pageIds) => resolveShareImages(pageIds, MAIN_RENDER),
+  hasStructuredDataContributors: async () => hasStructuredDataContributors(),
+  collectStructuredData: (input, urlContext) =>
+    collectStructuredData(input, { ...MAIN_RENDER, ...urlContext }),
   resolvePublicPageUrls: (pages, urlContext) =>
     resolvePublicPageUrls(pages, urlContext, MAIN_RENDER),
   collectBuildAssets: () => collectBuildAssets(MAIN_RENDER),
@@ -294,6 +310,8 @@ export const BUILD_PLUGIN_METHODS = [
   "resolveLinkVariants",
   "collectContributions",
   "resolveShareImages",
+  "hasStructuredDataContributors",
+  "collectStructuredData",
   "resolvePublicPageUrls",
   "collectBuildAssets",
   "staticRenderPlugins",

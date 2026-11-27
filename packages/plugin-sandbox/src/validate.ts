@@ -350,6 +350,12 @@ export function validateManifest(
         hint: "the plugin answers the `list-resolve` point but does not request the `list_resolve` capability. Add it to `requestedCapabilities` (or drop listResolveOperation).",
       });
     }
+    if (m.hasStructuredData && !caps.has("structured_data")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "the plugin answers the `structured-data` point but does not request the `structured_data` capability. Add it to `requestedCapabilities` (or drop structuredDataOperation).",
+      });
+    }
   }
 
   // A runtime-authored plugin submitted without capabilities

@@ -121,4 +121,9 @@ export const PLUGIN_CAPABILITY_INFO: Readonly<Record<PluginCapability, PluginCap
     allows:
       "Run its own tasks in a separate cloud job, with the permissions it already has and nothing more, for example to index every page at once.",
   },
+  structured_data: {
+    label: "Structured data",
+    allows:
+      "Describe your pages to search engines in their structured data (an article and its authors, a person, a list of articles). Caelo checks every value and writes it; the plugin cannot add other markup.",
+  },
 };
