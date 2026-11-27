@@ -18,6 +18,7 @@ import { SEO_WRITE_HINT_RULES } from "./hints/index.js";
 import { ALT_TEXT_HINT_RULE } from "./rules/alt-text-hints.js";
 import { CRAWLER_POLICY_AUDIT_RULE, CRAWLER_POLICY_HINT_RULE } from "./rules/crawler-operations.js";
 import { PAGE_AUDIT_RULE } from "./rules/pages-check.js";
+import { SEO_TEXT_HINT_RULE } from "./rules/seo-text-hints.js";
 
 /** The Stage audit's rule families, in report order. */
 export const AUDIT_RULES: readonly SeoAuditRule[] = [
@@ -31,4 +32,5 @@ export const WRITE_HINT_RULES: readonly SeoWriteHintRule[] = [
   ...SEO_WRITE_HINT_RULES,
   CRAWLER_POLICY_HINT_RULE,
   ALT_TEXT_HINT_RULE,
+  SEO_TEXT_HINT_RULE,
 ];
