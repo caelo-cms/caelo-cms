@@ -155,6 +155,27 @@ export function pageFrame(input: {
   };
 }
 
+/** How much of the markup {@link markupLeavingContent} shows. */
+const EXCERPT_LENGTH = 80;
+
+/**
+ * #1787 — the markup that keeps a module's or frame's template from ending
+ * in plain HTML content, as an excerpt the AI can find and rewrite (`…`
+ * marks text cut off), or null when it ends in content: from the first
+ * section, partial or value that can change how what follows reads, or the
+ * template's end when that is left open (`<textarea>`, `<svg>`, a comment).
+ */
+export function markupLeavingContent(html: string): string | null {
+  const at = placeholderContexts(html).endsOutsideFrom;
+  if (at === null) return null;
+  if (at >= html.length) {
+    const from = Math.max(0, html.length - EXCERPT_LENGTH);
+    return `${from > 0 ? "…" : ""}${html.slice(from)}`;
+  }
+  const end = Math.min(html.length, at + EXCERPT_LENGTH);
+  return `${html.slice(at, end)}${end < html.length ? "…" : ""}`;
+}
+
 /**
  * Whether one of the templates a page's render used ends outside plain
  * content. The caller passes what the renderer itself rendered: each
