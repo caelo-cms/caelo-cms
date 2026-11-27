@@ -6,6 +6,11 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import {
+  isExternallyBrokered,
+  PLUGIN_CAPABILITY_INFO,
+  pluginCapability,
+} from "@caelo-cms/plugin-sdk";
 import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import {
   adminGrantTarget,
@@ -39,7 +44,7 @@ const helloWorldManifest = {
   },
   tableKinds: { greetings: "visitor-state" },
   operations: ["submit", "list"],
-  hasStaticRender: true,
+  hasStaticRender: false,
 };
 
 const helloWorldSource = `
@@ -86,6 +91,34 @@ describe("validateManifest", () => {
       requestedCapabilities: ["cms_admin"],
     });
     expect(r.failures.some((f) => f.kind === "manifest-tier2-cap-leak")).toBe(true);
+  });
+
+  it("a submission without grants is told which grant a field needs, and whether it exists (#1729)", () => {
+    const hints = (extra: Record<string, unknown>) =>
+      validateManifest({ ...helloWorldManifest, ...extra }).failures.map((f) => f.hint);
+    // Brokered: request it and go through the installation review.
+    expect(hints({ adminSchema: { notes: { body: "text" } } }).join(" ")).toContain(
+      "`adminSchema` needs the `cms_admin_schema` grant: add it to `requestedCapabilities`",
+    );
+    expect(hints({ contributes: ["head"] }).join(" ")).toContain(
+      "`contributes` needs the `head_contributions` grant",
+    );
+    // A part no runtime-installed plugin can have: says so, with what it may.
+    expect(hints({ urlContributions: [{ slot: "full-path" }] }).join(" ")).toContain(
+      'URL slot "full-path" is not available to runtime-installed plugins',
+    );
+    expect(hints({ urlContributions: [{ slot: "path-prefix" }] }).join(" ")).toContain(
+      "declare `urlTables`",
+    );
+    // A capability still planned (none once all are brokered): says so, with the issue.
+    for (const capability of pluginCapability.options.filter((c) => !isExternallyBrokered(c))) {
+      expect(hints({ requestedCapabilities: [capability] }).join(" ")).toContain(
+        `\`${capability}\` (${PLUGIN_CAPABILITY_INFO[capability].label}) is not available to runtime-installed plugins yet`,
+      );
+    }
+    expect(hints({ requestedCapabilities: ["cms_admin_schema"] }).join(" ")).toContain(
+      "submit it with submit_plugin",
+    );
   });
 
   it("rejects manifests missing required fields", () => {

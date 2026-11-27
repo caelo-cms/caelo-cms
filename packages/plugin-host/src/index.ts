@@ -22,9 +22,12 @@ export {
   type AiSessionKey,
   type AiSettlement,
   type AiSpender,
+  bindingPluginCap,
   checkAiCaps,
   describeAiCapRefusal,
   extendAiSpend,
+  type PluginAiCap,
+  readPluginAiCap,
   releaseAiSpend,
   reserveAiSpend,
   settleAiSpend,
@@ -73,8 +76,10 @@ export {
 } from "./change-consumers.js";
 export {
   collectBuildAssets,
+  dataBlockJson,
   injectPluginAssets,
   PLUGIN_ASSET_DIR,
+  PLUGIN_DATA_FILE,
   type PluginClientAsset,
   withAssetContent,
 } from "./client-assets.js";
@@ -121,6 +126,8 @@ export {
   pluginDeclaresConsentPurpose,
 } from "./consent-purposes.js";
 export {
+  type ContentVariantField,
+  checkContentVariantValues,
   contentVariantProblemMarker,
   hasContentVariantContributors,
   type ResolvedContentVariant,
@@ -156,13 +163,10 @@ export {
   type RunPluginOperationResult,
   renderInvocation,
   resetDisabledSet,
-  runPluginBuildAssets,
   runPluginMetaSignature,
   runPluginMetaSignatureBatch,
   runPluginOperation,
   runPluginStaticRender,
-  type SnapshotEmitter,
-  type SnapshotEmitterInput,
   setPluginDisabled,
   toolArgsProblem,
   type VisitorDispatchContext,
@@ -186,8 +190,12 @@ export {
   type CollectedContributions,
   collectContributions,
   composeHeadBlock,
+  HEAD_CONTRIBUTION_PAGES_PER_CALL,
+  type ResolvedHeadEntry,
+  type ResolvedSitemapContribution,
   renderHeadEntries,
 } from "./head-composition.js";
+export { checkHeadAnswer, headEntryRule } from "./head-vocabulary.js";
 export {
   finishImageRequest,
   type ImageRequestRecord,
@@ -385,14 +393,26 @@ export {
   refreshRuntimeHeartbeat,
   stopRuntimeHeartbeat,
 } from "./runtime-health.js";
+export type { SandboxKind } from "./sandbox-kind.js";
 export { SANDBOX_BATCH_CALL_LIMIT, sandboxMethod } from "./sandbox-protocol.js";
-export { brokerSandboxCall, runSandbox } from "./sandbox-runtime.js";
+export {
+  brokerSandboxCall,
+  runSandbox,
+  SANDBOX_BUDGETS,
+  SANDBOX_POOLS,
+  sandboxSlotsInUse,
+} from "./sandbox-runtime.js";
 export {
   pluginWorkerScheduler,
   type ScheduledWorker,
   type UnscheduledWorker,
 } from "./scheduler.js";
-export { type ResolvedShareImages, resolveShareImages } from "./share-images.js";
+export {
+  type RefusedShareImage,
+  type ResolvedShareImages,
+  resolveShareImages,
+  SHARE_IMAGES_PAGES_PER_CALL,
+} from "./share-images.js";
 export {
   parseListFilter,
   publicListSql,
@@ -418,6 +438,13 @@ export {
   urlAnnotationPluginSlugs,
   urlContributionsRegistry,
 } from "./url-composition.js";
+// #1729 (Q7 A) — URL slots declared as tables the host reads.
+export {
+  type DeclaredUrlValue,
+  declaredUrlContributions,
+  readDeclaredUrlValues,
+  servedPublicHosts,
+} from "./url-tables.js";
 export {
   parseVisitorConsentHeader,
   resolveVisitorConsentRule,

@@ -90,6 +90,7 @@ export async function pagesByRedirectSpelling(
 
 export const pageConflictsRedirectOp = defineOperation({
   name: "redirects.page_conflicts",
+  pluginAccess: "read",
   readScope: "request",
   actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",

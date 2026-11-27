@@ -36,6 +36,8 @@ export interface ReleaseApproval {
   manifestDigest: string;
   capabilities: CapabilityRequest[];
   changes: ManifestChange[] | null;
+  /** What the release differs in when it lists no permission and no change; null otherwise. */
+  unchangedSummary: string | null;
 }
 
 /** An installed package waiting for review. */

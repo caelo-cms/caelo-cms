@@ -83,10 +83,29 @@ export class PluginNotInReleaseError extends Error {
 }
 
 /** True when `error` or one of its causes is a {@link PluginNotInReleaseError}. */
+/**
+ * #1737 — an installed plugin's approved artifact declares something this
+ * release refuses to run for an installed plugin (a static render). The
+ * artifact's state, not a Caelo defect: recorded for the Owner, never sent
+ * to the bug intake, and the message names the next step.
+ */
+export class ExternalDeclarationUnavailableError extends Error {
+  constructor(refusal: string) {
+    super(
+      `External declaration unavailable: ${refusal} Then submit the corrected version for the Owner's approval (submit_plugin).`,
+    );
+    this.name = "ExternalDeclarationUnavailableError";
+  }
+}
+
 function isNotInRelease(error: unknown): boolean {
   let current: unknown = error;
   for (let depth = 0; depth < 6 && current instanceof Error; depth++) {
-    if (current instanceof PluginNotInReleaseError) return true;
+    if (
+      current instanceof PluginNotInReleaseError ||
+      current instanceof ExternalDeclarationUnavailableError
+    )
+      return true;
     current = current.cause;
   }
   return false;
@@ -147,8 +166,9 @@ function isTransient(error: unknown): boolean {
  */
 export function classifyPluginError(phase: PluginPhase, error: unknown): PluginErrorClass {
   if (isTransient(error)) return "transient";
-  // A plugin this release does not ship is the install's state, not a
-  // defect to report to the bug intake (#1052).
+  // A plugin this release does not ship, or an installed artifact this
+  // release refuses to run (#1737), is the install's state, not a defect
+  // to report to the bug intake (#1052).
   if (isNotInRelease(error)) return "plugin";
   switch (phase) {
     case "register":

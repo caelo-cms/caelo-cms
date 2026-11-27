@@ -1,12 +1,28 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import type { PluginCapability, PluginManifest } from "@caelo-cms/plugin-sdk";
+import {
+  externalCapabilityRefusal,
+  externalDeclarationRefusals,
+  externalUrlSlotRefusal,
+  type PluginCapability,
+  type PluginManifest,
+} from "@caelo-cms/plugin-sdk";
 
 /** Declaration checks are independent of origin verification and never confer a grant. */
 export function validateInstallationPolicy(manifest: PluginManifest): void {
   const requested = new Set(manifest.requestedCapabilities ?? []);
   if (requested.size !== (manifest.requestedCapabilities ?? []).length)
     throw new Error("Duplicate capability request");
+  // #1729 — a grant with no broker for runtime-installed plugins would be
+  // approved and then never load. Refused here, which staging, approval,
+  // finalization and every load run, so no Owner approves such an artifact.
+  for (const capability of requested) {
+    const refusal = externalCapabilityRefusal(capability);
+    if (refusal) throw new Error(refusal);
+  }
+  // #1737 — a declaration nothing would run for an installed plugin.
+  const [declaration] = externalDeclarationRefusals(manifest);
+  if (declaration) throw new Error(declaration);
   const requireCapability = (present: boolean, capability: PluginCapability) => {
     if (present && !requested.has(capability))
       throw new Error(`Missing required capability request: ${capability}`);
@@ -27,8 +43,23 @@ export function validateInstallationPolicy(manifest: PluginManifest): void {
   requireCapability(Boolean(manifest.tools?.length), "chat_runner_tools");
   requireCapability(Boolean(manifest.workers?.length), "background_workers");
   requireCapability(Boolean(manifest.contributes?.length), "head_contributions");
-  requireCapability(Boolean(manifest.urlContributions?.length), "url_slots");
-  requireCapability(manifest.hasBuildAssets || manifest.hasDeferrals, "client_assets");
+  requireCapability(
+    Boolean(manifest.urlContributions?.length) || manifest.urlTables !== undefined,
+    "url_slots",
+  );
+  // #1729 (decision Q7 A) — no plugin code runs while core composes an
+  // address, so a runtime-installed plugin claims only the slots data can
+  // describe, and declares that data (`urlTables`, checked by the validator).
+  for (const claim of manifest.urlContributions ?? []) {
+    const refusal = externalUrlSlotRefusal(claim.slot, manifest.urlTables !== undefined);
+    if (refusal) throw new Error(refusal);
+  }
+  requireCapability(
+    Boolean(Object.keys(manifest.clientFiles ?? {}).length) ||
+      manifest.hasBuildData ||
+      manifest.hasDeferrals,
+    "client_assets",
+  );
   requireCapability(Boolean(manifest.listSources?.length), "list_sources");
   requireCapability(Boolean(manifest.listTypes?.length), "list_types");
   requireCapability(manifest.hasListResolve, "list_resolve");
@@ -51,6 +82,23 @@ export function validateInstallationPolicy(manifest: PluginManifest): void {
     !manifest.capabilityConstraints?.cms_admin?.operations?.length
   ) {
     throw new Error("cms_admin requires an explicit named-operation allowlist");
+  }
+  // #1729 (decision Q8 A) — the artifact the Owner approves says how much AI
+  // it may spend a day; the receipt keeps it, and the spend ledger holds the
+  // plugin to the lower of it and the Owner's own cap.
+  if (
+    requested.has("ai_provider") &&
+    !manifest.capabilityConstraints?.ai_provider?.maxDailyCostMicrocents
+  ) {
+    throw new Error(
+      "`ai_provider` needs a daily AI spending cap: set `capabilityConstraints.ai_provider.maxDailyCostMicrocents` (microcents, 100000000 = 1 USD). The Owner sees it when approving and can set a lower one.",
+    );
+  }
+  for (const [capability, constraint] of Object.entries(manifest.capabilityConstraints ?? {})) {
+    if (constraint?.maxDailyCostMicrocents !== undefined && capability !== "ai_provider")
+      throw new Error(
+        `capabilityConstraints.${capability}.maxDailyCostMicrocents: a daily spending cap limits \`ai_provider\` only`,
+      );
   }
   if ((manifest.skills?.length ?? 0) > 20)
     throw new Error("External packages support at most 20 companion skills");

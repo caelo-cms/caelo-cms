@@ -647,7 +647,8 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
       invocation: { origin: "visitor", actorId: "test-visitor" },
     }),
   ).toEqual({ ok: true, value: { stored: true } });
-  // System work (no author) gets no private storage.
+  // #1729 Q1 A — work the host starts for nobody (system, a worker) reads
+  // and writes private storage on main, as the plugin actor.
   expect(
     (
       await runPluginOperation({
@@ -657,7 +658,7 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
         invocation: { origin: "system", actorId: system.actorId },
       })
     ).ok,
-  ).toBe(false);
+  ).toBe(true);
   const reviewer = await user("reviewer");
   expect(
     (
@@ -925,6 +926,67 @@ it("#1720 — refuses a runtime-installed plugin whose worker cron croner cannot
   expect(r.error.message).toContain('worker "yearly_sweep"');
   expect(r.error.message).toContain("Invalid value for minute: 61");
   // Refused before any row exists: nothing for an Owner to approve.
+  const got = await execute(registry, adapter, system, "plugins.get", { slug });
+  if (!got.ok) throw new Error(JSON.stringify(got.error));
+  expect((got.value as { plugin: unknown }).plugin).toBeNull();
+});
+
+it("refuses to stage access no runtime-installed plugin can be granted, before any row exists (#1729)", async () => {
+  // The slots that map every slug through code are never offered to an
+  // installed plugin (Q7 A), whatever is still planned.
+  const slug = "installation-unbrokered";
+  const r = await execute(
+    registry,
+    adapter,
+    { ...system, actorKind: "ai" },
+    "plugins.stage_installation",
+    {
+      manifest: {
+        ...manifest,
+        slug,
+        requestedCapabilities: ["cms_admin_schema", "url_slots"],
+        capabilityReasons: { ...manifest.capabilityReasons, url_slots: "Shape slugs" },
+        urlContributions: [{ slot: "slug-format" }],
+      },
+      source: source.replace("installation-notes", slug),
+    },
+  );
+  expect(r.ok).toBe(false);
+  if (r.ok) return;
+  expect(r.error.message).toContain(
+    'URL slot "slug-format" is not available to runtime-installed plugins',
+  );
+  expect(r.error.message).toContain("may claim host and path-prefix");
+  const got = await execute(registry, adapter, system, "plugins.get", { slug });
+  if (!got.ok) throw new Error(JSON.stringify(got.error));
+  expect((got.value as { plugin: unknown }).plugin).toBeNull();
+});
+
+it("refuses to stage a cms_admin allowlist naming operations no plugin can call (#1729)", async () => {
+  const slug = "installation-closed-ops";
+  const r = await execute(
+    registry,
+    adapter,
+    { ...system, actorKind: "ai" },
+    "plugins.stage_installation",
+    {
+      manifest: {
+        ...manifest,
+        slug,
+        requestedCapabilities: ["cms_admin_schema", "cms_admin"],
+        capabilityReasons: { ...manifest.capabilityReasons, cms_admin: "Read page titles" },
+        capabilityConstraints: {
+          cms_admin: { operations: ["pages.list", "pages.does_not_exist", "deploy.trigger"] },
+        },
+      },
+      source: source.replace("installation-notes", slug),
+    },
+  );
+  expect(r.ok).toBe(false);
+  if (r.ok) return;
+  expect(r.error.message).toContain("pages.does_not_exist is not an operation of this site");
+  expect(r.error.message).toContain("deploy.trigger is not open to plugins");
+  expect(r.error.message).toContain("Remove them from the allowlist");
   const got = await execute(registry, adapter, system, "plugins.get", { slug });
   if (!got.ok) throw new Error(JSON.stringify(got.error));
   expect((got.value as { plugin: unknown }).plugin).toBeNull();

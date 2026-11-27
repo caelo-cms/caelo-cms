@@ -29,12 +29,24 @@ import {
 } from "@caelo-cms/plugin-host";
 import { definePlugin, type ListResolveArgs } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { type ExecutionContext, pluginValueOf } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
+
+/** Entries with their plugin values unwrapped (#1729: checked values stay the plugin's until they land). */
+function plainEntries<T extends { id: string; values: Readonly<Record<string, unknown>> }>(
+  entries: readonly T[] | undefined,
+): { id: string; values: Record<string, unknown> }[] | undefined {
+  return entries?.map((e) => ({
+    id: e.id,
+    values: Object.fromEntries(
+      Object.entries(e.values).map(([k, v]) => [k, pluginValueOf(v)?.value ?? v]),
+    ),
+  }));
+}
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -255,6 +267,7 @@ beforeAll(async () => {
             },
           },
           linkResolveOperation: "link_resolve",
+          linkResolveReads: { tables: [] },
           listResolveOperation: "list_resolve",
           operations: {
             badges: async (_ctx, args) => sourceAnswer((args as { pageIds: string[] }).pageIds),
@@ -286,7 +299,9 @@ describe("plugin list sources", () => {
   it("hands valid entries to the page, typed by the source's node", async () => {
     sourceAnswer = (ids) => entries(ids, [{ id: "a", values: { text: "New", on: true } }]);
     const r = await resolveListSources([pageId], MAIN_RENDER, "directory");
-    expect(r.get(pageId)?.t1114_badges).toEqual([{ id: "a", values: { text: "New", on: true } }]);
+    expect(plainEntries(r.get(pageId)?.t1114_badges)).toEqual([
+      { id: "a", values: { text: "New", on: true } },
+    ]);
   });
 
   const refused: [string, (ids: string[]) => unknown, RegExp][] = [
@@ -537,7 +552,7 @@ describe("list-resolve", () => {
     });
     listResolveCalls.length = 0;
     const sources = await resolveListSources([pageId], MAIN_RENDER, "directory");
-    expect(sources.get(pageId)?.t1114_badges).toEqual([
+    expect(plainEntries(sources.get(pageId)?.t1114_badges)).toEqual([
       { id: "marketing", values: { ...original, text: "Advertising" } },
     ]);
     // The asker saw only the marked value.

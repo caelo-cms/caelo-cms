@@ -38,10 +38,14 @@ import {
   PAGE_PATH_UNKNOWN,
   PAGE_PROP_UNKNOWN,
   PAGE_VALUE_PATHS,
+  PLUGIN_HEAD_POINT,
+  PLUGIN_SHARE_IMAGES_POINT,
+  PLUGIN_VALUE_REFUSED,
   parseMediaFailureMarker,
   parseMediaReferenceMarker,
   parseOgImageFailureMarker,
   parsePagePathUnknown,
+  parsePluginValueRefused,
   parseSeoTitleVariableMarker,
   renderFailureKind,
   renderFailureMarker,
@@ -126,11 +130,24 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   const shareImagePages = { missing: new Set<string>(), reference: new Set<string>() };
   // #1752 — a title template variable without a value.
   const titlePages = new Set<string>();
+  // #1729 — what a plugin added to a page's head, or its share image.
+  const pluginHeadPages = new Set<string>();
+  const pluginShareImagePages = new Set<string>();
   for (const f of failures) {
     const page = `${f.pageTitle} (${f.pagePath})`;
     const og = parseOgImageFailureMarker(f.reason);
+    const refusedSource =
+      renderFailureKind(f.reason) === PLUGIN_VALUE_REFUSED
+        ? parsePluginValueRefused(
+            renderFailureMarker(f.reason).slice(PLUGIN_VALUE_REFUSED.length + 1),
+          ).source
+        : null;
     if (parseSeoTitleVariableMarker(f.reason) !== null) {
       titlePages.add(page);
+    } else if (refusedSource === PLUGIN_HEAD_POINT) {
+      pluginHeadPages.add(page);
+    } else if (refusedSource === PLUGIN_SHARE_IMAGES_POINT) {
+      pluginShareImagePages.add(page);
     } else if (parseMediaFailureMarker(f.reason) !== null) {
       imagePages.add(page);
     } else if (parseMediaReferenceMarker(f.reason) !== null) {
@@ -174,6 +191,14 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   onPages(
     "The page title template uses a value the site does not have yet (the site's name)",
     titlePages,
+  );
+  onPages(
+    "A plugin added something to the page's head or sitemap that Caelo does not allow, so it was left out",
+    pluginHeadPages,
+  );
+  onPages(
+    "A plugin's default image for when the page is shared is not a published library image, so the page has none",
+    pluginShareImagePages,
   );
   const listed = [...others];
   for (const place of listed.slice(0, PLACES_LISTED)) lines.push(`${place} could not be rendered`);
@@ -242,6 +267,44 @@ export function pageMarkerHint(marker: string, mod: string): string | undefined 
     default:
       return undefined;
   }
+}
+
+/**
+ * #1729 — how the AI handles a value a plugin handed a page that the host
+ * refused (`plugin-value-refused:<plugin>.<source>.<field>:<rule>`, shared
+ * `lists/plugin-values.ts`): the plugin's data, not the module's.
+ */
+export function pluginValueRefusedHint(body: string): string {
+  const { plugin, source, field, rule } = parsePluginValueRefused(body);
+  // #1729 (§6.2) — the head and sitemap vocabulary, and share images.
+  if (source === PLUGIN_HEAD_POINT) {
+    return (
+      `The plugin "${plugin}" added a ${field} to the page's head or sitemap that Caelo refuses (${rule}). Allowed: link rel="alternate" hreflang naming a page of this view by pageId (core builds the URL), meta og:locale/og:locale:alternate, a language, sitemap exclude/alternates by pageId; 20 per page, 1 MB per answer. ` +
+      "Fix the plugin (submit_plugin), or bug_report for one shipped with Caelo. Tell the operator."
+    );
+  }
+  if (source === PLUGIN_SHARE_IMAGES_POINT) {
+    return (
+      `The plugin "${plugin}" names a default share image Caelo refuses (${rule}): it must be an existing library image. The page shows none until fixed. ` +
+      "Set another with the plugin's tool (get_plugin lists them), or give the page its own image with set_page_seo_many (ogImageAssetId from find_media). Tell the operator."
+    );
+  }
+  const where =
+    source === "list-resolve"
+      ? `the translated value at ${field} (its list-resolve overlay)`
+      : source === "content-variants"
+        ? `the ${field} value of its content variant`
+        : `a ${field} value in its list source ${source}`;
+  // A translation keeps the stored content's markup: the source is what to rewrite.
+  const fix =
+    source === "content-variants" && /^(element|attribute)-/.test(rule)
+      ? "A translation keeps the stored markup: rewrite the stored richtext as prose and translate it again, or fix the plugin's row. Tell the operator."
+      : "It is the plugin's data, not the module's: fix the row it comes from, or submit a corrected plugin version (submit_plugin). Tell the operator.";
+  return (
+    `The plugin "${plugin}" handed the page ${where} that Caelo refuses (${rule}): ` +
+    "richtext may hold only prose (p, a, strong, em, lists, h2-h6, blockquote, code, br, span; no on* or style), links only https, http, mailto, tel or a page, media only library images. " +
+    fix
+  );
 }
 
 /** What the value at `page.<path>` of type `type` answers, for {@link pageMarkerHint}. */
@@ -327,6 +390,8 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
     case PAGE_KEY_UNKNOWN:
     case PAGE_PATH_UNKNOWN:
       return { tool: "update_modules_many", hint: pageMarkerHint(marker, mod) as string };
+    case PLUGIN_VALUE_REFUSED:
+      return { tool: "get_plugin", hint: pluginValueRefusedHint(path) };
     default:
       return { tool: "set_content_instance_values_many", hint: `${REFERENCE_REPAIR}.` };
   }

@@ -13,7 +13,7 @@
  * for canonical and the sitemap `<loc>`.
  */
 
-import { resolvePublicPageUrls } from "@caelo-cms/plugin-host";
+import { type PublicUrlPage, resolvePublicPageUrls } from "@caelo-cms/plugin-host";
 import {
   defineOperation,
   type QueryError,
@@ -49,6 +49,7 @@ export async function loadPublishPageUrlStyle(tx: TransactionRunner): Promise<Pa
 
 export const resolvePublicUrlsOp = defineOperation({
   name: "pages.resolve_public_urls",
+  pluginAccess: "read",
   readScope: "request",
   // Why system-only: a render-time building block, not an editing action.
   // Plugins call it from their head/sitemap/data-list operations, where
@@ -87,23 +88,8 @@ export const resolvePublicUrlsOp = defineOperation({
           "under Settings → SEO in the admin.",
       });
     }
-    const idList = uuidArray(input.pageIds);
-    // Branch-aware like pages.list: a chat sees main plus its own creates.
-    const branchFilter = ctx.chatBranchId
-      ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${ctx.chatBranchId}::uuid)`
-      : sql`p.chat_branch_id IS NULL`;
-    const rows = (await tx.execute(sql`
-      SELECT p.id::text AS id, p.slug, p.current_path, s.canonical_url
-      FROM pages p
-      LEFT JOIN ${pageSeoViewSql(ctx.chatBranchId, input.pageIds)} s ON s.page_id = p.id
-      WHERE p.id = ANY(${idList}) AND p.deleted_at IS NULL AND ${branchFilter}
-    `)) as unknown as {
-      id: string;
-      slug: string;
-      current_path: string;
-      canonical_url: string | null;
-    }[];
-    const found = new Set(rows.map((r) => r.id));
+    const pages = await loadPublicUrlPages(tx, ctx.chatBranchId, input.pageIds);
+    const found = new Set(pages.map((p) => p.id));
     const missing = input.pageIds.filter((id) => !found.has(id));
     if (missing.length > 0) {
       return err({
@@ -113,17 +99,80 @@ export const resolvePublicUrlsOp = defineOperation({
       });
     }
     const urls = await resolvePublicPageUrls(
-      rows.map((r) => ({
-        id: r.id,
-        slug: r.slug,
-        currentPath: r.current_path,
-        canonicalOverride: r.canonical_url || null,
-      })),
+      pages,
       { siteBaseUrl, pageUrlStyle: input.pageUrlStyle },
       renderScopeOf(ctx, tx),
     );
     return ok({ urls: Object.fromEntries(urls) });
   },
+});
+
+/**
+ * What each page's public URL is built from (`resolvePublicPageUrls`), in
+ * the caller's view: branch-aware like `pages.list`, so a chat sees main
+ * plus its own creates and its pending canonical overrides. An id the view
+ * does not hold (deleted, another chat's page, no page at all) is absent.
+ * O(ids): the primary key and the SEO overlay of these ids.
+ */
+async function loadPublicUrlPages(
+  tx: TransactionRunner,
+  chatBranchId: string | null | undefined,
+  pageIds: readonly string[],
+): Promise<PublicUrlPage[]> {
+  const branchFilter = chatBranchId
+    ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${chatBranchId}::uuid)`
+    : sql`p.chat_branch_id IS NULL`;
+  const rows = (await tx.execute(sql`
+    SELECT p.id::text AS id, p.slug, p.current_path, s.canonical_url
+    FROM pages p
+    LEFT JOIN ${pageSeoViewSql(chatBranchId, pageIds)} s ON s.page_id = p.id
+    WHERE p.id = ANY(${uuidArray(pageIds)}) AND p.deleted_at IS NULL AND ${branchFilter}
+  `)) as unknown as {
+    id: string;
+    slug: string;
+    current_path: string;
+    canonical_url: string | null;
+  }[];
+  return rows.map((r) => ({
+    id: r.id,
+    slug: r.slug,
+    currentPath: r.current_path,
+    canonicalOverride: r.canonical_url || null,
+  }));
+}
+
+/**
+ * #1729 — `pages.public_url_pages`: the inputs of these pages' public URLs
+ * in the caller's view, for the plugin host. A plugin's head entry names a
+ * page by id (docs/dev/external-plugin-brokers.md §6.2) and core builds its
+ * URL with the builder that makes the page's canonical: this is the lookup
+ * behind it, the same rows `pages.resolve_public_urls` reads. An id the
+ * view does not hold is absent from the answer, so the host refuses the
+ * one entry that names it instead of the whole render.
+ */
+export const publicUrlPagesOp = defineOperation({
+  name: "pages.public_url_pages",
+  readScope: "request",
+  // Why system-only: the plugin host's lookup at render time (preview on
+  // the chat's branch, build on main). A plugin asks
+  // pages.resolve_public_urls; the AI reads URLs from the page tools.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({ pageIds: z.array(z.string().uuid()).min(1).max(1000) }).strict(),
+  output: z.object({
+    pages: z.array(
+      z
+        .object({
+          id: z.string(),
+          slug: z.string(),
+          currentPath: z.string(),
+          canonicalOverride: z.string().nullable(),
+        })
+        .strict(),
+    ),
+  }),
+  handler: async (ctx, input, tx) =>
+    ok({ pages: await loadPublicUrlPages(tx, ctx.chatBranchId, input.pageIds) }),
 });
 
 /**

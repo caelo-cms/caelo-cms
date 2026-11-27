@@ -44,7 +44,16 @@
  * Returns structured failures the AI can read + auto-fix from.
  */
 
-import { type PluginManifest, pluginManifest as pluginManifestSchema } from "@caelo-cms/plugin-sdk";
+import {
+  CONSENT_PROVIDER_SLUG,
+  externalCapabilityHint,
+  externalCapabilityRefusal,
+  externalDeclarationRefusals,
+  externalUrlSlotRefusal,
+  type PluginManifest,
+  pluginManifest as pluginManifestSchema,
+  urlTablesProblems,
+} from "@caelo-cms/plugin-sdk";
 import { Cron } from "croner";
 // The bare `"oxc-parser"` import path here is load-bearing for the admin
 // SSR build — `apps/admin/vite.config.ts` registers a `resolveId` hook
@@ -55,6 +64,7 @@ import { Cron } from "croner";
 // from #52, or the externalization regression from #53. See those issues
 // + the comment block above forceOxcParserNativeEntry for the full chain.
 import { parseSync } from "oxc-parser";
+import { cssLoadProblem, deferralPlaceholderProblems } from "./client-assets.js";
 
 // ---------------------------------------------------------------------------
 // Worker schedules (#1720)
@@ -117,6 +127,67 @@ function workerScheduleFailures(m: PluginManifest): ValidationFailure[] {
   return failures;
 }
 
+/**
+ * #1729 — a link resolver declares what its answer is computed from
+ * (`linkResolveReads`), for every plugin: core keeps the answer per render
+ * scope and asks only about what changed, so a preview stays O(request)
+ * (CLAUDE.md §2). Every table must be one of the plugin's `adminSchema`
+ * tables and every column one of theirs, or core would watch the journal
+ * for changes that can never happen and serve the answer stale.
+ */
+function linkResolveReadsFailures(m: PluginManifest): ValidationFailure[] {
+  const fail = (hint: string): ValidationFailure => ({ kind: "link-resolve-reads", hint });
+  const reads = m.linkResolveReads;
+  if (!m.hasLinkResolve) {
+    return reads
+      ? [
+          fail(
+            "manifest declares `linkResolveReads` but no link resolver (`linkResolveOperation`). Remove `linkResolveReads`, or add the operation.",
+          ),
+        ]
+      : [];
+  }
+  if (!reads) {
+    return [
+      fail(
+        'the plugin answers the `link-resolve` point but does not declare `linkResolveReads`: name the `adminSchema` tables (and the columns of them) its answer is computed from, e.g. `linkResolveReads: { tables: ["page_variants"], columns: ["page_id", "group_id"], pageColumns: { page_variants: "page_id" } }` (`tables: []` when the answer depends on the page ids alone). Core keeps the answer and asks again only after a change to them.',
+      ),
+    ];
+  }
+  const out: ValidationFailure[] = [];
+  const admin = m.adminSchema ?? {};
+  const declared = new Set<string>();
+  for (const table of reads.tables) {
+    const columns = admin[table];
+    if (!columns) {
+      out.push(
+        fail(
+          `linkResolveReads.tables: "${table}" is not one of the plugin's adminSchema tables (${Object.keys(admin).join(", ") || "none"}). The answer can be kept only for tables core sees change.`,
+        ),
+      );
+      continue;
+    }
+    for (const column of Object.keys(columns)) declared.add(column);
+  }
+  for (const column of reads.columns ?? []) {
+    if (!declared.has(column))
+      out.push(
+        fail(
+          `linkResolveReads.columns: "${column}" is not a column of ${reads.tables.join(", ") || "any listed table"}. List only columns of the tables in \`linkResolveReads.tables\`.`,
+        ),
+      );
+  }
+  for (const [table, column] of Object.entries(reads.pageColumns ?? {})) {
+    if (!reads.tables.includes(table) || !admin[table]?.[column])
+      out.push(
+        fail(
+          `linkResolveReads.pageColumns: "${table}.${column}" must be a column of a table listed in \`linkResolveReads.tables\` that holds the page id a row answers for.`,
+        ),
+      );
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Failure shapes — surfaced to AI for auto-fix.
 // ---------------------------------------------------------------------------
@@ -138,7 +209,10 @@ export type ValidationFailureKind =
   | "forbidden-globalthis-write"
   | "forbidden-globalthis-alias"
   | "parse-error"
-  | "worker-schedule";
+  | "worker-schedule"
+  | "link-resolve-reads"
+  | "client-assets"
+  | "url-tables";
 
 export interface ValidationFailure {
   readonly kind: ValidationFailureKind;
@@ -183,6 +257,10 @@ export function validateManifest(
   // manifests are parsed with it on every load, so a stricter schema would
   // stop a plugin an older release approved from loading at all.
   if ((opts.workerCron ?? "refuse") === "refuse") failures.push(...workerScheduleFailures(m));
+  failures.push(...linkResolveReadsFailures(m));
+  // #1729 — declared URL tables must name real tables and columns, claim
+  // exactly the slots they fill and have the indexes the host reads by.
+  for (const hint of urlTablesProblems(m)) failures.push({ kind: "url-tables", hint });
 
   // #389 — `ref:` FK columns are an adminSchema-only vocabulary:
   // cms_public tables cannot FK across databases into cms_admin.
@@ -234,6 +312,14 @@ export function validateManifest(
     }
     // Epic #1107 — list sources, list types and list-resolve overlays
     // change what pages render; each is its own Owner grant.
+    // #1729 — a URL slot changes every affected page's address: its own
+    // grant, for every plugin (one plugin model).
+    if (((m.urlContributions?.length ?? 0) > 0 || m.urlTables) && !caps.has("url_slots")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "manifest claims URL slots (`urlContributions` / `urlTables`) but does not request the `url_slots` capability. Add it to `requestedCapabilities` (or drop the claims).",
+      });
+    }
     if (m.listSources && m.listSources.length > 0 && !caps.has("list_sources")) {
       failures.push({
         kind: "manifest-cap-missing",
@@ -246,6 +332,18 @@ export function validateManifest(
         hint: "manifest declares `listTypes` but does not request the `list_types` capability. Add it to `requestedCapabilities` (or drop the list types).",
       });
     }
+    if (
+      (m.hasDeferrals ||
+        m.hasBuildData ||
+        Object.keys(m.deferralPlaceholders ?? {}).length > 0 ||
+        Object.keys(m.clientFiles ?? {}).length > 0) &&
+      !caps.has("client_assets")
+    ) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "the plugin puts files on visitors' pages or withholds modules (`clientFiles`, `buildDataOperation`, `deferralsOperation`) but does not request the `client_assets` capability. Add it to `requestedCapabilities` (or drop them).",
+      });
+    }
     if (m.hasListResolve && !caps.has("list_resolve")) {
       failures.push({
         kind: "manifest-cap-missing",
@@ -254,52 +352,310 @@ export function validateManifest(
     }
   }
 
-  // Tier 2 (runtime-authored) cannot reach over the grantability
-  // ceiling: no capabilities, no workers, no chat tools, no cms_admin
-  // schema.
+  // A runtime-authored plugin submitted without capabilities
+  // (`plugins.submit`, `plugins.revalidate`) has no grants: anything that
+  // needs one goes through the installation review instead. Each hint names
+  // the grant and, while no runtime-installed plugin can have it, says so
+  // (#1729, the status record in plugin-sdk external-capabilities.ts).
   if (m.tier === 2 && !opts.allowExternalCapabilities) {
-    if (m.contributes && m.contributes.length > 0) {
-      failures.push({
-        kind: "manifest-tier2-cap-leak",
-        hint: "Runtime-authored plugins cannot declare `contributes` — head/sitemap contributions are release-signed only (#391).",
-      });
-    }
+    const leak = (hint: string) => failures.push({ kind: "manifest-tier2-cap-leak", hint });
+    if (m.contributes && m.contributes.length > 0)
+      leak(externalCapabilityHint("head_contributions", "contributes"));
     if (m.urlContributions && m.urlContributions.length > 0) {
-      failures.push({
-        kind: "manifest-tier2-cap-leak",
-        hint: "Runtime-authored plugins cannot declare `urlContributions` — URL-slot claims are release-signed only (#390).",
-      });
-    }
-    if (m.adminSchema && Object.keys(m.adminSchema).length > 0) {
-      failures.push({
-        kind: "manifest-tier2-cap-leak",
-        hint: "Runtime-authored plugins cannot declare `adminSchema` — a plugin-owned cms_admin schema is release-signed only (#389).",
-      });
-    }
+      // A slot no runtime-installed plugin can claim says so, with what it may.
+      const refused = m.urlContributions
+        .map((c) => externalUrlSlotRefusal(c.slot, m.urlTables !== undefined))
+        .filter((r): r is string => r !== null);
+      leak(
+        refused.length > 0
+          ? refused.join(" ")
+          : externalCapabilityHint("url_slots", "urlContributions"),
+      );
+    } else if (m.urlTables) leak(externalCapabilityHint("url_slots", "urlTables"));
+    if (m.adminSchema && Object.keys(m.adminSchema).length > 0)
+      leak(externalCapabilityHint("cms_admin_schema", "adminSchema"));
+    if (m.workers && m.workers.length > 0)
+      leak(externalCapabilityHint("background_workers", "workers"));
+    if (m.tools && m.tools.length > 0) leak(externalCapabilityHint("chat_runner_tools", "tools"));
+    // #1737 — declared for a runtime-installed plugin, nothing would run it.
+    for (const refusal of externalDeclarationRefusals(m)) leak(refusal);
     if (m.requestedCapabilities && m.requestedCapabilities.length > 0) {
-      failures.push({
-        kind: "manifest-tier2-cap-leak",
-        hint: "Tier 2 plugins cannot declare `requestedCapabilities`. Submit as Tier 1 (requires human PR + signed manifest) or drop the field.",
-      });
-    }
-    if (m.workers && m.workers.length > 0) {
-      failures.push({
-        kind: "manifest-tier2-cap-leak",
-        hint: "Tier 2 plugins cannot declare `workers` (background workers are Tier 1 only).",
-      });
-    }
-    if (m.tools && m.tools.length > 0) {
-      failures.push({
-        kind: "manifest-tier2-cap-leak",
-        hint: "Tier 2 plugins cannot declare `tools` (chat-runner tool registration is Tier 1 only).",
-      });
+      const unavailable = m.requestedCapabilities
+        .map((c) => externalCapabilityRefusal(c))
+        .filter((r): r is string => r !== null);
+      leak(
+        unavailable.length > 0
+          ? unavailable.join(" ")
+          : "A plugin that requests capabilities is installed through the Owner's installation review, which grants each one for this exact artifact: submit it with submit_plugin (plugins.stage_installation), not plugins.submit.",
+      );
     }
   }
+
+  failures.push(...clientAssetFailures(m));
 
   // Static-render flag must reflect intent — caught at registration when
   // the source is parsed, not here. Tracked via the source walker below.
 
   return { manifest: failures.length === 0 ? m : null, failures };
+}
+
+/** Whether `origin` is in `allowed`, a `https://*.host` entry covering its subdomains. */
+function originAllowed(allowed: ReadonlySet<string>, origin: string): boolean {
+  if (allowed.has(origin)) return true;
+  for (const entry of allowed) {
+    const m = /^(https|wss):\/\/\*\.(.+)$/.exec(entry);
+    if (m && origin.startsWith(`${m[1]}://`) && origin.endsWith(`.${m[2]}`)) return true;
+  }
+  return false;
+}
+
+/**
+ * #1729 — what a plugin puts in a visitor's browser, for every plugin
+ * (client-assets.ts): reviewed placeholders and client files in which
+ * nothing loads, runs or builds markup beyond what the grant allows.
+ */
+function clientAssetFailures(m: PluginManifest): ValidationFailure[] {
+  const failures: ValidationFailure[] = [];
+  const fail = (hint: string) => failures.push({ kind: "client-assets", hint });
+  const placeholders = m.deferralPlaceholders ?? {};
+  if (Object.keys(placeholders).length > 0 && !m.hasDeferrals) {
+    fail(
+      "manifest declares `deferralPlaceholders` but no `deferralsOperation` names them: declare the deferrals operation, or drop the placeholders.",
+    );
+  }
+  const files = m.clientFiles ?? {};
+  const origins = m.capabilityConstraints?.client_assets?.origins ?? {};
+  const anyOrigin = new Set(Object.values(origins).flat());
+  const cssOrigin = new Set([
+    ...(origins.style ?? []),
+    ...(origins.img ?? []),
+    ...(origins.font ?? []),
+  ]);
+  if (m.hasBuildData && Object.keys(files).length === 0) {
+    fail(
+      "manifest declares `buildDataOperation` but no `clientFiles` read the data: ship the client file that reads it, or drop the build data.",
+    );
+  }
+  if (Object.keys(origins).length > 0 && Object.keys(files).length === 0) {
+    fail(
+      "`capabilityConstraints.client_assets.origins` names origins, but the plugin has no `clientFiles` that could reach them: drop the origins.",
+    );
+  }
+  for (const [name, text] of Object.entries(files)) {
+    if (name.endsWith(".js")) {
+      failures.push(
+        ...validateClientScript({
+          filename: name,
+          source: text,
+          allowedOrigin: (o) => originAllowed(anyOrigin, o),
+        }),
+      );
+      continue;
+    }
+    const problem = cssLoadProblem(text, (o) => originAllowed(cssOrigin, o));
+    if (problem) {
+      fail(
+        `clientFiles["${name}"]: ${problem} loads from another site. A client stylesheet loads nothing from elsewhere unless the grant names the origin (capabilityConstraints.client_assets.origins: style, img or font); no @import.`,
+      );
+    }
+  }
+  // A declared purpose is never `necessary` (the SDK refuses it), so any
+  // declaration means the visitor's say-so comes first.
+  const gated = (m.consentPurposes ?? []).length > 0;
+  if (
+    gated &&
+    Object.keys(files).some((f) => f.endsWith(".js")) &&
+    m.slug !== CONSENT_PROVIDER_SLUG &&
+    !(m.requiresPlugins ?? []).includes(CONSENT_PROVIDER_SLUG)
+  ) {
+    fail(
+      `the plugin's client scripts need the visitor's consent (it declares consentPurposes), and only the consent provider starts them once it is given: add requiresPlugins: ["${CONSENT_PROVIDER_SLUG}"].`,
+    );
+  }
+  for (const { where, problem } of deferralPlaceholderProblems(placeholders)) {
+    fail(
+      `${where}: ${problem} is not allowed. A placeholder stands in for content withheld until the visitor agrees, so nothing in it may load or run: plain elements (div, p, span, a, strong, button, …), class/id/role/title/type/href and data-*/aria-* attributes, {{name}} slots for text, CSS without url() to another site or @import.`,
+    );
+  }
+  return failures;
+}
+
+// ---------------------------------------------------------------------------
+// Client files — the browser rule set (#1729, docs/dev/external-plugin-brokers.md §6.7).
+// ---------------------------------------------------------------------------
+
+/** Callees that turn text into code or load code from elsewhere. */
+const CLIENT_CODE_CALLEES: ReadonlySet<string> = new Set([
+  "eval",
+  "Function",
+  "importScripts",
+  "Worker",
+  "SharedWorker",
+]);
+
+/**
+ * Properties that turn text into markup. A client file shows, hides and
+ * toggles what the page already has (CLAUDE.md §1A); data a build hands it
+ * stays text (`textContent`), so it can never become a script or a link.
+ */
+const CLIENT_MARKUP_SINKS: ReadonlySet<string> = new Set([
+  "innerHTML",
+  "outerHTML",
+  "insertAdjacentHTML",
+  "createContextualFragment",
+  "setHTMLUnsafe",
+  "parseHTMLUnsafe",
+  "srcdoc",
+]);
+
+/** Timers that evaluate a string argument as code. */
+const STRING_TIMERS: ReadonlySet<string> = new Set(["setTimeout", "setInterval"]);
+
+/** URLs in strings that name no network target: XML namespaces. */
+const NAMESPACE_URI_RE = /^http:\/\/www\.w3\.org\//;
+
+const URL_IN_TEXT_RE = /(?:\b(?:https?|wss?):)?\/\/[a-z0-9.-]+\.[a-z]{2,}(?::\d+)?/gi;
+
+const LITERAL_TYPES: ReadonlySet<string> = new Set([
+  "Literal",
+  "StringLiteral",
+  "TemplateLiteral",
+  "BinaryExpression",
+]);
+
+/**
+ * Check one client JS file against the browser rule set: a classic script
+ * (no `import`/`export`), no `eval`, `Function`, `.constructor(…)` calls or
+ * string timers, no dynamic `import()`, no `document.write`, no markup
+ * sinks, no workers, and no URL of another site unless the grant names its
+ * origin. The site CSP is the runtime half of the same rule.
+ *
+ * @param allowedOrigin whether a URL with this origin may appear (the
+ *   grant's `capabilityConstraints.client_assets.origins`, any kind).
+ */
+export function validateClientScript(opts: {
+  readonly filename: string;
+  readonly source: string;
+  readonly allowedOrigin: (origin: string) => boolean;
+}): ValidationFailure[] {
+  const failures: ValidationFailure[] = [];
+  const fail = (what: string, node?: unknown) => {
+    const location = node ? locOf(node) : undefined;
+    failures.push({
+      kind: "client-assets",
+      hint: `clientFiles["${opts.filename}"]: ${what}`,
+      ...(location ? { location } : {}),
+    });
+  };
+  let ast: unknown;
+  try {
+    const parsed = parseSync(opts.filename, opts.source, { sourceType: "script" });
+    if (parsed.errors.length > 0) {
+      fail(
+        `does not parse as a classic browser script (${parsed.errors[0]?.message ?? "syntax error"}). A client file runs as <script defer>: no import or export.`,
+      );
+      return failures;
+    }
+    ast = parsed.program;
+  } catch (e) {
+    fail(`could not be parsed: ${(e as Error).message}`);
+    return failures;
+  }
+  const checkText = (text: string, node: unknown) => {
+    for (const m of text.matchAll(URL_IN_TEXT_RE)) {
+      if (NAMESPACE_URI_RE.test(text.slice(m.index ?? 0))) continue;
+      const raw = m[0];
+      let origin: string;
+      try {
+        origin = new URL(raw.startsWith("//") ? `https:${raw}` : raw).origin;
+      } catch {
+        continue;
+      }
+      if (!opts.allowedOrigin(origin)) {
+        fail(
+          `names ${raw}, an address of another site. A client file talks to the site's own gateway (relative /api/… paths); a third-party origin needs the Owner's approval in the grant: capabilityConstraints.client_assets.origins.`,
+          node,
+        );
+      }
+    }
+  };
+  let tooDeep = false;
+  walk(
+    ast,
+    (node, parents) => {
+      const n = node as {
+        type?: string;
+        callee?: unknown;
+        arguments?: unknown[];
+        value?: unknown;
+        quasis?: Array<{ value?: { cooked?: string | null } }>;
+        computed?: boolean;
+        property?: unknown;
+        object?: unknown;
+      };
+      switch (n.type) {
+        case "ImportExpression":
+          fail("uses dynamic import(): a client file loads no code at runtime.", node);
+          return;
+        case "Literal":
+        case "StringLiteral":
+          if (typeof n.value === "string") checkText(n.value, node);
+          return;
+        case "TemplateLiteral":
+          for (const q of n.quasis ?? []) {
+            if (typeof q.value?.cooked === "string") checkText(q.value.cooked, node);
+          }
+          return;
+        case "Identifier": {
+          const name = identifierName(node);
+          if (name && CLIENT_CODE_CALLEES.has(name) && isCalleePosition(node, parents)) {
+            fail(`calls ${name}: a client file turns no text into code and loads none.`, node);
+          }
+          return;
+        }
+        case "MemberExpression":
+        case "StaticMemberExpression":
+        case "ComputedMemberExpression": {
+          const prop = memberPropertyName(n);
+          if (prop === null) return;
+          if (CLIENT_MARKUP_SINKS.has(prop)) {
+            fail(
+              `uses ${prop}: a client file writes text (textContent) and toggles what the page already has; it never builds markup (CLAUDE.md §1A).`,
+              node,
+            );
+          } else if (
+            (CLIENT_CODE_CALLEES.has(prop) || prop === "constructor") &&
+            isCalleePosition(node, parents)
+          ) {
+            fail(`calls .${prop}(…): a client file turns no text into code.`, node);
+          } else if (
+            (prop === "write" || prop === "writeln") &&
+            identifierName(n.object) === "document" &&
+            isCalleePosition(node, parents)
+          ) {
+            fail(`calls document.${prop}: it rewrites the page as it loads.`, node);
+          }
+          return;
+        }
+        case "CallExpression":
+        case "NewExpression": {
+          const callee = identifierName(n.callee);
+          const first = unwrapExpr(n.arguments?.[0]) as { type?: string } | undefined;
+          if (callee && STRING_TIMERS.has(callee) && first?.type && LITERAL_TYPES.has(first.type)) {
+            fail(`passes a string to ${callee}, which runs it as code: pass a function.`, node);
+          }
+          return;
+        }
+        default:
+          return;
+      }
+    },
+    () => {
+      tooDeep = true;
+    },
+  );
+  if (tooDeep) fail("nests too deeply to review.");
+  return failures;
 }
 
 // ---------------------------------------------------------------------------

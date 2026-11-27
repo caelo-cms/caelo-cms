@@ -58,6 +58,7 @@ type TranslationOutcome = z.infer<typeof translationOutcome>;
  */
 export const pagesSeoApplyTranslationOp = defineOperation({
   name: "pages_seo.apply_translation",
+  pluginAccess: "write",
   readScope: "request",
   // Why system-only: the write half of a translation flow (plugins run
   // it from translate_variant). The AI fills SEO through

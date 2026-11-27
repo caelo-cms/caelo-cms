@@ -33,7 +33,7 @@ import {
   isDuplicatePendingError,
   resolveChatSessionId,
 } from "../_propose-helpers.js";
-import { describeManifestChanges } from "./manifest-changes.js";
+import { describeManifestChanges, type ManifestChange } from "./manifest-changes.js";
 import {
   APPROVE_REQUESTED,
   approvedDigestOf,
@@ -70,6 +70,11 @@ const releaseApproval = z.object({
   capabilities: z.array(capabilityRequest),
   /** Null: the approved manifest was never recorded, so what changed is unknown. */
   changes: z.array(manifestChange).nullable(),
+  /**
+   * What the release differs in when it asks for no new permission and
+   * lists no change, in the Owner's words; null otherwise.
+   */
+  unchangedSummary: z.string().nullable(),
 });
 type ReleaseApproval = z.infer<typeof releaseApproval>;
 
@@ -102,6 +107,26 @@ interface WaitingRow {
 const WAITING_COLUMNS = sql`slug, version, tier, status, manifest_json, approved_capabilities,
   approved_manifest_digest, approved_manifest_json`;
 
+/**
+ * What a waiting release with no new permission and no listed change
+ * differs in: its version, or, at the same version, only the format Caelo
+ * records the declaration in (#1729: `hasBuildAssets` became
+ * `hasBuildData`), which gives the plugin nothing new to do. Null when
+ * there is a permission or a change to list, or the approved manifest was
+ * never recorded.
+ */
+function unchangedSummary(
+  row: WaitingRow,
+  newPermissions: number,
+  changes: ManifestChange[] | null,
+): string | null {
+  if (newPermissions > 0 || changes === null || changes.length > 0) return null;
+  const approvedVersion = (row.approved_manifest_json as { version?: unknown } | null)?.version;
+  return approvedVersion === row.version
+    ? "Nothing it may do changed: Caelo now records its declaration in another format."
+    : "Only the version number changed.";
+}
+
 /** `row` as a waiting release, or null when it has nothing to approve. */
 function toReleaseApproval(row: WaitingRow): ReleaseApproval | null {
   const unapproved = unapprovedOf(row);
@@ -110,6 +135,10 @@ function toReleaseApproval(row: WaitingRow): ReleaseApproval | null {
   const manifestDigest = approvedDigestOf(row);
   if (manifestDigest === null) return null;
   const reasons = (row.manifest_json as PluginManifest).capabilityReasons;
+  const changes =
+    row.approved_manifest_json === null
+      ? null
+      : describeManifestChanges(row.approved_manifest_json, row.manifest_json);
   return {
     slug: row.slug,
     version: row.version,
@@ -132,10 +161,8 @@ function toReleaseApproval(row: WaitingRow): ReleaseApproval | null {
         authorReason: reasons?.[known.data] ?? null,
       };
     }),
-    changes:
-      row.approved_manifest_json === null
-        ? null
-        : describeManifestChanges(row.approved_manifest_json, row.manifest_json),
+    changes,
+    unchangedSummary: unchangedSummary(row, unapproved.length, changes),
   };
 }
 
@@ -326,6 +353,7 @@ function describeRelease(release: ReleaseApproval): string {
       lines.push(`- ${c.area}: ${parts.join("; ")}`);
     }
   }
+  if (release.unchangedSummary !== null) lines.push("", release.unchangedSummary);
   return lines.join("\n");
 }
 

@@ -29,12 +29,15 @@ import {
 } from "@caelo-cms/plugin-host";
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext, PageUrlStyle } from "@caelo-cms/shared";
+import { type ExecutionContext, type PageUrlStyle, pluginValueOf } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 import { runSeoPass } from "./fixtures/seo-pass.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
+
+/** A checked value without its plugin wrapper (#1729: values stay the plugin's until they land). */
+const plain = (v: unknown): unknown => pluginValueOf(v)?.value ?? v;
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -264,7 +267,10 @@ describe("#590 — canonical, sitemap, hreflang and switcher share one URL build
         const items = lists.get(p.id)?.language_links ?? [];
         expect(
           Object.fromEntries(
-            items.map((i) => [i.values.locale, (i.values.href as { href: string }).href]),
+            items.map((i) => [
+              plain(i.values.locale),
+              (plain(i.values.href) as { href: string }).href,
+            ]),
           ),
         ).toEqual(expected);
       }
@@ -342,7 +348,10 @@ describe("#590 — canonical, sitemap, hreflang and switcher share one URL build
       const items = lists.get(p.id)?.language_links ?? [];
       expect(
         Object.fromEntries(
-          items.map((i) => [i.values.locale, (i.values.href as { href: string }).href]),
+          items.map((i) => [
+            plain(i.values.locale),
+            (plain(i.values.href) as { href: string }).href,
+          ]),
         ),
       ).toEqual(expected);
     }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { pluginManifest } from "@caelo-cms/plugin-sdk";
+import { isExternallyBrokered, pluginCapability, pluginManifest } from "@caelo-cms/plugin-sdk";
 import { validateInstallationPolicy, validateSelectedGrants } from "./installation-policy.js";
 
 function manifest() {
@@ -28,6 +28,8 @@ describe("explicit external installation grants", () => {
     expect(() => validateInstallationPolicy({ ...manifest(), capabilityReasons: {} })).toThrow(
       "Explain",
     );
+    // The allowlist rule applies once cms_admin is brokered (#1729); until
+    // then the refusal of an unbrokered capability comes first.
     expect(() =>
       validateInstallationPolicy({
         ...manifest(),
@@ -35,12 +37,64 @@ describe("explicit external installation grants", () => {
         adminSchema: {},
         capabilityReasons: { cms_admin: "Edit pages" },
       }),
-    ).toThrow("allowlist");
+    ).toThrow(isExternallyBrokered("cms_admin") ? "allowlist" : "not available");
+  });
+  it("refuses the part of url_slots no runtime-installed plugin can have, naming what it may claim (#1729 Q7 A)", () => {
+    // Independent of which capabilities are still planned: the slots that
+    // map every slug through code are never offered to an installed plugin.
+    for (const slot of ["slug-format", "full-path"] as const) {
+      const refused = () =>
+        validateInstallationPolicy({
+          ...manifest(),
+          requestedCapabilities: ["cms_admin_schema", "url_slots"],
+          capabilityReasons: { cms_admin_schema: "Notes", url_slots: "Shape slugs" },
+          urlContributions: [{ slot }],
+        });
+      expect(refused).toThrow(
+        `URL slot "${slot}" is not available to runtime-installed plugins: it maps every page's slug through code`,
+      );
+      expect(refused).toThrow(/may claim host and path-prefix, declared as tables \(`urlTables`\)/);
+      expect(refused).toThrow(`Remove "${slot}" from \`urlContributions\``);
+    }
+  });
+  it("refuses a capability still planned, naming its issue and what can be requested (#1729)", () => {
+    // Vacuous once every capability is brokered; the parity test then still
+    // checks that each one is brokered or planned with an issue.
+    for (const capability of pluginCapability.options.filter((c) => !isExternallyBrokered(c))) {
+      const refused = () =>
+        validateInstallationPolicy({
+          ...manifest(),
+          requestedCapabilities: ["cms_admin_schema", capability],
+          capabilityReasons: { cms_admin_schema: "Notes", [capability]: "Probe" },
+        });
+      expect(refused).toThrow(
+        new RegExp(`\`${capability}\`.*not available to runtime-installed plugins yet \\(#\\d+\\)`),
+      );
+      expect(refused).toThrow(/can request: .*cms_admin_schema/);
+    }
+  });
+  it("ai_provider needs the daily cap the Owner approves, and only ai_provider takes one (#1729 Q8 A)", () => {
+    const ai = (capabilityConstraints?: Record<string, unknown>) =>
+      validateInstallationPolicy({
+        ...manifest(),
+        requestedCapabilities: ["cms_admin_schema", "ai_provider"],
+        capabilityReasons: { cms_admin_schema: "Notes", ai_provider: "Summaries" },
+        ...(capabilityConstraints ? { capabilityConstraints } : {}),
+      });
+    expect(() => ai()).toThrow("`ai_provider` needs a daily AI spending cap");
+    expect(() => ai({ ai_provider: {} })).toThrow("needs a daily AI spending cap");
+    expect(() => ai({ ai_provider: { maxDailyCostMicrocents: 500_000_000 } })).not.toThrow();
+    expect(() =>
+      ai({
+        ai_provider: { maxDailyCostMicrocents: 1 },
+        cms_admin_schema: { maxDailyCostMicrocents: 1 },
+      }),
+    ).toThrow("limits `ai_provider` only");
   });
   it("requires reviewed capabilities for browser assets", () => {
-    expect(() => validateInstallationPolicy({ ...manifest(), hasBuildAssets: true })).toThrow(
-      "client_assets",
-    );
+    expect(() =>
+      validateInstallationPolicy({ ...manifest(), clientFiles: { "runtime.js": "x" } }),
+    ).toThrow("client_assets");
   });
 });
 

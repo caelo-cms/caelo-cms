@@ -21,9 +21,11 @@
  */
 
 import {
+  checkContentVariantValues,
   contentVariantProblemMarker,
   hasContentVariantContributors,
   type RenderScope,
+  type ResolvedContentVariant,
   resolveContentVariants,
 } from "@caelo-cms/plugin-host";
 import type { ContentVariantPlacement } from "@caelo-cms/plugin-sdk";
@@ -87,8 +89,18 @@ export interface ContentVariantsInput {
 
 /** The contributors' answers, before the modules they name are loaded. */
 export interface ContentVariantAnswers {
+  /** Page placements' values, checked for their module's fields (#1729, §4.5). */
   readonly pageValues: ReadonlyMap<string, Record<string, unknown>>;
-  readonly layoutRaw: ReadonlyMap<string, { moduleId?: string; values?: Record<string, unknown> }>;
+  /** Layout answers as the plugins gave them: checked once their module is known. */
+  readonly layoutRaw: ReadonlyMap<
+    string,
+    {
+      moduleId?: string;
+      values?: Record<string, unknown>;
+      answer: ResolvedContentVariant;
+      placement: ContentVariantPlacement;
+    }
+  >;
   readonly markers: readonly string[];
   /** The modules layout variants render instead of the stored one. */
   readonly moduleIds: readonly string[];
@@ -146,6 +158,7 @@ export async function askContentVariants(
     });
   }
   const pageKeyOf = new Map<string, string>();
+  const placementOf = new Map<string, ContentVariantPlacement>();
   for (const m of input.modRows) {
     const bindingKey = `${m.block_name}#${m.position}`;
     const binding = input.placementBindings.get(bindingKey);
@@ -170,6 +183,7 @@ export async function askContentVariants(
     });
   }
 
+  for (const p of placements) placementOf.set(p.key, p);
   const resolved = (
     await resolveContentVariants([{ pageId: input.pageId, placements }], input.renderScope)
   ).get(input.pageId);
@@ -177,16 +191,39 @@ export async function askContentVariants(
 
   const markers: string[] = [];
   const pageValues = new Map<string, Record<string, unknown>>();
-  const layoutRaw = new Map<string, { moduleId?: string; values?: Record<string, unknown> }>();
+  const layoutRaw = new Map<
+    string,
+    {
+      moduleId?: string;
+      values?: Record<string, unknown>;
+      answer: ResolvedContentVariant;
+      placement: ContentVariantPlacement;
+    }
+  >();
   for (const [key, res] of resolved) {
     for (const p of res.problems) markers.push(contentVariantProblemMarker(res.pluginSlug, p));
+    const placement = placementOf.get(key) as ContentVariantPlacement;
     if (key.startsWith("page:")) {
       const bindingKey = pageKeyOf.get(key);
-      if (bindingKey && res.values !== undefined) pageValues.set(bindingKey, { ...res.values });
+      if (bindingKey && res.values !== undefined) {
+        pageValues.set(
+          bindingKey,
+          checkContentVariantValues({
+            pluginSlug: res.pluginSlug,
+            key,
+            fields: placement.fields,
+            stored: placement.values,
+            values: res.values,
+            ...(res.media ? { media: res.media } : {}),
+          }),
+        );
+      }
     } else {
       layoutRaw.set(key, {
         ...(res.moduleId !== undefined ? { moduleId: res.moduleId } : {}),
         ...(res.values !== undefined ? { values: { ...res.values } } : {}),
+        answer: res,
+        placement,
       });
     }
   }
@@ -237,9 +274,22 @@ export function finishContentVariants(
       );
       continue;
     }
+    // #1729 (§4.5) — checked for the module that renders them: the swapped
+    // one (its own defaults are what core would render) or the placement's.
+    const values =
+      v.values === undefined
+        ? undefined
+        : checkContentVariantValues({
+            pluginSlug: v.answer.pluginSlug,
+            key,
+            fields: module ? fieldList(module.fields) : v.placement.fields,
+            stored: module ? defaults(module.fields) : v.placement.values,
+            values: v.values,
+            ...(v.answer.media ? { media: v.answer.media } : {}),
+          });
     layout.set(key, {
       ...(module ? { module } : {}),
-      ...(v.values !== undefined ? { values: v.values } : {}),
+      ...(values !== undefined ? { values } : {}),
     });
   }
   return { pageValues: answers.pageValues, layout, markers };

@@ -139,7 +139,7 @@ export interface BuildPluginServices {
     pages: PublicUrlPage[],
     urlContext: PublicUrlContext,
   ): Promise<Map<string, string>>;
-  collectBuildAssets(pageIds: string[]): Promise<PluginClientAsset[]>;
+  collectBuildAssets(): Promise<PluginClientAsset[]>;
   staticRenderPlugins(): Promise<StaticRenderPlugin[]>;
   metaSignatureBatch(pluginSlug: string, pageIds: string[]): Promise<ReadonlyMap<string, string>>;
   metaSignature(pluginSlug: string, pageId: string): Promise<string>;
@@ -197,7 +197,7 @@ export const localBuildPluginServices: BuildPluginServices = {
   resolveShareImages: (pageIds) => resolveShareImages(pageIds, MAIN_RENDER),
   resolvePublicPageUrls: (pages, urlContext) =>
     resolvePublicPageUrls(pages, urlContext, MAIN_RENDER),
-  collectBuildAssets: (pageIds) => collectBuildAssets(pageIds, MAIN_RENDER),
+  collectBuildAssets: () => collectBuildAssets(MAIN_RENDER),
   staticRenderPlugins: async () =>
     loadedPlugins
       .all()

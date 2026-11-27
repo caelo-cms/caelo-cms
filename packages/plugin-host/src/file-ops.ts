@@ -122,6 +122,7 @@ async function readRow(tx: Tx, pluginId: string, id: string): Promise<Row | unde
 
 const beginOp = defineOperation({
   name: FILE_OPS.begin,
+  pluginAccess: "handle",
   readScope: "request",
   // Why plugin-only: a plugin's own files; RLS scopes them by plugin id.
   actorScope: ["plugin"],
@@ -162,6 +163,7 @@ const beginOp = defineOperation({
 
 const writeChunkOp = defineOperation({
   name: FILE_OPS.writeChunk,
+  pluginAccess: "handle",
   readScope: "request",
   // Why plugin-only: see begin.
   actorScope: ["plugin"],
@@ -208,6 +210,7 @@ const writeChunkOp = defineOperation({
 
 const commitOp = defineOperation({
   name: FILE_OPS.commit,
+  pluginAccess: "handle",
   readScope: "request",
   // Why plugin-only: see begin.
   actorScope: ["plugin"],
@@ -247,6 +250,7 @@ const commitOp = defineOperation({
 
 const statOp = defineOperation({
   name: FILE_OPS.stat,
+  pluginAccess: "handle",
   readScope: "request",
   // Why plugin-only: see begin.
   actorScope: ["plugin"],
@@ -265,6 +269,7 @@ const statOp = defineOperation({
 
 const readChunkOp = defineOperation({
   name: FILE_OPS.readChunk,
+  pluginAccess: "handle",
   readScope: "request",
   // Why plugin-only: see begin.
   actorScope: ["plugin"],
@@ -292,6 +297,7 @@ const readChunkOp = defineOperation({
 
 const removeOp = defineOperation({
   name: FILE_OPS.remove,
+  pluginAccess: "handle",
   readScope: "request",
   // Why plugin-only: see begin.
   actorScope: ["plugin"],

@@ -45,6 +45,7 @@
 import { linkResolvePageVariant } from "@caelo-cms/plugin-sdk";
 import type { JournalFilter, JournalMark } from "@caelo-cms/query-api";
 import type { LinkPageVariant } from "@caelo-cms/shared";
+import { z } from "zod";
 import { checkPluginJournalMark } from "./change-consumers.js";
 import {
   hostInfra,
@@ -57,6 +58,26 @@ import {
 } from "./dispatch.js";
 import { readLinkResolveDelta } from "./link-resolve-delta.js";
 import { reportPluginRenderFailure } from "./render-failures.js";
+import { assertAnswerSize, chunkPageIds, type RenderPointCall } from "./render-points.js";
+
+/**
+ * #1729 — pages one link-resolve call is asked about. The answer grows with
+ * its pages (at most about 330 bytes each: a page id, a 64-character
+ * variant and a 200-character group), so a call of 10 000 pages stays
+ * under its 4 MB cap; a 50 000-page site asks in five calls, and an editor
+ * preview, which keeps the answers (#1269), asks only about what changed.
+ */
+export const LINK_RESOLVE_PAGES_PER_CALL = 10_000;
+
+/** #1729 — the largest answer one link-resolve call returns, serialized. */
+export const LINK_RESOLVE_ANSWER_MAX_BYTES = 4 * 1024 * 1024;
+
+const LINK_RESOLVE_CALL: RenderPointCall = {
+  point: "link-resolve",
+  maxAnswerBytes: LINK_RESOLVE_ANSWER_MAX_BYTES,
+};
+
+const answerSchema = z.object({ pages: z.record(z.string(), z.unknown()) }).strict();
 
 /** pageId → its variant and variant group. A missing page maps nothing. */
 export type ResolvedLinkVariants = ReadonlyMap<string, LinkPageVariant>;
@@ -303,9 +324,11 @@ async function answersOf(
 }
 
 /**
- * One call of the plugin's link-resolve operation for `pageIds`: its raw
- * answers by page, or null when it failed and the render goes on without
- * it (reported, #1087). Any other failure throws.
+ * The plugin's link-resolve answers for `pageIds`, one call per chunk of
+ * pages (render-points.ts): its raw answers by page, or null when a call
+ * failed and the render goes on without it (reported, #1087). Any other
+ * failure throws, and so does an answer for a page its call was not asked
+ * about.
  */
 async function askPlugin(
   lp: LoadedPlugin,
@@ -313,20 +336,43 @@ async function askPlugin(
   pageIds: readonly string[],
   scope: RenderScope,
 ): Promise<Record<string, unknown> | null> {
-  const r = await runPluginOperation({
-    invocation: renderInvocation(scope),
-    pluginSlug: lp.slug,
-    operationName,
-    args: { pageIds: [...pageIds] },
-  });
-  if (!r.ok) {
-    const reason = `link-resolve: ${lp.slug}.${operationName} failed: ${r.error.kind}: ${r.error.message}`;
-    // #1087 — a preview renders without this plugin's partition (links
-    // then resolve as on a single-variant site) and flags it.
-    if (reportPluginRenderFailure(scope, { slug: lp.slug, point: "link-resolve", reason })) {
-      return null;
+  const label = `link-resolve: ${lp.slug}.${operationName}`;
+  const pages: Record<string, unknown> = {};
+  for (const chunk of chunkPageIds(pageIds, { maxIds: LINK_RESOLVE_PAGES_PER_CALL })) {
+    const r = await runPluginOperation({
+      invocation: renderInvocation(scope),
+      pluginSlug: lp.slug,
+      operationName,
+      args: { pageIds: chunk },
+      maxAnswerBytes: LINK_RESOLVE_ANSWER_MAX_BYTES,
+    });
+    if (!r.ok) {
+      const reason = `${label} failed: ${r.error.kind}: ${r.error.message}`;
+      // #1087 — a preview renders without this plugin's partition (links
+      // then resolve as on a single-variant site) and flags it.
+      if (reportPluginRenderFailure(scope, { slug: lp.slug, point: "link-resolve", reason })) {
+        return null;
+      }
+      throw new Error(reason);
     }
-    throw new Error(reason);
+    // A shipped plugin answers in-process: held to the cap a sandboxed
+    // answer meets while its parts arrive.
+    assertAnswerSize(LINK_RESOLVE_CALL, label, r.value);
+    const parsed = answerSchema.safeParse(r.value);
+    if (!parsed.success) {
+      throw new Error(
+        `${label}: expected { pages: Record<pageId, { variant, group }> }: ${parsed.error.issues.map((i) => `${i.path.join(".") || "answer"}: ${i.message}`).join("; ")}`,
+      );
+    }
+    const asked = new Set(chunk);
+    for (const [pageId, answer] of Object.entries(parsed.data.pages)) {
+      if (!asked.has(pageId)) {
+        throw new Error(
+          `link-resolve: plugin "${lp.slug}" answered for page ${pageId}, which is not part of this render`,
+        );
+      }
+      pages[pageId] = answer;
+    }
   }
-  return (r.value as { pages?: Record<string, unknown> } | null)?.pages ?? {};
+  return pages;
 }

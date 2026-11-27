@@ -430,15 +430,27 @@ and names a `listSourcesOperation` (grant `list_sources`). The node is
 data only — no children, no source, no `module` / `term` fields. The
 operation takes `{ pageIds, pageUrlStyle }` and returns
 `{ sources: Record<pageId, Record<name, { id, values }[]>> }`; the host
-(`plugin-host/src/list-source-resolution.ts`) calls it once per preview /
-build, batched over the pages, and checks the answer before anything
-renders: only pages that were asked about, only names the plugin
-claimed, at most 500 entries per page and source, ids that are stable
-tokens (`[A-Za-z0-9_.:-]{1,128}`, unique), values valid for the node's
-fields and no undeclared key, at most 4 MiB serialized. A violation
-throws (in a preview and in a build); a failing call is reported as
-`plugin-render-failed:<slug>` in a preview and throws in a build. The
-entries reach `forPage` as `pluginSources`. A section name no module
+(`plugin-host/src/list-source-resolution.ts`) calls it once per preview,
+and in a build once per 1000 pages (#1729, `render-points.ts`), and
+checks the answer before anything renders: only pages that were asked
+about, only names the plugin claimed, at most 500 entries per page and
+source, ids that are stable tokens (`[A-Za-z0-9_.:-]{1,128}`, unique),
+values valid for the node's fields and no undeclared key, at most 4 MiB
+serialized per call. A violation throws (in a preview and in a build); a
+failing call is reported as `plugin-render-failed:<slug>` in a preview
+and throws in a build. Then every value, the plugin's own and a
+translation overlay's, is checked for the page (#1729,
+`plugin-host/src/plugin-values.ts`, for every plugin): `text`, `select`
+and `icon` are HTML-escaped, `richtext` must be prose (`p`, `a`,
+`strong`, `em`, `ul`, `ol`, `li`, `h2`-`h6`, `blockquote`, `code`, `br`,
+`span`, no `on*` or `style`), a `link` keeps to https, http, mailto, tel,
+a relative URL or a `caelo:` reference, and `media` must be a library
+image. A refused value is never cleaned: the spot stays raw and the
+render records `plugin-value-refused:<plugin>.<source>.<field>:<rule>`,
+which the preview lists and Publish live refuses (the rest of the source
+still renders). The entries reach `forPage` as `pluginSources`. A
+runtime-installed plugin answers through its `$listSources` reserved
+entry, with read-only access to its private storage. A section name no module
 field declares but an installed plugin does (`{{#language_links}}`)
 reads that plugin source too; module fields always win. Names of an
 installed-but-inactive plugin render `list-source-unavailable:<name>

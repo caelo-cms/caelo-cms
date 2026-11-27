@@ -103,9 +103,15 @@ import { type SourceDef, sourceDefSchema } from "./lists/list-type.js";
 import { PAGE_KEY_UNKNOWN, PAGE_PATH_UNKNOWN } from "./lists/page-paths.js";
 import { PAGE_PROP_UNKNOWN } from "./lists/page-props.js";
 import type { ListPaginationSettings } from "./lists/pagination.js";
+import {
+  pluginValueOf,
+  pluginValueRefusedMarker,
+  refusedPluginValueMarker,
+} from "./lists/plugin-values.js";
 import type { ListHolder, ListPageContext } from "./lists/resolve.js";
 import { parseLinkFieldValue } from "./lists/resolve-values.js";
 import { stripCdataGuards } from "./strip-cdata.js";
+import { placeholderContexts } from "./template-contexts.js";
 import { renderSections } from "./template-sections.js";
 
 export {
@@ -195,7 +201,18 @@ export function templateFieldsFromJson(raw: unknown): TemplateField[] {
 export type PartialResolver = (
   key: string,
   ref?: { readonly moduleId: string; readonly contentInstanceId: string },
+  placement?: NestedPlacement,
 ) => string | undefined;
+
+/**
+ * #1729 — where a nested module renders in its parent: `content` (plain
+ * HTML element content, where its own template's reading holds) or
+ * `outside` (anywhere else: render it with `refusePluginValues`).
+ */
+export type NestedPlacement = "content" | "outside";
+
+/** The rule a nested module placed outside plain element content refuses its plugins' values with. */
+export const NESTED_PLACEMENT_RULE = "context-nested-placement";
 
 export interface RenderTemplateInput {
   readonly html: string;
@@ -253,6 +270,12 @@ export interface RenderTemplateInput {
    * pushes `link-resolver-unavailable:<kind>/<id>` (loud, never empty).
    */
   readonly linkResolver?: LinkResolver;
+  /**
+   * #1729 — refuse every plugin value in this render with this rule: the
+   * module renders where its own template's reading does not hold (a
+   * nested module its parent puts in an attribute, raw text, SVG, …).
+   */
+  readonly refusePluginValues?: string;
 }
 
 export interface RenderTemplateOutput {
@@ -359,9 +382,25 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   const missing: string[] = [];
   const fieldByName = new Map<string, TemplateField>();
   for (const f of input.fields) fieldByName.set(f.name, f);
-  const cvs = input.contentValues ?? {};
+  // #1729 — a value a plugin handed the placement that the host refused
+  // (`plugin-value-refused`, §4.5): recorded as a render failure, which
+  // blocks Publish live, whether the HTML shows the field or not. Its spot
+  // stays raw — never the field's default, which would be a silent
+  // fallback — and a list renders no entries.
+  const refusedFields = new Set<string>();
+  const cvs: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(input.contentValues ?? {})) {
+    const marker = refusedPluginValueMarker(v);
+    if (marker === null) {
+      cvs[k] = v;
+      continue;
+    }
+    missing.push(marker);
+    refusedFields.add(k.toLowerCase());
+    if (SECTION_KINDS.has(fieldByName.get(k)?.kind ?? "text")) cvs[k] = [];
+  }
   const partialSource = input.partials ?? {};
-  const partials: PartialResolver =
+  const resolve: PartialResolver =
     typeof partialSource === "function"
       ? partialSource
       : (key: string) => (Object.hasOwn(partialSource, key) ? partialSource[key] : undefined);
@@ -397,6 +436,19 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   //    modules; this covers any already-stored HTML + the deploy render.
   const sourceHtml = stripCdataGuards(input.html);
 
+  // #1729 — a nested module learns where its parent puts it.
+  let outside: ReadonlySet<string> | null = null;
+  const partials: PartialResolver = (key, ref) => {
+    outside ??= new Set(
+      [...placeholderContexts(sourceHtml).nestedOutsideContent].map((n) => n.toLowerCase()),
+    );
+    const placement: NestedPlacement =
+      input.refusePluginValues !== undefined || outside.has(partialName(key))
+        ? "outside"
+        : "content";
+    return resolve(key, ref, placement);
+  };
+
   // 1. {{#name}}…{{/name}} and {{^name}}…{{/name}} sections, list
   //    entries and dot access (template-sections.ts).
   let html = renderSections(sourceHtml, {
@@ -408,6 +460,9 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
     lists: input.lists,
     holder: input.listHolder ?? { contentInstanceId: null },
     moduleLevelKeys: new Set(THEME_ASSET_KEYS),
+    ...(input.refusePluginValues !== undefined
+      ? { refusePluginValues: input.refusePluginValues }
+      : {}),
     renderModuleList: (name, field) =>
       renderModuleList(name, field as TemplateField, cvs, partials, missing, mkSentinel),
   });
@@ -431,7 +486,7 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   }
   for (const f of input.fields) {
     const lower = f.name.toLowerCase();
-    if (lower in view) continue;
+    if (lower in view || refusedFields.has(lower)) continue;
     if (SECTION_KINDS.has(f.kind) || f.kind === "module") continue;
     if (f.default !== undefined && f.default !== null) view[lower] = f.default;
   }
@@ -447,6 +502,20 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
     // An object with no href is no value: it stays raw like any empty field.
     if (link.href.length > 0) view[lower] = link.href;
     else delete view[lower];
+  }
+  // #1729 — the section pass substitutes every tag of a plugin's value by
+  // its context (template-contexts.ts). One it did not reach must never
+  // render as an object or unchecked: it fails loudly where Mustache would
+  // have used it.
+  for (const [key, value] of Object.entries(view)) {
+    const owned = pluginValueOf(value);
+    if (owned === null) continue;
+    const { plugin, point, address } = owned.origin;
+    const marker = pluginValueRefusedMarker(plugin, point, address, "context-unknown");
+    view[key] = () => {
+      missing.push(marker);
+      return mkSentinel(`{{${key}}}`);
+    };
   }
 
   // v0.11.1 (issue #76) — pre-populate four theme-asset substitutions
@@ -594,6 +663,13 @@ export function isFieldPathMarker(marker: string): boolean {
     marker.startsWith(`${PAGE_KEY_UNKNOWN}:`) ||
     marker.startsWith(`${PAGE_PATH_UNKNOWN}:`)
   );
+}
+
+/** The tag name behind a partial key: `name`, `name__<i>` (a module list), `list:<field>/<item>/<name>`. */
+function partialName(key: string): string {
+  if (key.startsWith("list:")) return (key.split("/").at(-1) ?? key).toLowerCase();
+  const sep = key.lastIndexOf("__");
+  return (sep > 0 && /^\d+$/.test(key.slice(sep + 2)) ? key.slice(0, sep) : key).toLowerCase();
 }
 
 function renderModuleList(

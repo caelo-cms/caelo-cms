@@ -71,7 +71,7 @@ const gated = definePlugin({
   tier: 1,
   schema: { pings: { id: "uuid", pinged_at: "timestamp" } },
   tableKinds: { pings: "visitor-state" },
-  requestedCapabilities: ["snapshots"],
+  requestedCapabilities: ["list_types"],
   publicOperations: [
     {
       name: "ping",
@@ -208,7 +208,7 @@ beforeAll(async () => {
   });
   expect(adminReport.failed).toEqual([]);
   // A new release asks for a capability the Owner has not approved: the
-  // plugin stays active, its approved set lacks `snapshots`.
+  // plugin stays active, its approved set lacks `list_types`.
   await asAdmin(async (tx) => {
     await tx`UPDATE plugins SET approved_capabilities = '{}'::text[] WHERE slug = ${SLUG}`;
     await tx`UPDATE site_settings SET captcha_provider = 'off' WHERE id = 1`;
@@ -277,7 +277,7 @@ describe("#1267 — the gateway honours the capability approval gate", () => {
     const pointer = await livePointer();
     await asAdmin(
       (tx) =>
-        tx`UPDATE plugins SET approved_capabilities = ARRAY['snapshots'] WHERE slug = ${SLUG}`,
+        tx`UPDATE plugins SET approved_capabilities = ARRAY['list_types'] WHERE slug = ${SLUG}`,
     );
     // #1587 — the admin's post-write drain, not a release: the approval of a
     // release-signed plugin is published as the Owner holds it now.
@@ -318,7 +318,7 @@ describe("#1587 — a release approved after a Caelo update runs on the live gat
     // approval of the release before it, whose manifest differs.
     await asAdmin(
       (tx) =>
-        tx`UPDATE plugins SET approved_capabilities = ARRAY['snapshots'],
+        tx`UPDATE plugins SET approved_capabilities = ARRAY['list_types'],
                               approved_manifest_digest = ${"0".repeat(64)}
            WHERE slug = ${SLUG}`,
     );

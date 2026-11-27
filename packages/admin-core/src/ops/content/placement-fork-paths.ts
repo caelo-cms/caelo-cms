@@ -57,6 +57,7 @@ export async function rendersBeyond(
 
 export const contentInstancesRenderedOnManyOp = defineOperation({
   name: "content_instances.rendered_on_many",
+  pluginAccess: "read",
   readScope: "request",
   // Why system-only (plugins included): a building block for a plugin that
   // writes shared content. The AI reads the same through get_content_instance and
@@ -124,6 +125,7 @@ const forkPathsInput = z
  */
 export const forkPlacementPathsOp = defineOperation({
   name: "placement.fork_paths",
+  pluginAccess: "write",
   readScope: "request",
   // Why system-only (plugins included): which instances to copy is a
   // decision the caller needs reach and language data for. The AI forks a placement

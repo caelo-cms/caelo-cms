@@ -8,9 +8,10 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { AUDIT_FACT_LIMITS } from "@caelo-cms/plugin-sdk";
 import type { StagedPage } from "../check.js";
 import { siteHostsOf } from "../links-analysis.js";
-import { extractPageFacts, MAX_FACT_LINKS, parseSitemapAlternates } from "../page-facts.js";
+import { extractPageFacts, parseSitemapAlternates } from "../page-facts.js";
 
 const HOSTS = siteHostsOf(["http://s.test", "https://example.com"]);
 const MOD = "11111111-1111-4111-8111-111111111111";
@@ -103,6 +104,7 @@ describe("extractPageFacts", () => {
     expect(f.texts.some((t) => t.text.includes("nicht sichtbar"))).toBe(false);
     expect(f.texts.some((t) => t.text === "Preise | Caelo")).toBe(false);
     expect(f.truncated).toBe(false);
+    expect(f.truncatedFacts).toEqual([]);
   });
 
   it("takes the page's sitemap alternates, null when the sitemap does not list it", () => {
@@ -158,7 +160,7 @@ describe("extractPageFacts", () => {
 
   it("cuts long pages and says so", () => {
     const links = Array.from(
-      { length: MAX_FACT_LINKS + 5 },
+      { length: AUDIT_FACT_LIMITS.links + 5 },
       (_, i) => `<a href="/p${i}">x${i}</a>`,
     );
     const f = extractPageFacts(
@@ -166,7 +168,8 @@ describe("extractPageFacts", () => {
       HOSTS,
       "no-sitemap",
     );
-    expect(f.links).toHaveLength(MAX_FACT_LINKS);
+    expect(f.links).toHaveLength(AUDIT_FACT_LIMITS.links);
     expect(f.truncated).toBe(true);
+    expect(f.truncatedFacts).toEqual(["links"]);
   });
 });

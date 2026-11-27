@@ -44,6 +44,7 @@ Plugin storage becomes a core Query API operation family, executed with the invo
 | `plugin_storage.update_many` | One patch on up to 1000 rows: every row or none, one snapshot header for all of them (#1391) |
 | `plugin_storage.compare_and_swap` | One row, only while expected values still match |
 | `plugin_storage.upsert` | THE row of a key: inserted when the key has none, else updated (#1659, private zone only; see "One row per key" below) |
+| `plugin_storage.lock_url_tables` | Not a write: the per-plugin lock every write to a declared URL table takes inside the transaction its checks and the write share (#1729, `urlTables`; external-plugin-brokers.md §6.8) |
 | `plugin_public_storage.*` | The same for the public zone (without `upsert`: a public table declares a `unique` index instead) |
 
 - **Two zones, two families.** `plugin_storage.*` for the private zone (the plugin's `cms_admin` schema) and `plugin_public_storage.*` for the public zone (`cms_public.<slug>`). The one batch write is `update_many` (#1391): `international-site`'s staleness rebuild flags thousands of variants, and one write with its own snapshot per row took minutes of database time on a small instance, because the journal and draft-head triggers on the snapshot tables run once per statement. `ctx.adminQuery` and `ctx.query` keep their SDK shape and become thin brokers over these operations; the host no longer issues SQL for plugins (§14.7).
@@ -104,7 +105,7 @@ The key must lead a declared index, like a `list` filter. A table has one key (t
 
 ### 5. Render-time reads
 
-Data lists, deferrals, head contributions, build assets and URL annotations take a required `RenderScope` (`{ chatBranchId: string | null }`; `MAIN_RENDER` for main): the preview's branch in the admin preview, main in the static generator and for the live `current_path`. Required, so no call site can silently read main in a branch preview. A branch preview therefore renders plugin state exactly as it will look after publish, and the deployed site renders main only. `buildAssets` output is computed per preview branch; the deployed bytes come from main.
+Data lists, deferrals, head contributions, build assets and URL annotations take a required `RenderScope` (`{ chatBranchId: string | null }`; `MAIN_RENDER` for main): the preview's branch in the admin preview, main in the static generator and for the live `current_path`. Required, so no call site can silently read main in a branch preview. A branch preview therefore renders plugin state exactly as it will look after publish, and the deployed site renders main only. A plugin's build data (`buildDataOperation`, #1729) is computed per preview branch; the deployed data comes from main. Its client files are the reviewed bytes on every branch.
 
 A scope that lives for exactly one render pass may also carry a `renderId` (#1213; the editor preview sets a fresh one per render). It reaches every plugin call of the pass as `invocation.renderId`, so a plugin can read its rows once for all of the pass's composition points (international-site: the locale registry, the page's variant group, the published-variant matrix behind hreflang and the language switcher). A plugin must not keep such reads past the pass: nothing tells it when its rows or the pages changed in between. `MAIN_RENDER` carries none.
 

@@ -121,6 +121,32 @@ describe("stagedRenderReport (#1604)", () => {
     expect(r?.aiText).toContain("could not render 240 spots");
   });
 
+  it("names a refused plugin head entry and share image in the operator's words (#1729)", () => {
+    const r = stagedRenderReport(
+      [
+        failure({
+          blockName: null,
+          moduleSlug: null,
+          reason: "plugin-value-refused:probe.head-composition.link:rel-stylesheet",
+        }),
+        failure({
+          blockName: null,
+          moduleSlug: null,
+          reason: "plugin-value-refused:probe.share-images.image:media-not-image",
+        }),
+      ],
+      2,
+    );
+    expect(r?.operatorText).toContain(
+      "A plugin added something to the page's head or sitemap that Caelo does not allow, so it was left out — on Home (/en)",
+    );
+    expect(r?.operatorText).toContain(
+      "A plugin's default image for when the page is shared is not a published library image, so the page has none — on Home (/en)",
+    );
+    expect(r?.operatorText).not.toMatch(/head-composition|rel-stylesheet|get_plugin/);
+    expect(r?.aiText).toContain("refuses (rel-stylesheet)");
+  });
+
   it("reports a link like any other content: no Caelo bug on a Stage", () => {
     const r = stagedRenderReport([linkFailure()], 1);
     expect(r?.operatorText).toContain("Pricing (/preise) has no English version");
@@ -392,5 +418,40 @@ describe("a title template variable without a value (#1752)", () => {
       "The page title template uses a value the site does not have yet (the site's name) — on Team (/team), Pricing (/pricing)",
     );
     expect(text).not.toMatch(/seo-title|set_|site_name/);
+  });
+});
+
+describe("renderRepairOf — a plugin value the host refused (#1729)", () => {
+  it("sends the AI to the plugin, with the rule and the field, within the finding's cut", () => {
+    const r = renderRepairOf({
+      reason: "plugin-value-refused:comments.recent_comments.body:element-script",
+      moduleSlug: "latest-comments",
+    });
+    expect(r.tool).toBe("get_plugin");
+    expect(r.hint).toContain(
+      'The plugin "comments" handed the page a body value in its list source recent_comments that Caelo refuses (element-script)',
+    );
+    expect(r.hint).toContain("submit_plugin");
+    expect(r.hint.length).toBeLessThan(500);
+  });
+
+  it("names the head vocabulary for a refused head entry, and the image rule for a share image", () => {
+    const head = renderRepairOf({
+      reason: "plugin-value-refused:probe.head-composition.link:rel-stylesheet",
+      moduleSlug: null,
+    });
+    expect(head.tool).toBe("get_plugin");
+    expect(head.hint).toContain(
+      `The plugin "probe" added a link to the page's head or sitemap that Caelo refuses (rel-stylesheet)`,
+    );
+    expect(head.hint).toContain("by pageId");
+    expect(head.hint.length).toBeLessThan(500);
+    const image = renderRepairOf({
+      reason: "plugin-value-refused:probe.share-images.image:media-reference",
+      moduleSlug: null,
+    });
+    expect(image.hint).toContain("(media-reference): it must be an existing library image");
+    expect(image.hint).toContain("set_page_seo_many");
+    expect(image.hint.length).toBeLessThan(500);
   });
 });

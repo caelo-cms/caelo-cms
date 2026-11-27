@@ -70,7 +70,7 @@ const plugin = definePlugin({
     tags: { page_id: "uuid", prefix: "string" },
     site_prefix: { prefix: "string" },
   },
-  requestedCapabilities: ["cms_admin_schema", "cms_admin"],
+  requestedCapabilities: ["cms_admin_schema", "cms_admin", "url_slots"],
   urlAnnotationsOperation: "annotations",
   urlContributions: [
     {

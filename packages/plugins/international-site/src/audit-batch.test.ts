@@ -137,7 +137,12 @@ function pageFacts(pageId: string, lang: string, own: string): PluginAuditPageFa
       text("Box text that stays the same", BOX),
       text(own, null),
     ],
+    headings: [],
+    images: [],
+    jsonLd: [],
+    socialMeta: [],
     truncated: false,
+    truncatedFacts: [],
   };
 }
 

@@ -19,12 +19,24 @@ import {
 } from "@caelo-cms/plugin-host";
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { type ExecutionContext, pluginValueOf } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
+
+/** Entries with their plugin values unwrapped (#1729: checked values stay the plugin's until they land). */
+function plainEntries<T extends { id: string; values: Readonly<Record<string, unknown>> }>(
+  entries: readonly T[] | undefined,
+): { id: string; values: Record<string, unknown> }[] | undefined {
+  return entries?.map((e) => ({
+    id: e.id,
+    values: Object.fromEntries(
+      Object.entries(e.values).map(([k, v]) => [k, pluginValueOf(v)?.value ?? v]),
+    ),
+  }));
+}
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -259,8 +271,12 @@ describe("#1323 consent categories in the page language", () => {
       siteBaseUrl: "https://example.com",
       pageUrlStyle: "directory",
     });
-    expect(built.get(ids.en)?.consent_categories?.[0]?.values.label).toBe("EN:Notwendig");
-    expect(built.get(ids.de)?.consent_categories?.[0]?.values.label).toBe("Notwendig");
+    expect(plainEntries(built.get(ids.en)?.consent_categories)?.[0]?.values.label).toBe(
+      "EN:Notwendig",
+    );
+    expect(plainEntries(built.get(ids.de)?.consent_categories)?.[0]?.values.label).toBe(
+      "Notwendig",
+    );
   });
 
   it("a source text changed: its old translation stops showing until it is redone", async () => {

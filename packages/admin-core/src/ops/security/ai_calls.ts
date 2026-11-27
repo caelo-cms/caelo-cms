@@ -5,6 +5,7 @@
  * inserted by the chat runtime, not via this op.
  */
 
+import { bindingPluginCap, readPluginAiCap } from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -343,12 +344,10 @@ export const spendWindowOp = defineOperation({
 });
 
 /**
- * P11.6 — per-plugin AI spend rollup. The plugin-host's ctx.ai.complete
- * checks this on each invocation before dispatching to the provider;
- * if (last 24h sum) ≥ ai_cost_cap_microcents the call fails with a
- * structured error and the plugin's operation surfaces it. The
- * /settings/plugins/[slug] page calls this to render the "AI spend
- * (last 24h)" cell + cap status.
+ * P11.6 — per-plugin AI spend rollup over the last 24 hours, with the caps
+ * the spend ledger holds the plugin to (plugin-host ai-ledger.ts): the
+ * Owner's, and for a runtime-installed plugin the one approved with its
+ * running version (#1729); the lower one binds. `get_plugin` reports it.
  *
  * Open read — Owner UI consumes; AI may also call to check before a
  * potentially expensive batch op ("am I about to blow the budget?").
@@ -361,7 +360,12 @@ export const aggregatePluginAiSpendOp = defineOperation({
   input: z.object({ pluginId: z.string().uuid() }).strict(),
   output: z.object({
     pluginId: z.string(),
+    /** The cap that binds: the lower of the two below, or null for none. */
     capMicrocents: z.number().nullable(),
+    /** The Owner's own cap (`plugins.set_ai_cost_cap`). */
+    ownerCapMicrocents: z.number().nullable(),
+    /** #1729 — the cap approved with a runtime-installed plugin's running version. */
+    approvedCapMicrocents: z.number().nullable(),
     last24hMicrocents: z.number().int().nonnegative(),
     last24hCalls: z.number().int().nonnegative(),
     capPct: z.number().min(0).nullable(),
@@ -370,52 +374,22 @@ export const aggregatePluginAiSpendOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT
-        p.ai_cost_cap_microcents AS cap,
-        COALESCE(SUM(c.cost_estimate_microcents) FILTER (
-          WHERE c.created_at > now() - interval '24 hours'
-        ), 0)::bigint AS spent,
-        COUNT(c.id) FILTER (
-          WHERE c.created_at > now() - interval '24 hours'
-        )::int AS calls
-      FROM plugins p
-      LEFT JOIN ai_calls c ON c.plugin_id = p.id
-      WHERE p.id = ${input.pluginId}::uuid
-      GROUP BY p.id, p.ai_cost_cap_microcents
-    `)) as unknown as {
-      cap: number | string | bigint | null;
-      spent: number | string | bigint;
-      calls: number;
-    }[];
+        COALESCE(SUM(c.cost_estimate_microcents), 0)::bigint AS spent,
+        COUNT(c.id)::int AS calls
+      FROM ai_calls c
+      WHERE c.plugin_id = ${input.pluginId}::uuid AND c.created_at > now() - interval '24 hours'
+    `)) as unknown as { spent: number | string | bigint; calls: number }[];
+    const caps = await readPluginAiCap(tx, input.pluginId);
+    const cap = bindingPluginCap(caps)?.capMicrocents ?? null;
     const r = rows[0];
-    if (!r) {
-      return ok({
-        pluginId: input.pluginId,
-        capMicrocents: null,
-        last24hMicrocents: 0,
-        last24hCalls: 0,
-        capPct: null,
-        capExceeded: false,
-      });
-    }
-    const cap =
-      r.cap === null
-        ? null
-        : typeof r.cap === "bigint"
-          ? Number(r.cap)
-          : typeof r.cap === "string"
-            ? Number.parseInt(r.cap, 10)
-            : r.cap;
-    const spent =
-      typeof r.spent === "bigint"
-        ? Number(r.spent)
-        : typeof r.spent === "string"
-          ? Number.parseInt(r.spent, 10)
-          : r.spent;
+    const spent = Number(r?.spent ?? 0);
     return ok({
       pluginId: input.pluginId,
       capMicrocents: cap,
+      ownerCapMicrocents: caps.ownerCapMicrocents,
+      approvedCapMicrocents: caps.grantCapMicrocents,
       last24hMicrocents: spent,
-      last24hCalls: r.calls,
+      last24hCalls: r?.calls ?? 0,
       capPct: cap && cap > 0 ? Math.min(1, spent / cap) : null,
       capExceeded: cap !== null && spent >= cap,
     });

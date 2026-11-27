@@ -11,7 +11,8 @@
     "./artifact": "./src/artifact.ts",
     "./installation-policy": "./src/installation-policy.ts",
     "./manifest": "./src/manifest.ts",
-    "./schema": "./src/schema.ts"
+    "./schema": "./src/schema.ts",
+    "./client-assets": "./src/client-assets.ts"
   },
   "scripts": {
     "typecheck": "tsc -b"

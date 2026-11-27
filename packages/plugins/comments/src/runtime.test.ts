@@ -190,10 +190,7 @@ async function visit(
       : {}),
     addEventListener: () => undefined,
   };
-  const assets = plugin.buildAssets?.({} as PluginContextTier1, { pageIds: [] }) as Record<
-    string,
-    string
-  >;
+  const assets = plugin.clientFiles as Record<string, string>;
   new Function("document", "window", "fetch", "console", assets["runtime.js"] as string)(
     doc,
     win,
@@ -599,10 +596,7 @@ describe("the bake's markup (#1169)", () => {
   });
 
   it("ships behaviour CSS only: the honeypot off-screen, hidden parts hidden", () => {
-    const assets = plugin.buildAssets?.({} as PluginContextTier1, { pageIds: [] }) as Record<
-      string,
-      string
-    >;
+    const assets = plugin.clientFiles as Record<string, string>;
     const css = assets["runtime.css"] ?? "";
     expect(css).toContain(`input[name="${HONEYPOT_FIELD_NAME}"]`);
     expect(css).toContain("[data-comment-older][hidden]");

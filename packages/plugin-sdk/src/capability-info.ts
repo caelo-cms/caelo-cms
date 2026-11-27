@@ -28,10 +28,6 @@ export const PLUGIN_CAPABILITY_INFO: Readonly<Record<PluginCapability, PluginCap
     label: "AI calls",
     allows: "Call your AI provider. These calls count towards your AI spend.",
   },
-  snapshots: {
-    label: "Snapshots",
-    allows: "Write to the site's history so its changes can be undone.",
-  },
   chat_runner_tools: {
     label: "AI chat tools",
     allows: "Add tools the AI can use in your chats.",
@@ -50,7 +46,8 @@ export const PLUGIN_CAPABILITY_INFO: Readonly<Record<PluginCapability, PluginCap
   },
   head_contributions: {
     label: "Page head and sitemap",
-    allows: "Add metadata to the head of your pages and entries to the sitemap.",
+    allows:
+      "Name the language versions of your pages in their head and the sitemap, set their og:locale, and choose a default share image from your library.",
   },
   url_slots: {
     label: "Page addresses",

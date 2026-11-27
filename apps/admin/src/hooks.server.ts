@@ -36,7 +36,6 @@ import {
   createGatewayRefresher,
   createPublicProjectionPublisher,
   type EmailConfigRow,
-  emitSnapshot,
   generateKekHex,
   getActiveProvider,
   getMediaStorage,
@@ -65,7 +64,6 @@ import {
   hostInstanceId,
   type AIProvider as PluginHostAIProvider,
   pluginHostRequestStart,
-  type SnapshotEmitter,
 } from "@caelo-cms/plugin-host";
 import { execute, withBranchVisibilityScope } from "@caelo-cms/query-api";
 import { type ExecutionContext, servableRedirectTargetIssue } from "@caelo-cms/shared";
@@ -157,8 +155,8 @@ async function bootPluginHost(): Promise<void> {
   // report with the database's session list (before the plugin host, whose
   // boot is itself a heavy database user).
   installIncidentCapture({ adapter, registry });
-  // P11.5 audit fix #3 — wire emitSnapshot + aiProvider so plugins that
-  // declare those capabilities get working handles. Plugin's
+  // P11.5 audit fix #3 — wire aiProvider so plugins that declare
+  // `ai_provider` get a working handle. Plugin's
   // requestedCapabilities still gates which handles are actually attached
   // per-call; this just supplies the implementations.
   // P18 + #593 — the provider is resolved per call, by the call's declared
@@ -166,11 +164,6 @@ async function bootPluginHost(): Promise<void> {
   // model); it throws when nothing is configured so plugin authors can
   // decide whether to surface or fail soft.
   const aiProvider: PluginHostAIProvider | undefined = makePluginTextProvider();
-  // The plugin-host's SnapshotEmitter type is a structural subset of
-  // admin-core's `SnapshotInput`. Both expect the same fields; the cast
-  // makes the structural compat explicit (TS doesn't relate the two
-  // ReadonlyArray<{kind: string, ...}> shapes nominally).
-  const emitter = emitSnapshot as unknown as SnapshotEmitter;
   // #1337 — the transport behind an admin-side ctx.email.send (an approved
   // newsletter campaign), built from email_config on every send so a
   // configuration change takes effect without a restart. Without one the
@@ -224,7 +217,6 @@ async function bootPluginHost(): Promise<void> {
       imageProvider: makePluginImageProvider({ adapter, registry }),
       // #530 — originals of site media for plugins granted site_media_read.
       siteMediaBytes: (storageKey: string) => getMediaStorage().get(storageKey),
-      emitSnapshot: emitter,
       emailTransport,
       // #1432 — the host and signing key of unsubscribe links, from cms_admin.
       mailLinks: async () => {

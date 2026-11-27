@@ -2,7 +2,7 @@
 
 Issue #1706. robots.txt is built, never a static file (`static-files.md`): the build writes it, and Publish live writes the live target's own. Until #1706 it said only `User-agent: * / Allow: /` and the Sitemap lines. The Owner may now add Allow and Disallow paths per user agent: to keep crawlers off a search results page, or an AI crawler off the whole site.
 
-Rules and rendering: `packages/shared/src/robots-rules.ts`. Ops: `site_defaults.set_seo` / `get_seo` / `propose_set_seo` / `preview_set_seo` / `execute_proposal` (`packages/admin-core/src/ops/seo.ts`, `site_defaults_pending.ts`). AI tools: `get_site_seo`, `propose_set_site_seo` (`ai/tools/propose-set-site-seo.ts`). Owner page: Settings → SEO. Migration `0785_robots_rules.sql`.
+Rules and rendering: `packages/shared/src/robots-rules.ts`. Ops: `site_defaults.set_seo` / `get_seo` / `propose_set_seo` / `preview_set_seo` / `execute_proposal` (`packages/admin-core/src/ops/seo.ts`, `site_defaults_pending.ts`). AI tools: `get_site_seo`, `propose_set_site_seo` (`ai/tools/propose-set-site-seo.ts`). Owner page: Settings → SEO. Migration `0861_robots_rules.sql`.
 
 ## The rules
 
