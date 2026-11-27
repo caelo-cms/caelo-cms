@@ -28,7 +28,7 @@ export interface SeoWriteHintRule {
 export const SEO_WRITE_HINT_RULES: readonly SeoWriteHintRule[] = [];
 
 /** Most hints one write gets: more would bury the tool result. */
-const MAX_HINTS = 8;
+const MAX_HINTS = 5;
 
 const writeHintArgs = z
   .object({
