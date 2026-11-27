@@ -60,21 +60,31 @@ export function stripContentInstances(html: string): string {
 /** Elements Google reads `data-nosnippet` on. */
 const NOSNIPPET_ROOTS = new Set(["div", "section", "span"]);
 
+/** The one element that encloses a whole fragment, and where its opening tag is. */
+interface SoleRoot {
+  readonly tag: string;
+  /** Index of the opening tag's `<`. */
+  readonly start: number;
+  /** Index of the opening tag's `>`. */
+  readonly end: number;
+}
+
 /**
- * The tag of the one element that encloses the whole fragment, or null when
- * the fragment has several top-level elements or text outside its element
- * (comments and whitespace aside).
+ * How a fragment's top level reads: its one enclosing element, or null when
+ * it has several top-level elements, text outside its element, or none
+ * (comments and whitespace aside); and whether it shows any text at all.
+ * Parsed, so markup inside a comment is never taken for an element.
  */
-function soleRootTag(html: string): string | null {
+function readTopLevel(html: string): { root: SoleRoot | null; empty: boolean } {
   let depth = 0;
   let roots = 0;
-  let tag: string | null = null;
+  let root: SoleRoot | null = null;
   let looseText = false;
   const parser = new Parser({
     onopentag(name) {
       if (depth === 0) {
         roots += 1;
-        tag = name;
+        root = { tag: name, start: parser.startIndex, end: parser.endIndex };
       }
       depth += 1;
     },
@@ -87,7 +97,7 @@ function soleRootTag(html: string): string | null {
   });
   parser.write(html);
   parser.end();
-  return roots === 1 && !looseText ? tag : null;
+  return { root: roots === 1 && !looseText ? root : null, empty: roots === 0 && !looseText };
 }
 
 /**
@@ -95,20 +105,23 @@ function soleRootTag(html: string): string | null {
  * answers built from them): `data-nosnippet` on its root when one `div`,
  * `section` or `span` encloses the whole placement, the only elements search
  * engines read it on; anything else (another root element, several
- * top-level elements) is wrapped in a `<div data-nosnippet>`, so the whole
- * placement is covered. Idempotent.
+ * top-level elements, text) is wrapped in a `<div data-nosnippet>`, so the
+ * whole placement is covered. A placement that shows nothing is left as it
+ * is. Idempotent.
  *
  * @example markNosnippet("<section>x</section>") // '<section data-nosnippet="">x</section>'
  * @example markNosnippet("<article>x</article>") // '<div data-nosnippet=""><article>x</article></div>'
  */
 export function markNosnippet(html: string): string {
-  const m = /<([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*>/.exec(html);
-  // A placement of text only is wrapped too; an empty one has nothing to hide.
-  if (!m) return html.trim().length === 0 ? html : `<div data-nosnippet="">${html}</div>`;
-  const root = soleRootTag(html);
-  if (root !== null && NOSNIPPET_ROOTS.has(root.toLowerCase())) {
+  const { root, empty } = readTopLevel(html);
+  if (empty) return html;
+  if (root !== null && NOSNIPPET_ROOTS.has(root.tag.toLowerCase())) {
+    const openTag = html.slice(root.start, root.end + 1);
     // A supported root that already carries it (this wrapper, say) is done.
-    return /\sdata-nosnippet\b/.test(m[0]) ? html : tagRoot(html, "data-nosnippet", "");
+    if (/\sdata-nosnippet\b/.test(openTag)) return html;
+    return (
+      html.slice(0, root.start) + tagRoot(openTag, "data-nosnippet", "") + html.slice(root.end + 1)
+    );
   }
   return `<div data-nosnippet="">${html}</div>`;
 }

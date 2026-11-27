@@ -275,6 +275,14 @@ describe("markNosnippet", () => {
     // A text-only placement is wrapped too (review #1771); an empty one stays empty.
     expect(markNosnippet("plain text")).toBe('<div data-nosnippet="">plain text</div>');
     expect(markNosnippet("  ")).toBe("  ");
+    // The parsed root is stamped, never markup inside a comment (review #1771).
+    expect(markNosnippet("<!-- <div>example</div> --><section>Sensitive</section>")).toBe(
+      '<!-- <div>example</div> --><section data-nosnippet="">Sensitive</section>',
+    );
+    expect(markNosnippet("<!-- <div data-nosnippet> --><section>x</section>")).toBe(
+      '<!-- <div data-nosnippet> --><section data-nosnippet="">x</section>',
+    );
+    expect(markNosnippet("<!-- only a note -->")).toBe("<!-- only a note -->");
     // An unsupported root that carries the attribute is still wrapped (review #1771).
     expect(markNosnippet('<article data-nosnippet="">x</article>')).toBe(
       '<div data-nosnippet=""><article data-nosnippet="">x</article></div>',
