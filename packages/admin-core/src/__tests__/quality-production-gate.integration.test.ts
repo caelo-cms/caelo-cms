@@ -399,12 +399,28 @@ describe("#1497 site settings that render count as rendering", () => {
   it("a language, JSON-LD, sitemap or CDN change after the Stage refuses the build", async () => {
     const before = await withSql(
       (tx) =>
-        tx`SELECT site_language, organization_json::text AS org, sitemap_enabled FROM site_defaults WHERE id = 1`,
+        tx`SELECT site_language, organization_json::text AS org, sitemap_enabled,
+                  seo_title_template, site_name FROM site_defaults WHERE id = 1`,
     );
-    const { site_language, org, sitemap_enabled } = (
-      before as unknown as { site_language: string; org: string; sitemap_enabled: boolean }[]
-    )[0] as { site_language: string; org: string; sitemap_enabled: boolean };
+    type Row = {
+      site_language: string;
+      org: string;
+      sitemap_enabled: boolean;
+      seo_title_template: string;
+      site_name: string | null;
+    };
+    const { site_language, org, sitemap_enabled, seo_title_template, site_name } = (
+      before as unknown as Row[]
+    )[0] as Row;
+    const quoted = (v: string | null) => (v === null ? "NULL" : `'${v.replace(/'/g, "''")}'`);
     for (const [change, reason, restore] of [
+      // #1752 — the title template and the site name render into every page.
+      [
+        "seo_title_template = '{page_title} | Elsewhere'",
+        "site setting: title template",
+        `seo_title_template = ${quoted(seo_title_template)}`,
+      ],
+      ["site_name = 'Elsewhere'", "site setting: site name", `site_name = ${quoted(site_name)}`],
       ["site_language = 'fr'", "site setting: site language", `site_language = '${site_language}'`],
       [
         `organization_json = '{"name":"Other"}'`,
@@ -440,9 +456,19 @@ describe("#1497 site settings that render count as rendering", () => {
     await op(SYS, "pages.set_not_found_page", { pageId: null });
   });
 
+  it("a page type's title template or og:type after the Stage refuses the build (#1752)", async () => {
+    await op(SYS, "page_types.set_seo_many", {
+      pageTypes: [{ pageType: "home", ogType: "article" }],
+    });
+    const r = await buildProduction(OWNER);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("SEO of page type home");
+    await op(SYS, "page_types.set_seo_many", { pageTypes: [{ pageType: "home", ogType: null }] });
+    expect(await buildProduction(OWNER)).toEqual({ ok: true, message: "" });
+  });
+
   it("a setting that renders nothing forces no Stage", async () => {
     await op(SYS, "site_defaults.set_identity", {
-      siteName: `${PFX}renamed`,
       sitePurpose: "A purpose that is never rendered.",
     });
     await setSetting("media_cdn_usage_threshold = media_cdn_usage_threshold + 1");

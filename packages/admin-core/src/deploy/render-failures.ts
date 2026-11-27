@@ -48,6 +48,7 @@ import {
   parseOgImageFailureMarker,
   parsePagePathUnknown,
   parsePluginValueRefused,
+  parseSeoTitleVariableMarker,
   renderFailureKind,
   renderFailureMarker,
   replacementMediaUrls,
@@ -129,6 +130,8 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   // #1719 — reference images on a page; share images by what is wrong.
   const referencePages = new Set<string>();
   const shareImagePages = { missing: new Set<string>(), reference: new Set<string>() };
+  // #1752 — a title template variable without a value.
+  const titlePages = new Set<string>();
   // #1729 — what a plugin added to a page's head, or its share image.
   const pluginHeadPages = new Set<string>();
   const pluginShareImagePages = new Set<string>();
@@ -143,7 +146,9 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
             renderFailureMarker(f.reason).slice(PLUGIN_VALUE_REFUSED.length + 1),
           ).source
         : null;
-    if (refusedSource === PLUGIN_HEAD_POINT) {
+    if (parseSeoTitleVariableMarker(f.reason) !== null) {
+      titlePages.add(page);
+    } else if (refusedSource === PLUGIN_HEAD_POINT) {
       pluginHeadPages.add(page);
     } else if (refusedSource === PLUGIN_SHARE_IMAGES_POINT) {
       pluginShareImagePages.add(page);
@@ -188,6 +193,10 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   onPages(
     "The image shown when the page is shared is a reference image, which is never published",
     shareImagePages.reference,
+  );
+  onPages(
+    "The page title template uses a value the site does not have yet (the site's name)",
+    titlePages,
   );
   onPages(
     "A plugin added something to the page's head or sitemap that Caelo does not allow, so it was left out",
@@ -374,6 +383,16 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
   const withheld = parseNestedModuleWithheldMarker(marker);
   if (withheld !== null)
     return { tool: "add_module", hint: nestedModuleWithheldHint(withheld, mod) };
+  const variable = parseSeoTitleVariableMarker(marker);
+  if (variable !== null) {
+    return {
+      tool: variable === "site_name" ? "set_site_identity" : "set_page_type_seo_many",
+      hint:
+        variable === "site_name"
+          ? "The title template uses {site_name}, and the site has no name: set it with set_site_identity({siteName}), or drop {site_name} from the template (set_page_type_seo_many; get_page_seo names the template)."
+          : `The title template uses {${variable}}, which has no value on this page: fix the template with set_page_type_seo_many (get_page_seo names it).`,
+    };
+  }
   if (isLinkFailureMarker(marker)) {
     return {
       tool: "check_links",

@@ -21,7 +21,9 @@
  *     `null` says "the existing one still fits", never an empty string.
  *
  * The title and the short title (#1142, the breadcrumb label) follow the
- * same rule (required in full mode, nullable in update mode). Slot values are `[{field, value}]` pairs, not a free-form
+ * same rule (required in full mode, nullable in update mode). The page's
+ * own SEO title, og:title and og:description (#1752) follow the meta
+ * description's rule: a key only when the source has the text. Slot values are `[{field, value}]` pairs, not a free-form
  * record: structured-output decoders (Anthropic's) force
  * `additionalProperties: false` on every object, which would turn a
  * record into an object that can hold nothing.
@@ -64,6 +66,44 @@ export function slotKeyOf(s: {
 /** `pages_seo.meta_description` hard cap (shared/seo.ts). */
 const SEO_DESCRIPTION_HARD_MAX = 320;
 
+/**
+ * #1752 — a page's own SEO texts besides the meta description (core's
+ * `pages_seo.seo_title` / `og_title` / `og_description`): "" = the page has
+ * none (its title template or shared texts render), never translated then.
+ */
+export const HEAD_TEXT_KEYS = ["seoTitle", "ogTitle", "ogDescription"] as const;
+export type HeadTextKey = (typeof HEAD_TEXT_KEYS)[number];
+export type HeadTexts = Readonly<Record<HeadTextKey, string>>;
+
+/** A page with none of the {@link HEAD_TEXT_KEYS} texts. */
+export const NO_HEAD_TEXTS: HeadTexts = Object.freeze({
+  seoTitle: "",
+  ogTitle: "",
+  ogDescription: "",
+});
+
+/** Hard caps of the head texts (shared/seo-head.ts). */
+const HEAD_TEXT_MAX: Readonly<Record<HeadTextKey, number>> = {
+  seoTitle: 200,
+  ogTitle: 200,
+  ogDescription: 320,
+};
+
+/** What each head text is, for the schema and the prompt. */
+export const HEAD_TEXT_LABEL: Readonly<Record<HeadTextKey, string>> = {
+  seoTitle: "SEO title (the page's <title> in search results)",
+  ogTitle: "social share title (og:title)",
+  ogDescription: "social share description (og:description)",
+};
+
+/** A text's contract: none on the source, must translate, or may keep the existing. */
+type TextRule = "absent" | "required" | "nullable";
+
+function textRule(mode: "full" | "update", source: string, variant: string): TextRule {
+  if (source.length === 0) return "absent";
+  return mode === "full" || variant.length === 0 ? "required" : "nullable";
+}
+
 /** What one translation answer may and must carry. */
 export interface TranslationContract {
   readonly mode: "full" | "update";
@@ -76,6 +116,8 @@ export interface TranslationContract {
    *  `required`: a translated description must be returned.
    *  `nullable`: return one only when the existing no longer fits, else null. */
   readonly metaDescription: "absent" | "required" | "nullable";
+  /** #1752 — the same rule for each of the page's own head texts. */
+  readonly headTexts: Readonly<Record<HeadTextKey, TextRule>>;
 }
 
 /** Derive the contract from what the source and the variant have. */
@@ -85,6 +127,9 @@ export function translationContractOf(input: {
   alignment: readonly SlotAlignment[];
   sourceMetaDescription: string;
   variantMetaDescription: string;
+  /** #1752 — the source's and the variant's own head texts (none when omitted). */
+  sourceHeadTexts?: HeadTexts;
+  variantHeadTexts?: HeadTexts;
 }): TranslationContract {
   const alignedKeys = new Set(input.alignment.filter((a) => a.kind === "aligned").map(slotKeyOf));
   const slotIds = input.sourceSlots.flatMap((s, i) =>
@@ -99,12 +144,19 @@ export function translationContractOf(input: {
       ),
     ),
   ];
-  let metaDescription: TranslationContract["metaDescription"];
-  if (input.sourceMetaDescription.length === 0) metaDescription = "absent";
-  else if (input.mode === "full" || input.variantMetaDescription.length === 0) {
-    metaDescription = "required";
-  } else metaDescription = "nullable";
-  return { mode: input.mode, slotIds, fieldNames, metaDescription };
+  const metaDescription = textRule(
+    input.mode,
+    input.sourceMetaDescription,
+    input.variantMetaDescription,
+  );
+  const source = input.sourceHeadTexts ?? NO_HEAD_TEXTS;
+  const variant = input.variantHeadTexts ?? NO_HEAD_TEXTS;
+  const headTexts = {
+    seoTitle: textRule(input.mode, source.seoTitle, variant.seoTitle),
+    ogTitle: textRule(input.mode, source.ogTitle, variant.ogTitle),
+    ogDescription: textRule(input.mode, source.ogDescription, variant.ogDescription),
+  };
+  return { mode: input.mode, slotIds, fieldNames, metaDescription, headTexts };
 }
 
 /** A string schema restricted to `values` (unrestricted when there are none). */
@@ -183,6 +235,24 @@ export function translationJsonSchema(c: TranslationContract): Record<string, un
     };
     required.push("metaDescription");
   }
+  for (const key of HEAD_TEXT_KEYS) {
+    const rule = c.headTexts[key];
+    if (rule === "absent") continue;
+    const text = {
+      type: "string",
+      minLength: 1,
+      maxLength: HEAD_TEXT_MAX[key],
+      description: `The translated ${HEAD_TEXT_LABEL[key]}.`,
+    };
+    properties[key] =
+      rule === "required"
+        ? text
+        : {
+            anyOf: [text, { type: "null" }],
+            description: `The re-translated ${HEAD_TEXT_LABEL[key]}, or null when the existing one still fits.`,
+          };
+    required.push(key);
+  }
   return { type: "object", additionalProperties: false, required, properties };
 }
 
@@ -203,11 +273,20 @@ export function translationAnswerSchema(c: TranslationContract) {
         .strict(),
     ),
   };
-  if (c.metaDescription === "absent") return z.object(base).strict();
+  const head: Partial<Record<HeadTextKey, z.ZodType<string | null>>> = {};
+  for (const key of HEAD_TEXT_KEYS) {
+    const rule = c.headTexts[key];
+    if (rule === "absent") continue;
+    const text = z.string().trim().min(1).max(HEAD_TEXT_MAX[key]);
+    head[key] = rule === "required" ? text : text.nullable();
+  }
   return z
     .object({
       ...base,
-      metaDescription: c.metaDescription === "required" ? meta : meta.nullable(),
+      ...(c.metaDescription === "absent"
+        ? {}
+        : { metaDescription: c.metaDescription === "required" ? meta : meta.nullable() }),
+      ...head,
     })
     .strict();
 }
@@ -233,14 +312,21 @@ export function toTranslationPayload(answer: TranslationAnswer): TranslationResu
     }
     return { slot: s.slot, values };
   });
-  const metaDescription: string | null =
-    "metaDescription" in answer && typeof answer.metaDescription === "string"
-      ? answer.metaDescription
-      : null;
+  const text = (key: "metaDescription" | HeadTextKey): string | null => {
+    const v = (answer as Record<string, unknown>)[key];
+    return typeof v === "string" ? v : null;
+  };
+  const metaDescription = text("metaDescription");
+  const head: Partial<Record<HeadTextKey, string>> = {};
+  for (const key of HEAD_TEXT_KEYS) {
+    const v = text(key);
+    if (v !== null) head[key] = v;
+  }
   return {
     ...(answer.title !== null ? { title: answer.title } : {}),
     ...(answer.shortTitle !== null ? { shortTitle: answer.shortTitle } : {}),
     ...(metaDescription !== null ? { metaDescription } : {}),
+    ...head,
     slots,
   };
 }
@@ -257,8 +343,15 @@ export function translationContractText(c: TranslationContract): string {
       : c.metaDescription === "nullable"
         ? ', "metaDescription": "<re-translated meta description, at most 320 characters>" or null when the existing one still fits'
         : "";
+  const head = HEAD_TEXT_KEYS.map((key) => {
+    const rule = c.headTexts[key];
+    if (rule === "absent") return "";
+    return rule === "required"
+      ? `, "${key}": "<translated ${HEAD_TEXT_LABEL[key]}, at most ${HEAD_TEXT_MAX[key]} characters>"`
+      : `, "${key}": "<re-translated ${HEAD_TEXT_LABEL[key]}>" or null when the existing one still fits`;
+  }).join("");
   return (
-    `Respond with ONE JSON object: {${title}${meta}, "slots": [{"slot": "<the slot id from the heading, copied EXACTLY — e.g. s0>", "values": [{"field": "<field name from the slot>", "value": "<translated string>"}, ...]}, ...]}. ` +
+    `Respond with ONE JSON object: {${title}${meta}${head}, "slots": [{"slot": "<the slot id from the heading, copied EXACTLY — e.g. s0>", "values": [{"field": "<field name from the slot>", "value": "<translated string>"}, ...]}, ...]}. ` +
     'Never invent a slot id and never substitute the module slug or block name for it — copy the "### Slot <id>" token verbatim. ' +
     "Include ONLY string fields you translated, each once; preserve every HTML tag, attribute, class, id, href, and inline style inside field values verbatim — only human-readable text is translated. Numbers, code samples, and untranslatable proper nouns stay as-is."
   );

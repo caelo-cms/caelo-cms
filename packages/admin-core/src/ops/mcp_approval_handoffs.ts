@@ -320,15 +320,24 @@ export async function recordMcpHandoff(
   return { domain };
 }
 
-/** The hand-off a (session, tool call) recorded — serves cached tool-call replays. */
+/**
+ * The hand-off a (session, tool call) recorded — serves cached tool-call
+ * replays.
+ *
+ * @param reservedAt - when the cached call reserved its key: only a hand-off
+ *   recorded since then is that call's. #1704 — a key taken over by a later
+ *   call keeps the earlier call's hand-off rows, which are not its answer.
+ */
 export async function findMcpHandoffByToolCall(
   tx: Tx,
   chatSessionId: string,
   toolCallId: string,
+  reservedAt: string,
 ): Promise<{ proposalId: string; domain: string } | null> {
   const rows = (await tx.execute(sql`
     SELECT proposal_id::text AS proposal_id, domain FROM mcp_approval_handoffs
      WHERE chat_session_id = ${chatSessionId}::uuid AND tool_call_id = ${toolCallId}
+       AND created_at >= ${reservedAt}::timestamptz
      ORDER BY created_at DESC LIMIT 1
   `)) as unknown as Array<{ proposal_id: string; domain: string }>;
   const row = rows[0];

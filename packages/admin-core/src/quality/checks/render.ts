@@ -38,6 +38,7 @@ import {
   parseMediaReferenceMarker,
   parseOgImageFailureMarker,
   parsePluginValueRefused,
+  parseSeoTitleVariableMarker,
   renderFailureKind,
   renderFailureMarker,
   truncateKeepingIds,
@@ -87,6 +88,8 @@ function placeText(f: RenderFailure): string {
   // #1719 — a reference image on the page; the page's share image (its head).
   if (parseMediaReferenceMarker(f.reason) !== null) return "an image on the page";
   if (parseOgImageFailureMarker(f.reason) !== null) return "the page's share image (og:image)";
+  // #1752 — the title template, in the page's head.
+  if (parseSeoTitleVariableMarker(f.reason) !== null) return "the page's title (<title>)";
   // #1729 — a plugin's head or sitemap entry, or its default share image.
   if (renderFailureKind(f.reason) === PLUGIN_VALUE_REFUSED) {
     const { plugin, source } = parsePluginValueRefused(

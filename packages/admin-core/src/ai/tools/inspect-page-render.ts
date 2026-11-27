@@ -371,6 +371,8 @@ const SITE_SETTING_NEXT_STEPS: Readonly<Record<string, string>> = {
     "The site's public URL is not configured; publishing fails until it is. Call propose_set_site_seo({siteBaseUrl: 'https://<public domain>'}) — the Owner approves.",
   "site-language-unset":
     "The site language is not set; publishing fails until it is. Call set_site_identity({siteLanguage: '<BCP 47 tag, e.g. de>'}).",
+  "seo-title-variable-unset:site_name":
+    "The page's title template uses {site_name}, and the site has no name: the <title> shows it raw and Publish live refuses the build. Call set_site_identity({siteName}), or drop {site_name} from the template (set_page_type_seo_many).",
 };
 
 /**

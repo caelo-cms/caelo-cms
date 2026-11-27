@@ -22,7 +22,8 @@ it shows changed live.
 
 ## When a page changed
 
-A page's date moves when what the page itself shows changes: its title, its
+A page's date moves when what the page itself shows changes: its title (the
+`<title>` a search result shows, which a title template may make, #1752), its
 meta description, and the visible text, link targets, image sources and
 alternative texts of its own body. The body is the template with the page's
 modules, as it fills the layout's `content` slot (`composePageWithLayout`
@@ -91,7 +92,9 @@ files on the scheduler tick. It follows the same rule: it takes the plugin
 fingerprint of each re-baked page from its live file, appends a `changed`
 row dated when the content went live for every page that moved, brings that
 page's `<lastmod>` and feed entry up to date in the live `sitemap.xml` and
-`feed.xml`, and announces it like a Publish live, inside the tick's request.
+`feed.xml` (and, on an article page, its `article:modified_time`,
+docs/dev/seo-head.md), and announces it like a Publish live, inside the
+tick's request.
 The entry's title and summary are the published ones the record holds,
 never page rows nobody published. When several production targets serve
 the same build, each target's copy gets the same entries. Those are the only bytes it writes besides the
