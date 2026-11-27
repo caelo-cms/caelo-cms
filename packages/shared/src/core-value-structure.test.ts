@@ -13,8 +13,10 @@ import {
   describeValueBreaksMarkup,
   listEntryValueProblems,
   moduleValueProblems,
+  parseValueBreaksMarkup,
   siteTextValueProblems,
   valueBreaksMarkupMarker,
+  valueBreaksMarkupRepair,
 } from "./core-value-structure.js";
 import { fixtureData, fixtureLinkIndex, PAGE } from "./lists/list-fixtures.test.js";
 import { createListRenderContext } from "./lists/resolve.js";
@@ -255,5 +257,70 @@ describe("the write-time walks (#1748)", () => {
       ]),
     );
     expect(found.map((f) => [f.key, f.problem.rule])).toEqual([["label", "attribute-quote"]]);
+  });
+});
+
+describe("the repair a Stage names for a breaking value (#1748)", () => {
+  const MOD = 'module "tool"';
+
+  it("names the tool for where the value comes from, the fix first", () => {
+    const entry = valueBreaksMarkupRepair("ui_texts[e1].text:processing-instruction", MOD);
+    expect(entry.tool).toBe("patch_list_items_many");
+    expect(entry.hint).toStartWith("Write a < meant as text as &lt; (here `&lt;?`).");
+    expect(entry.hint).toContain('"text" of entry e1 of list field "ui_texts"');
+    expect(valueBreaksMarkupRepair("site_text.label:attribute-quote", MOD)).toMatchObject({
+      tool: "patch_list_items_many",
+    });
+    expect(valueBreaksMarkupRepair("site_text.label:attribute-quote", MOD).hint).toStartWith(
+      'Write the " as &quot;.',
+    );
+    expect(valueBreaksMarkupRepair("page.title:unclosed-b", MOD)).toMatchObject({
+      tool: "update_pages_many",
+    });
+    expect(valueBreaksMarkupRepair("title:closes-p", MOD)).toMatchObject({
+      tool: "set_content_instance_values_many",
+    });
+    expect(valueBreaksMarkupRepair("title:closes-p", MOD).hint).toContain(
+      "the module already places it in a <p>",
+    );
+  });
+
+  it("stays within a finding's hint, whatever the rule", () => {
+    for (const rule of [
+      "comment",
+      "markup-declaration",
+      "bogus-end-tag",
+      "doctype",
+      "end-tag-template",
+      "unclosed-strong",
+      "closes-h2",
+      "unfinished-tag",
+      "ends-script",
+      "ends-title",
+      "script-comment",
+      "ends-comment",
+      "attribute-space",
+      "ends-tag",
+      "breaks-structure",
+    ]) {
+      const { hint } = valueBreaksMarkupRepair(`ui_texts[${"e".repeat(36)}].text:${rule}`, MOD);
+      expect([rule, hint.length <= 500]).toEqual([rule, true]);
+    }
+  });
+
+  it("parses the marker it names", () => {
+    expect(parseValueBreaksMarkup("ui_texts[e1].text:end-tag-div")).toEqual({
+      field: "ui_texts[e1].text",
+      rule: "end-tag-div",
+    });
+  });
+
+  it("refuses a comment's own start and a quote that starts an unquoted value", () => {
+    expect(rule("<!--{{x}} -->", "->")).toBe("ends-comment");
+    expect(rule("<!-- a {{x}} -->", "a --!> b")).toBe("ends-comment");
+    expect(at("<!-- a {{x}} -->", "> fine")).toBeNull();
+    expect(rule("<img alt={{x}}>", '"a')).toBe("attribute-quote");
+    expect(at("<img alt=a{{x}}>", "b's")).toBeNull();
+    expect(at("<plaintext>{{x}}", "</plaintext>")).toBeNull();
   });
 });
