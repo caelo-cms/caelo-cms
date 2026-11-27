@@ -7,10 +7,21 @@ import {
   fillCopy,
   formatValue,
   mapArgs,
+  pageEditorHref,
   parseFields,
   pluginNavLinks,
   valueAt,
 } from "./plugin-panels.js";
+
+describe("pageEditorHref (#1760)", () => {
+  it("links a page id into the editor and nothing else", () => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    expect(pageEditorHref(id)).toBe(`/edit?page=${id}`);
+    for (const v of ["javascript:alert(1)", "/admin", `${id}&chat=x`, 42, null]) {
+      expect(pageEditorHref(v)).toBeNull();
+    }
+  });
+});
 
 describe("valueAt", () => {
   const row = { id: "a", approvedSend: { status: "sending", processed: 3 }, none: null };

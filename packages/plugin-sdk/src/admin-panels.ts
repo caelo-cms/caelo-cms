@@ -170,6 +170,11 @@ export const panelValueFormat = z.enum([
   "list",
   /** Any value as indented JSON (submitted form data). */
   "json",
+  /**
+   * #1760 — a page id, shown as a link that opens the page in the live
+   * editor. Anything but a page id shows as text.
+   */
+  "page",
 ]);
 
 export type PanelValueFormat = z.infer<typeof panelValueFormat>;

@@ -50,6 +50,43 @@ describe("toToolbarSlot", () => {
   });
 });
 
+describe("previews (#1760)", () => {
+  const card = {
+    kind: "social-card",
+    siteName: "example.com",
+    title: "Pricing",
+    description: "Plans and prices.",
+    imageAssetId: "33333333-3333-4333-8333-333333333333",
+  };
+  const result = {
+    kind: "search-result",
+    device: "desktop",
+    siteName: "Example",
+    displayUrl: "example.com › pricing",
+    title: "Pricing – Example",
+    description: "Plans and prices.",
+  };
+
+  it("takes search results and social cards as data", () => {
+    const slot = toToolbarSlot("seo", item, { ok: true, value: { previews: [result, card] } });
+    expect(slot?.error).toBeNull();
+    expect(slot?.state?.previews).toHaveLength(2);
+  });
+
+  it("refuses a preview that carries markup or an outside image", () => {
+    for (const bad of [
+      { ...card, imageUrl: "https://tracker.example/pixel.gif" },
+      { ...card, imageAssetId: "https://tracker.example/pixel.gif" },
+      { ...result, html: "<b>x</b>" },
+      { ...result, device: "tablet" },
+    ]) {
+      const slot = toToolbarSlot("seo", item, { ok: true, value: { previews: [bad] } });
+      expect(slot?.state).toBeNull();
+      expect(slot?.error).toContain("cannot show");
+    }
+  });
+});
+
 describe("withOpenablePages (#1269)", () => {
   it("keeps the page link of entries whose page the chat's view has, and only those", () => {
     const shown = "11111111-1111-4111-8111-111111111111";

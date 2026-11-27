@@ -98,6 +98,48 @@ export const pluginEditorToolbarEntry = z
   .strict();
 
 /**
+ * Epic #1751 (#1760) — a preview of how the page appears elsewhere, drawn
+ * by the editor from these values alone (no plugin markup): a search
+ * result as a search engine lists it, or a card as a social network or
+ * messenger shows a shared link. The plugin decides the text, cut to the
+ * width the place shows (its "…" is part of the text); the editor draws it
+ * at that place's width and cuts nothing itself.
+ *
+ * The image of a social card is a media library image named by its id:
+ * the editor shows its own copy of it, so a plugin can make the editor
+ * load nothing from elsewhere.
+ */
+export const pluginEditorToolbarPreview = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("search-result"),
+      /** The width the result is drawn at: a desktop or a phone result list. */
+      device: z.enum(["desktop", "mobile"]),
+      /** The site's name as the result shows it above the address. */
+      siteName: z.string().min(1).max(120),
+      /** The address as the result shows it (`example.com › blog › post`). */
+      displayUrl: z.string().min(1).max(300),
+      title: z.string().min(1).max(200),
+      /** Empty when the page has none (the search engine picks text of its own). */
+      description: z.string().max(400),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("social-card"),
+      /** The site's host, as the card shows it. */
+      siteName: z.string().min(1).max(120),
+      title: z.string().min(1).max(200),
+      description: z.string().max(400),
+      /** The share image (a media library image); null = the card shows none. */
+      imageAssetId: z.string().uuid().nullable(),
+    })
+    .strict(),
+]);
+
+export type PluginEditorToolbarPreview = z.infer<typeof pluginEditorToolbarPreview>;
+
+/**
  * What an item's operation answers for one page. `hidden: true` leaves the
  * item out for this page (it has nothing to say there); an item that has
  * something to say but cannot say it fails its operation instead, and the
@@ -114,6 +156,8 @@ export const pluginEditorToolbarState = z
     /** One sentence: the tooltip and the popover's first line. */
     summary: z.string().min(1).max(200).optional(),
     items: z.array(pluginEditorToolbarEntry).max(20).optional(),
+    /** Previews drawn below the entries ({@link pluginEditorToolbarPreview}). */
+    previews: z.array(pluginEditorToolbarPreview).max(4).optional(),
   })
   .strict();
 

@@ -22,7 +22,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { type PluginEditorToolbarItem, pluginEditorToolbarState } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { buildMediaUrl, type ExecutionContext } from "@caelo-cms/shared";
 import type { EditorToolbarSlot } from "#lib/plugin-toolbar.js";
 import { getQueryContext } from "./query.js";
 
@@ -96,6 +96,36 @@ export function withOpenablePages(
 }
 
 /**
+ * #1760 — the editor's URL of every library image the slots' previews
+ * name, read by id (a handful per page). An id with no live image stays
+ * out of the map: the card says the image is missing rather than showing
+ * anything else.
+ */
+async function withPreviewImages(
+  slots: readonly EditorToolbarSlot[],
+  ctx: ExecutionContext,
+): Promise<EditorToolbarSlot[]> {
+  const ids = [
+    ...new Set(
+      slots.flatMap((s) =>
+        (s.state?.previews ?? []).flatMap((p) =>
+          p.kind === "social-card" && p.imageAssetId ? [p.imageAssetId] : [],
+        ),
+      ),
+    ),
+  ];
+  if (ids.length === 0) return [...slots];
+  const { adapter, registry } = getQueryContext();
+  const urls: Record<string, string> = {};
+  for (const assetId of ids) {
+    const r = await execute(registry, adapter, ctx, "media.get", { assetId });
+    const asset = r.ok ? (r.value as { asset: { slug: string } | null }).asset : null;
+    if (asset) urls[assetId] = buildMediaUrl(asset.slug, "orig");
+  }
+  return slots.map((s) => (s.state?.previews ? { ...s, previewImages: urls } : s));
+}
+
+/**
  * The editor toolbar slots for `pageId` in the chat on `chatBranchId`, for a
  * viewer holding `permissions`. Plugins in slug order, items in declaration
  * order, so the bar does not reshuffle between loads. An entry links a page
@@ -131,7 +161,10 @@ export async function loadEditorToolbar(opts: {
       return toToolbarSlot(pluginSlug, item, call);
     }),
   );
-  const shown = slots.filter((s): s is EditorToolbarSlot => s !== null);
+  const shown = await withPreviewImages(
+    slots.filter((s): s is EditorToolbarSlot => s !== null),
+    opts.branchCtx,
+  );
   const named = [
     ...new Set(shown.flatMap((s) => (s.state?.items ?? []).flatMap((e) => e.pageId ?? []))),
   ];

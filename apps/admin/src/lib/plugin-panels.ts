@@ -96,6 +96,17 @@ export function formatValue(display: PanelValueDisplay, value: unknown, locale?:
   }
 }
 
+const PAGE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * #1760 — the live editor's address of a `page` value, or null when the
+ * value is no page id (then it shows as text). Built from the id alone, so
+ * a plugin's value can never name another address.
+ */
+export function pageEditorHref(value: unknown): string | null {
+  return typeof value === "string" && PAGE_ID.test(value) ? `/edit?page=${value}` : null;
+}
+
 /** The badge style for a value; values the declaration does not name are `outline`. */
 export function badgeVariant(
   display: PanelValueDisplay,

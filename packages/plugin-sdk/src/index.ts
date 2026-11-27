@@ -1936,10 +1936,14 @@ export const pluginManifest = z
       ctx.addIssue({
         code: "custom",
         path: ["writeHintsKinds"],
-        message: "writeHintsKinds names the writes a writeHintsOperation is shown; set the operation too",
+        message:
+          "writeHintsKinds names the writes a writeHintsOperation is shown; set the operation too",
       });
     }
-    if (m.writeHintsKinds !== undefined && new Set(m.writeHintsKinds).size !== m.writeHintsKinds.length) {
+    if (
+      m.writeHintsKinds !== undefined &&
+      new Set(m.writeHintsKinds).size !== m.writeHintsKinds.length
+    ) {
       ctx.addIssue({
         code: "custom",
         path: ["writeHintsKinds"],
