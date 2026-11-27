@@ -1321,6 +1321,20 @@ export const pluginWriteHints = z
   .object({ hints: z.array(z.string().min(1).max(600)).max(5) })
   .strict();
 
+/**
+ * #1763 — what an `agentFilesOperation` returns: which files for agents
+ * the build writes. Core builds each file; a plugin only switches it.
+ */
+export const pluginAgentFiles = z
+  .object({
+    /** Write `/llms.txt`: the indexable pages by page type, with title, URL and description. */
+    llmsTxt: z.boolean(),
+  })
+  .strict();
+
+/** What an `agentFilesOperation` returns ({@link pluginAgentFiles}). */
+export type PluginAgentFiles = z.infer<typeof pluginAgentFiles>;
+
 /** A plugin slug as a reference to another plugin (same shape as `pluginManifest.slug`). */
 const pluginSlugRef = z
   .string()
@@ -1602,6 +1616,10 @@ export const pluginManifest = z
       .min(1)
       .max(PLUGIN_WRITE_KINDS.length)
       .optional(),
+    /** See `PluginDefinition.agentFilesOperation` (#1763). Must name one of
+     *  `operations`. Needs no capability: it only switches files core
+     *  builds from what the sitemap already lists. */
+    agentFilesOperation: z.string().min(1).max(120).optional(),
     /** See `PluginDefinition.changeConsumer` (#1267). Its operations must
      *  be in `operations`; it needs `change_journal`, and each core kind
      *  the `cms_admin` read grant. */
@@ -1930,6 +1948,13 @@ export const pluginManifest = z
         code: "custom",
         path: ["writeHintsOperation"],
         message: `writeHintsOperation "${m.writeHintsOperation}" is not one of the plugin's operations`,
+      });
+    }
+    if (m.agentFilesOperation !== undefined && !m.operations.includes(m.agentFilesOperation)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["agentFilesOperation"],
+        message: `agentFilesOperation "${m.agentFilesOperation}" is not one of the plugin's operations`,
       });
     }
     if (m.writeHintsKinds !== undefined && m.writeHintsOperation === undefined) {
@@ -3415,6 +3440,20 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly writeHintsKinds?: ReadonlyArray<PluginWriteKind>;
   /**
+   * #1763 — the files for agents a build writes: an operation in
+   * `operations` taking `{}` and returning {@link PluginAgentFiles}. Core
+   * calls it at every build, as a render (read-only) invocation on the main
+   * line, and writes `/llms.txt` when any active plugin answers
+   * `llmsTxt: true`. Core builds the file itself, from the pages the
+   * sitemap lists (published, indexable, canonical to themselves); the
+   * plugin only switches it, so it reaches staging with the Stage and the
+   * live site with Publish live like every other file.
+   *
+   * @example
+   *   agent_files: async (ctx) => ({ llmsTxt: (await ctx.config.get()).llms_txt === true }),
+   */
+  readonly agentFilesOperation?: string;
+  /**
    * Issue #1267 — what this plugin reacts to from the change journal
    * ({@link PluginChangeConsumerSpec}). Replaces the domain-event outbox
    * (`ctx.events`) and the module-change push: one mechanism, gated per
@@ -3626,6 +3665,7 @@ export function manifestFromDefinition(def: {
   readonly auditFindingsOperation?: string;
   readonly writeHintsOperation?: string;
   readonly writeHintsKinds?: ReadonlyArray<PluginWriteKind>;
+  readonly agentFilesOperation?: string;
   readonly changeConsumer?: PluginChangeConsumerSpec;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   readonly capabilityReasons?: PluginManifest["capabilityReasons"];
@@ -3716,6 +3756,7 @@ export function manifestFromDefinition(def: {
     ...(def.auditFindingsOperation ? { auditFindingsOperation: def.auditFindingsOperation } : {}),
     ...(def.writeHintsOperation ? { writeHintsOperation: def.writeHintsOperation } : {}),
     ...(def.writeHintsKinds ? { writeHintsKinds: [...def.writeHintsKinds] } : {}),
+    ...(def.agentFilesOperation ? { agentFilesOperation: def.agentFilesOperation } : {}),
     ...(def.changeConsumer ? { changeConsumer: def.changeConsumer } : {}),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
     ...(def.capabilityReasons ? { capabilityReasons: def.capabilityReasons } : {}),

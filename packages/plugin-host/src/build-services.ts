@@ -28,6 +28,7 @@
 
 import type { ListResolveScope } from "@caelo-cms/plugin-sdk";
 import type { ListOverlayIssue, LiveBuildUrls, PageUrlStyle } from "@caelo-cms/shared";
+import { resolveAgentFiles, type SiteAgentFiles } from "./agent-files.js";
 import { collectBuildAssets, type PluginClientAsset } from "./client-assets.js";
 import {
   hasContentVariantContributors,
@@ -148,6 +149,8 @@ export interface BuildPluginServices {
    * its dates and numbers in the page's language (#1511).
    */
   staticRender(pluginSlug: string, pageId: string, context: StaticRenderContext): Promise<string>;
+  /** #1763 — the files for agents the build writes (`/llms.txt`), as plugins switch them. */
+  resolveAgentFiles(): Promise<SiteAgentFiles>;
   /** #1647 — whether any active plugin observes page output (else the build sends none). */
   hasPageOutputObservers(): Promise<boolean>;
   /** #1647 — which offered pages some observer has not seen in this form. */
@@ -218,6 +221,7 @@ export const localBuildPluginServices: BuildPluginServices = {
       pageUrlStyle: context.pageUrlStyle,
       lang: context.lang,
     })) ?? "",
+  resolveAgentFiles: () => resolveAgentFiles(),
   hasPageOutputObservers: async () => pageOutputObservers().length > 0,
   pageOutputNeeds: (runId, pages, publishedPageCount) =>
     pageOutputNeeds(runId, pages, publishedPageCount),
@@ -300,6 +304,7 @@ export const BUILD_PLUGIN_METHODS = [
   "metaSignatureBatch",
   "metaSignature",
   "staticRender",
+  "resolveAgentFiles",
   "hasPageOutputObservers",
   "pageOutputNeeds",
   "observePageOutputs",

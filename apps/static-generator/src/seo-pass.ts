@@ -128,11 +128,26 @@ export interface SeoPass {
   /** The public URL this build gave a page: what its canonical carries. */
   publicUrl(pageId: string): string;
   /**
+   * #1763 — the pages of the build's indexing state: indexable (the sitemap's
+   * pages) and canonical to themselves, in build order, with the URL, title
+   * and meta description they ship. What `/llms.txt` lists.
+   */
+  indexedPages(): Promise<IndexedPage[]>;
+  /**
    * #1719 — on a Stage, every page whose share image the build could not
    * publish (it ships without `og:image`); always empty on other builds,
    * which refused it while preparing.
    */
   readonly renderFailures: readonly RenderFailure[];
+}
+
+/** One page of the build's indexing state ({@link SeoPass.indexedPages}). */
+export interface IndexedPage {
+  readonly pageId: string;
+  /** Its absolute public URL. */
+  readonly url: string;
+  readonly title: string;
+  readonly metaDescription: string;
 }
 
 /** A JSON value bound as one jsonb parameter. */
@@ -379,6 +394,35 @@ export async function prepareSeoPass(args: {
       const url = publicUrls.get(pageId);
       if (url === undefined) throw new Error(`seo-pass: no public URL resolved for page ${pageId}`);
       return url;
+    },
+
+    async indexedPages() {
+      const indexable = seoBundles.filter(isIndexable);
+      // A canonical override points elsewhere unless it names the page's own
+      // URL: resolve those pages' own URLs once, without the override.
+      const overridden = indexable.filter((b) => b.canonicalOverride !== null);
+      const own = new Map(
+        overridden.length === 0
+          ? []
+          : await plugins.resolvePublicPageUrls(
+              overridden.map((b) => ({
+                id: b.pageId,
+                slug: b.slug,
+                currentPath: b.currentPath,
+                canonicalOverride: null,
+              })),
+              urlArgs,
+            ),
+      );
+      const absolute = (url: string) => new URL(url, settings.siteBaseUrl).href;
+      return indexable.flatMap((b): IndexedPage[] => {
+        const canonical = absolute(publicUrlOf(b));
+        const ownUrl = own.get(b.pageId);
+        if (ownUrl !== undefined && absolute(ownUrl) !== canonical) return [];
+        return [
+          { pageId: b.pageId, url: canonical, title: b.title, metaDescription: b.metaDescription },
+        ];
+      });
     },
 
     async apply(pages) {

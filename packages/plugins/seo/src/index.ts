@@ -22,6 +22,7 @@
  */
 
 import { definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { AGENT_FILES_OPERATION } from "./agent-files.js";
 import { SEO_CONFIG } from "./config.js";
 import { AUDIT_OPERATION, SEO_OPERATIONS, WRITE_HINTS_OPERATION } from "./operations.js";
 import { SEO_SKILLS } from "./skills.js";
@@ -48,6 +49,8 @@ export default definePlugin<PluginContextTier1>({
   writeHintsOperation: WRITE_HINTS_OPERATION,
   // #1757, #1758 — the SEO texts, alt texts and robots.txt proposals the AI writes too.
   writeHintsKinds: ["module", "values", "robots_rules"],
+  // #1763 — the llms.txt switch; core writes the file.
+  agentFilesOperation: AGENT_FILES_OPERATION,
   tools: SEO_TOOLS,
   skills: SEO_SKILLS,
   operations: SEO_OPERATIONS,

@@ -49,6 +49,7 @@ const AREAS: Readonly<Record<Exclude<keyof PluginManifest, NotCompared>, string>
   auditFindingsOperation: "Stage audit findings",
   writeHintsOperation: "Hints to the AI",
   writeHintsKinds: "Writes it gives hints on",
+  agentFilesOperation: "Files for AI agents (llms.txt)",
   changeConsumer: "Followed site changes",
   requestedCapabilities: "Permissions it asks for",
   capabilityReasons: "Its reasons for its permissions",

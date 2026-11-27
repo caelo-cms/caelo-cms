@@ -121,6 +121,7 @@ import {
   writeRenderDeps,
 } from "./list-data.js";
 import { BuildListOverlays, type OverlayBatchPage } from "./list-overlay-batches.js";
+import { buildLlmsTxt, LLMS_TXT_CONTENT_TYPE, LLMS_TXT_FILE } from "./llms-txt.js";
 import {
   type MediaDelivery,
   MediaPass,
@@ -1570,8 +1571,14 @@ async function buildSite(
   /** A search file the build writes at the root; refused when a page already ships there. */
   const writeSearchFile = async (relPath: string, body: string, contentType: string) => {
     if (servedPaths.has(relPath)) {
+      const [file, off] =
+        relPath === FEED_FILE
+          ? ["feed", "the feed off under Settings → SEO"]
+          : relPath === LLMS_TXT_FILE
+            ? ["llms.txt", "llms.txt off in the seo plugin's settings (update_plugin_config)"]
+            : ["IndexNow key file", "the IndexNow submissions off under Settings → SEO"];
       throw new BuildRefusal(
-        `static-generator: a page is published at /${relPath}, where the site's ${relPath === FEED_FILE ? "feed" : "IndexNow key file"} belongs. Give the page another URL, or turn the ${relPath === FEED_FILE ? "feed" : "IndexNow submissions"} off under Settings → SEO, then Stage again.`,
+        `static-generator: a page is published at /${relPath}, where the site's ${file} belongs. Give the page another URL, or turn ${off}, then Stage again.`,
       );
     }
     contentTypeOverrides[relPath] = contentType;
@@ -1596,6 +1603,17 @@ async function buildSite(
   const indexNowKey = seoSettings.indexNowEnabled ? seoSettings.indexNowKey : null;
   if (indexNowKey !== null) {
     await writeSearchFile(indexNowKeyFile(indexNowKey), indexNowKey, "text/plain; charset=utf-8");
+  }
+  // #1763 — /llms.txt, when a plugin switches it on (off by default).
+  if ((await args.plugins.resolveAgentFiles()).llmsTxt) {
+    await writeSearchFile(
+      LLMS_TXT_FILE,
+      await buildLlmsTxt(tx, seo, {
+        siteBaseUrl: seoSettings.siteBaseUrl,
+        sitemap: sitemapEmitted,
+      }),
+      LLMS_TXT_CONTENT_TYPE,
+    );
   }
   // cdn_manifest.json is always written.
   await media.finish(writeBuildFile);
