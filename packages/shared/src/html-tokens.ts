@@ -36,6 +36,8 @@ export type HtmlToken =
       readonly selfClosing: boolean;
       /** Offset of the `<`. */
       readonly start: number;
+      /** Offset just past the tag's `>`. */
+      readonly end: number;
     }
   | { readonly kind: "end"; readonly name: string; readonly start: number }
   | { readonly kind: "comment"; readonly data: string; readonly start: number }
@@ -101,6 +103,7 @@ export function htmlTokens(html: string, options: HtmlTokenOptions = {}): HtmlTo
           }),
           selfClosing: t.selfClosing,
           start: t.location?.startOffset ?? -1,
+          end: t.location?.endOffset ?? -1,
         });
       },
       onEndTag(t) {

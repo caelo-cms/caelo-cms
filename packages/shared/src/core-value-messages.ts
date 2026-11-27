@@ -72,6 +72,9 @@ export function valueBreaksMarkupEffect(rule: string, spelling: string): string 
   if (rule === "attribute-space" || rule === "attribute-end")
     return "it ends the unquoted attribute value early";
   if (rule === "ends-tag" || rule === "ends-tag-name") return `${s} ends the tag early`;
+  if (rule === "tag-self-closing") {
+    return "its last unquoted value takes in the `/` of the module's self-closing tag, so the element stays open";
+  }
   return `${s} changes the markup around the value`;
 }
 
@@ -96,6 +99,8 @@ export function valueBreaksMarkupFix(rule: string, spelling: string): string {
     return "Write the `<` of it as &lt;.";
   }
   if (rule === "ends-comment") return "Write the > of it as &gt;.";
+  if (rule === "tag-self-closing")
+    return "Quote the last attribute value, or end the value with a space.";
   if (rule === "ends-tag" || rule === "ends-tag-name") {
     return "Write the > as &gt; and keep quotes paired.";
   }

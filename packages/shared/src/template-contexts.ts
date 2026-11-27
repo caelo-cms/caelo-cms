@@ -163,9 +163,9 @@ export interface PlaceholderContexts {
  * reads it (`core-value-structure.ts`): what in the value would change the
  * markup around it depends only on this. `before` and `after` are the
  * template's text right before and after the tag ({@link CORE_AFTER}
- * characters each, another tag's marker included), which can complete
- * what the value starts or the value what they start: the `>` of a
- * `</textarea` or of a comment's `--`, the letter after a trailing `<`.
+ * characters each, up to another value tag), which can complete what the
+ * value starts or the value what they start: the `>` of a `</textarea` or
+ * of a comment's `--`, the letter after a trailing `<`.
  */
 export type CorePlace =
   /**
@@ -179,20 +179,29 @@ export type CorePlace =
       readonly open: string | null;
       readonly plain: boolean;
       readonly after: string;
+      /** Another value tag follows right after `after`. */
+      readonly valueAfter: boolean;
     }
   /** The text of an HTML element only its end tag ends: `script`, `style`, `title`, `textarea`, … */
-  | {
-      readonly kind: "raw-text";
-      readonly element: string;
-      readonly before: string;
-      readonly after: string;
-    }
+  | ({ readonly kind: "raw-text"; readonly element: string } & Neighbours)
   /** A comment's text. */
-  | { readonly kind: "comment"; readonly before: string; readonly after: string }
+  | ({ readonly kind: "comment" } & Neighbours)
   /** An attribute's value: its quote (null unquoted), and whether the value starts it. */
   | { readonly kind: "attribute"; readonly quote: '"' | "'" | null; readonly atStart: boolean }
   /** A tag's name (`inName`) or its attribute list (`<div {{attrs}}>`). */
-  | { readonly kind: "tag"; readonly inName: boolean };
+  | { readonly kind: "tag"; readonly inName: boolean; readonly after: string };
+
+/**
+ * The template's text right before and after a value tag in raw text or a
+ * comment (never past another value tag), and whether another value tag is
+ * that near: its value may supply the rest of an end the value starts.
+ */
+export interface Neighbours {
+  readonly before: string;
+  readonly after: string;
+  readonly valueBefore: boolean;
+  readonly valueAfter: boolean;
+}
 
 const cache = new Map<string, PlaceholderContexts>();
 
@@ -632,13 +641,27 @@ function readValues(
   let endHolds = unsafeFrom === Number.POSITIVE_INFINITY;
   // Per start tag, the unquoted values that may render empty.
   const emptyable = new Map<Element, Map<number, number>>();
-  const markerStart = new Map(markerSpans.map((m) => [m.tag, m.a]));
+  // Where each value tag's marker stands in the reading, and its neighbours'.
+  const around = new Map<number, Around>();
+  for (const [k, m] of markerSpans.entries()) {
+    const prev = markerSpans[k - 1];
+    const next = markerSpans[k + 1];
+    const from = Math.max(m.a - CORE_AFTER, prev?.end ?? 0);
+    const to = Math.min(m.end + CORE_AFTER, next?.a ?? text.length);
+    around.set(m.tag, {
+      before: text.slice(from, m.a),
+      after: text.slice(m.end, to),
+      valueBefore: prev !== undefined && prev.end >= m.a - CORE_AFTER,
+      valueAfter: next !== undefined && next.a <= m.end + CORE_AFTER,
+      at: m.a,
+    });
+  }
   const corePlaces = new Map<number, readonly CorePlace[]>();
   for (const [i, tag] of tags.entries()) {
     if (tag.kind !== "value") continue;
     const found = places.get(i) ?? [];
     const core = found
-      .map((place) => corePlaceOf(place, markers.mark(i), markerStart.get(i) ?? -1, text))
+      .map((place) => corePlaceOf(place, around.get(i) ?? NOWHERE, text))
       .filter((c): c is CorePlace => c !== null);
     if (core.length > 0) corePlaces.set(i, core);
     const read: PlaceholderContext[] = [];
@@ -694,9 +717,8 @@ function readValues(
  *
  * @param mark the tag's marker; `at` where it starts in `text`, the reading.
  */
-function corePlaceOf(place: Place, mark: string, at: number, text: string): CorePlace | null {
-  const after = at < 0 ? "" : text.slice(at + mark.length, at + mark.length + CORE_AFTER);
-  const before = at < 0 ? "" : text.slice(Math.max(0, at - CORE_AFTER), at);
+function corePlaceOf(place: Place, near: Around, text: string): CorePlace | null {
+  const { before, after, valueBefore, valueAfter, at } = near;
   switch (place.at) {
     case "text": {
       const parent = place.parent;
@@ -705,17 +727,18 @@ function corePlaceOf(place: Place, mark: string, at: number, text: string): Core
         parent?.namespaceURI === H.NS.HTML &&
         (name === "script" || name === "style" || TEXT_ONLY_ELEMENTS.has(name))
       ) {
-        return { kind: "raw-text", element: name, before, after };
+        return { kind: "raw-text", element: name, before, after, valueBefore, valueAfter };
       }
       return {
         kind: "content",
         open: openTagsOf(place.chain),
         plain: place.foreign === null && place.select === null,
         after,
+        valueAfter: valueAfter && after.length === 0,
       };
     }
     case "comment":
-      return { kind: "comment", before, after };
+      return { kind: "comment", before, after, valueBefore, valueAfter };
     case "attr-value": {
       const loc = attributeLocation(place.element, place.attribute);
       const span = loc ? attributeValueSpan(text, loc.startOffset, loc.endOffset) : null;
@@ -728,16 +751,33 @@ function corePlaceOf(place: Place, mark: string, at: number, text: string): Core
       };
     }
     case "tag-name":
-      return { kind: "tag", inName: true };
+      return { kind: "tag", inName: true, after };
     case "attr-name":
-      return { kind: "tag", inName: false };
+      return { kind: "tag", inName: false, after };
     case "doctype":
       return null;
   }
 }
 
-/** How much of the template after a value tag a {@link CorePlace} keeps: enough for an end tag's name. */
+/** How much of the template around a value tag a {@link CorePlace} keeps: enough for an end tag's name. */
 const CORE_AFTER = 16;
+
+/**
+ * The template's text around a value tag's marker in the values reading,
+ * up to {@link CORE_AFTER} characters and never past another value tag's
+ * marker, and whether such a tag is that near (its value may supply the
+ * rest of what the window holds).
+ */
+interface Around {
+  readonly before: string;
+  readonly after: string;
+  readonly valueBefore: boolean;
+  readonly valueAfter: boolean;
+  /** The marker's offset in the reading; -1 when it has none. */
+  readonly at: number;
+}
+
+const NOWHERE: Around = { before: "", after: "", valueBefore: false, valueAfter: false, at: -1 };
 
 /**
  * The start tags of `chain`'s elements, outermost first, which put a value

@@ -425,3 +425,59 @@ describe("#1748 review, round 3", () => {
     expect(rule("<!--{{x}} note -->", "->")).toBe("ends-comment");
   });
 });
+
+describe("#1748 review, round 4", () => {
+  it("refuses an end split over two values next to each other", () => {
+    const html = "<textarea>{{a}}{{x}}</textarea>";
+    const a = (v: string) => coreValueProblemAt(html, html.indexOf("{{a}}"), v)?.rule ?? null;
+    const b = (v: string) => coreValueProblemAt(html, html.indexOf("{{x}}"), v)?.rule ?? null;
+    expect(a("</text")).toBe("ends-textarea");
+    expect(b("area>outside")).toBe("ends-textarea");
+    expect(a("plain")).toBeNull();
+    expect(b(" more")).toBeNull();
+    const comment = "<!-- {{a}}{{x}} -->";
+    expect(coreValueProblemAt(comment, comment.indexOf("{{a}}"), "x-")?.rule).toBe("ends-comment");
+    expect(coreValueProblemAt(comment, comment.indexOf("{{x}}"), "->x")?.rule).toBe("ends-comment");
+    // A space between two titles, which ends nothing.
+    const title = "<title>{{a}} {{x}}</title>";
+    expect(coreValueProblemAt(title, title.indexOf("{{x}}"), "Seite")).toBeNull();
+  });
+
+  it("keeps a self-closing tag self-closing", () => {
+    expect(rule("<svg><g {{x}}/><circle/></svg>", 'class="a" id=x')).toBe("tag-self-closing");
+    expect(at("<svg><g {{x}}/><circle/></svg>", 'class="a" id="x"')).toBeNull();
+    expect(rule("<div {{x}}>y</div>", 'title="a>b')).toBe("ends-tag");
+  });
+
+  it("checks a parent entry's value only where it renders: its own depth, and a child's that lacks the key", () => {
+    const html =
+      '{{#nav}}<div>{{label}}</div>{{#children}}<a title="{{label}}">child</a>{{/children}}{{/nav}}';
+    const entry = (label: string, children?: { id: string; label?: string }[]) => ({
+      id: "p1",
+      node: "entry",
+      values: { label },
+      ...(children
+        ? {
+            children: children.map((c) => ({
+              id: c.id,
+              node: "entry",
+              values: c.label === undefined ? {} : { label: c.label },
+            })),
+          }
+        : {}),
+    });
+    expect(
+      listEntryValueProblems(html, "nav", [entry('Say "hi"', [{ id: "c1", label: "Child" }])], []),
+    ).toEqual([]);
+    expect(
+      listEntryValueProblems(html, "nav", [entry('Say "hi"', [{ id: "c1" }])], []).map(
+        (p) => p.problem.rule,
+      ),
+    ).toEqual(["attribute-quote"]);
+    expect(
+      listEntryValueProblems(html, "nav", [entry("ok", [{ id: "c1", label: 'Say "hi"' }])], []).map(
+        (p) => p.path,
+      ),
+    ).toEqual([[0, "children", 0, "values", "label"]]);
+  });
+});

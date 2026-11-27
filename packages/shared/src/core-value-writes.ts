@@ -15,8 +15,11 @@ import {
   contextValueTags,
   type ModuleValueTag,
   moduleValueTags,
-  sectionValueTags,
+  sectionEntryTags,
 } from "./template-sections.js";
+
+/** An entry's system values (`docs/lists.md` §8), which a nested section reads as a conditional. */
+const SYSTEM_SCALAR = /^(?:is_|has_|count_)|^(?:first|last|id|node|index|depth)$/;
 
 /** A stored value that breaks the markup where a module places it. */
 export interface StoredValueProblem {
@@ -71,8 +74,34 @@ export function listEntryValueProblems(
 ): StoredValueProblem[] {
   // Read as the engine reads it (template-engine.ts unwraps CDATA guards first).
   const html = stripCdataGuards(moduleHtml);
-  const tags = tagsByName(sectionValueTags(html, field));
-  if (tags.size === 0) return [];
+  // An entry's value renders at the tags of its own depth, and at the next
+  // depth's for each child that lacks the key (lookup goes outwards).
+  const keys = new Set<string>();
+  const collect = (list: readonly ListItem[]) => {
+    for (const item of list) {
+      for (const key of Object.keys(item.values ?? {})) keys.add(key.toLowerCase());
+      if (item.children) collect(item.children);
+    }
+  };
+  collect(items);
+  const { tags: all, recurse } = sectionEntryTags(
+    html,
+    field,
+    (key) => keys.has(key) || SYSTEM_SCALAR.test(key),
+  );
+  if (all.length === 0) return [];
+  const levels = new Map<number, ModuleValueTag[]>();
+  for (const t of all) levels.set(t.level, [...(levels.get(t.level) ?? []), t]);
+  const tagsFor = (depth: number, item: ListItem, key: string) => {
+    const at = [
+      ...(levels.get(depth) ?? []),
+      ...(recurse && depth > 0 ? (levels.get(0) ?? []) : []),
+    ];
+    const lacking = (item.children ?? []).some((c) => !Object.hasOwn(c.values ?? {}, key));
+    if (lacking)
+      at.push(...(levels.get(depth + 1) ?? []), ...(recurse ? (levels.get(0) ?? []) : []));
+    return tagsByName(at);
+  };
   const before = new Map<string, ListItem>();
   const index = (list: readonly ListItem[] | undefined) => {
     for (const item of list ?? []) {
@@ -82,13 +111,14 @@ export function listEntryValueProblems(
   };
   index(previous);
   const out: StoredValueProblem[] = [];
-  const visit = (list: readonly ListItem[], path: readonly (string | number)[]) => {
+  const visit = (list: readonly ListItem[], path: readonly (string | number)[], depth: number) => {
     for (const [i, item] of list.entries()) {
       const old = before.get(item.id);
       for (const [key, value] of Object.entries(item.values ?? {})) {
         if (old !== undefined && JSON.stringify(old.values?.[key]) === JSON.stringify(value))
           continue;
         const k = key.toLowerCase();
+        const tags = tagsFor(depth, item, key);
         for (const [name, part] of [
           [k, ""],
           [`${k}.href`, "href"],
@@ -106,10 +136,10 @@ export function listEntryValueProblems(
           break;
         }
       }
-      if (item.children) visit(item.children, [...path, i, "children"]);
+      if (item.children) visit(item.children, [...path, i, "children"], depth + 1);
     }
   };
-  visit(items, at);
+  visit(items, at, 0);
   return out;
 }
 

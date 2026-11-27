@@ -47,7 +47,7 @@
 
 import { type DefaultTreeAdapterTypes, defaultTreeAdapter, html as H, parseFragment } from "parse5";
 import { type HtmlToken, htmlTokens } from "./html-tokens.js";
-import { type CorePlace, placeholderContexts } from "./template-contexts.js";
+import { type CorePlace, type Neighbours, placeholderContexts } from "./template-contexts.js";
 
 export type { CorePlace } from "./template-contexts.js";
 
@@ -171,13 +171,13 @@ export function coreValueProblem(place: CorePlace, value: string): CoreValueProb
     case "content":
       return value.includes("<") ? contentProblem(place, value) : null;
     case "raw-text":
-      return rawTextProblem(place.element, value, place.before, place.after);
+      return rawTextProblem(place.element, value, place);
     case "comment":
-      return commentProblem(value, place.before, place.after);
+      return commentProblem(value, place);
     case "attribute":
       return attributeProblem(place, value);
     case "tag":
-      return tagProblem(place.inName, value);
+      return tagProblem(place.inName, value, place.after);
   }
 }
 
@@ -222,7 +222,7 @@ function contentProblem(
   // unfinished takes the mark in.
   // A trailing `<` (or `</`, `<!`, `<?`) the template's own next letter
   // completes into a tag is no text.
-  if (/<[/!?]?$/.test(value) && /^[a-zA-Z!/?]/.test(place.after)) {
+  if (/<[/!?]?$/.test(value) && (/^[a-zA-Z!/?]/.test(place.after) || place.valueAfter)) {
     return {
       rule: "unfinished-tag",
       spelling: spellingAt(value, value.lastIndexOf("<")),
@@ -520,84 +520,97 @@ function parentOf(n: Node): Node | null {
 // ── Raw text, comments, attributes, tags ──────────────────────────────
 
 /**
- * The first match of `pattern` in `before + value + after` that overlaps
- * the value, as `[start, end)` of that text: the template's text on either
- * side can complete what the value starts, or the value complete what the
- * template started.
+ * The first end the value takes part in among `ends` (spelled in full,
+ * lowercase): one in `before + value + after` that overlaps the value, or,
+ * where another value tag is that near, one that value could finish: the
+ * text ending in a start of an end (`</text` before a value), or starting
+ * with the rest of one (`area>` after a value). The other value is then
+ * any text; a rest that is only the end's last character is left to the
+ * value before, whose own check sees it.
  */
-function overlapping(
-  pattern: RegExp,
-  before: string,
+function endTakingPart(
+  ends: readonly string[],
   value: string,
-  after: string,
-): RegExpExecArray | null {
-  const text = before + value + after;
-  const from = before.length;
-  const to = before.length + value.length;
-  const re = new RegExp(
-    pattern.source,
-    pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`,
-  );
-  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
-    if (m.index < to && m.index + m[0].length > from) return m;
-    if (m[0].length === 0) re.lastIndex += 1;
+  near: Neighbours,
+): { readonly at: number; readonly length: number } | null {
+  const text = (near.before + value + near.after).toLowerCase();
+  const from = near.before.length;
+  const to = from + value.length;
+  for (const end of ends) {
+    for (let at = text.indexOf(end); at !== -1; at = text.indexOf(end, at + 1)) {
+      if (at < to && at + end.length > from) return { at: at - from, length: end.length };
+    }
+  }
+  if (near.valueAfter) {
+    for (const end of ends) {
+      for (let k = end.length - 1; k >= 1; k -= 1) {
+        const start = text.length - k;
+        if (start < to && text.endsWith(end.slice(0, k))) return { at: start - from, length: k };
+      }
+    }
+  }
+  if (near.valueBefore) {
+    for (const end of ends) {
+      for (let k = 1; k < end.length - 1; k += 1) {
+        const rest = end.slice(k);
+        if (rest.length > from && text.startsWith(rest))
+          return { at: 0, length: rest.length - from };
+      }
+    }
   }
   return null;
 }
 
+/** The ways an end tag of `element` is spelled: `</name` and the character that ends its name. */
+function endTagSpellings(element: string): string[] {
+  return ["\t", "\n", "\f", "\r", " ", "/", ">"].map((d) => `</${element}${d}`);
+}
+
 /**
  * An end tag of `element` the value takes part in: `</textarea` before the
- * template's `>`, or `area>` after the template's `</text`. The end of the
- * template's text the reading keeps counts as the end of the tag name (a
- * following tag's value may supply it).
+ * template's `>`, `area>` after the template's `</text`, or one split over
+ * this value and the next. The end of the window counts as the end of the
+ * tag name only where another value follows.
  */
-function rawTextProblem(
-  element: string,
-  value: string,
-  before: string,
-  after: string,
-): CoreValueProblem | null {
+function rawTextProblem(element: string, value: string, near: Neighbours): CoreValueProblem | null {
   const where = `the text of <${element}>`;
   // Nothing ends a `<plaintext>`.
   if (element === "plaintext") return null;
-  const name = element.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const end = overlapping(
-    new RegExp(`</${name}(?:[\\t\\n\\f\\r />]|$)`, "i"),
-    before,
-    value,
-    after,
-  );
+  const end = endTakingPart(endTagSpellings(element), value, near);
   if (end !== null) {
     return {
       rule: `ends-${ruleName(element)}`,
-      spelling: spellingAt(
-        value,
-        Math.max(0, end.index - before.length),
-        end.index - before.length + end[0].length,
-      ),
+      spelling: spellingAt(value, Math.max(0, end.at), end.at + end.length) || `</${element}`,
       place: where,
     };
   }
-  if (element === "script" && overlapping(/<!--/, before, value, after) !== null) {
-    return { rule: "script-comment", spelling: "<!--", place: where };
+  // A `<!--` the value writes into a script (a split one is left alone:
+  // only `<!--` with a `<script` after it keeps the end from ending it).
+  if (element === "script") {
+    const read = near.before + value + near.after;
+    const from = near.before.length;
+    for (let at = read.indexOf("<!--"); at !== -1; at = read.indexOf("<!--", at + 1)) {
+      if (at < from + value.length && at + 4 > from) {
+        return { rule: "script-comment", spelling: "<!--", place: where };
+      }
+    }
   }
   return null;
 }
 
 /**
  * A comment's end the value takes part in: its own `-->` / `--!>`, a `--`
- * before the template's `>`, a `>` after the template's `--`, or a `>` /
- * `->` right after the comment's `<!--` (`<!-->`, `<!--->`). A `-` after
+ * before the template's `>`, a `>` after the template's `--`, a `>` / `->`
+ * right after the comment's `<!--` (`<!-->`, `<!--->`: they hold a `-->`
+ * with the `<!--`), or one split over this value and the next. A `-` after
  * the `<!--` alone ends nothing (`<!--- note -->`).
  */
-function commentProblem(value: string, before: string, after: string): CoreValueProblem | null {
-  // `<!-->` and `<!--->` hold a `-->` too: the comment's own `<!--` before the value.
-  const end = overlapping(/--!?>/, before, value, after);
+function commentProblem(value: string, near: Neighbours): CoreValueProblem | null {
+  const end = endTakingPart(["-->", "--!>"], value, near);
   if (end === null) return null;
-  const at = Math.max(0, end.index - before.length);
   return {
     rule: "ends-comment",
-    spelling: spellingAt(value, at, end.index - before.length + end[0].length) || end[0],
+    spelling: spellingAt(value, Math.max(0, end.at), end.at + end.length) || "-->",
     place: "a comment",
   };
 }
@@ -627,15 +640,42 @@ function attributeProblem(
   return null;
 }
 
-function tagProblem(inName: boolean, value: string): CoreValueProblem | null {
+function tagProblem(inName: boolean, value: string, after: string): CoreValueProblem | null {
+  const where = inName ? "a tag's name" : "a tag's attributes";
   if (inName) {
     const at = value.search(/[\t\n\f\r />]/);
-    return at === -1
-      ? null
-      : { rule: "ends-tag-name", spelling: spellingAt(value, at, at + 1), place: "a tag's name" };
+    if (at !== -1) {
+      return { rule: "ends-tag-name", spelling: spellingAt(value, at, at + 1), place: where };
+    }
   }
-  // The value must stay one tag's attributes: the same start tag, and the
-  // text after it, read exactly as without it.
+  // Where the template's own text after the value ends the tag: the tag
+  // must end there with the value too, as self-closing as before (`id=x`
+  // before the template's `/>` takes the `/` into its value).
+  const head = inName ? "<x" : "<x ";
+  const base = htmlTokens(head + after)[0];
+  if (base?.kind === "start" && base.end > 0) {
+    const read = htmlTokens(head + value + after)[0];
+    if (read?.kind !== "start" || read.end !== base.end + value.length) {
+      const at = value.search(/[>"']/);
+      return {
+        rule: "ends-tag",
+        spelling: spellingAt(value, at === -1 ? 0 : at, at === -1 ? undefined : at + 1),
+        place: where,
+      };
+    }
+    if (read.selfClosing !== base.selfClosing) {
+      return {
+        rule: "tag-self-closing",
+        spelling: spellingAt(value, value.length - 1),
+        place: where,
+      };
+    }
+    return null;
+  }
+  if (inName) return null;
+  // The template's text after it does not end the tag within reach: the
+  // value must stay one tag's attributes, and the text after it read as
+  // without it.
   const mark = markFor(value);
   const tokens = htmlTokens(`<x ${value} y>${mark}`);
   const [tag, text] = tokens;

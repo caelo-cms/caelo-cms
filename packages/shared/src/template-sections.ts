@@ -883,31 +883,58 @@ export function fieldPathProblems(
 /** The field kinds whose section opens entries, with keys of their own. */
 const ENTRY_SCOPE_KINDS: ReadonlySet<string> = new Set(["list", "module-list"]);
 
+/** A value tag inside a list's section, at the depth of entries it reads ({@link sectionEntryTags}). */
+export interface EntryValueTag extends ModuleValueTag {
+  /** 0 for the list's own entries, 1 inside a children section of theirs, … */
+  readonly level: number;
+}
+
 /**
- * #1748 — the value tags inside every `{{#name}}` section of `html` (a list
- * field's entries' keys, dotted link paths included; `page.*`,
- * `site_text.*` and `{{&f}}`, which reads the module field, left out), by
- * offset: where a list's entries render.
+ * #1748 — the value tags inside every `{{#name}}` section of `html`, where a
+ * list's entries render (dotted link paths included; `page.*`,
+ * `site_text.*` and `{{&f}}`, which reads the module field, left out), with
+ * the depth of entries each reads: a nested `{{#c}}` section opens the next
+ * depth of entries unless `scalar`
+ * says `c` is a value of an entry (a conditional such as `{{#link}}`,
+ * `{{#is_current}}`). `recurse`: the section renders children with its own
+ * block (`{{>recurse}}`), so every depth reads the depth-0 tags too.
  */
-export function sectionValueTags(html: string, name: string): ModuleValueTag[] {
+export function sectionEntryTags(
+  html: string,
+  name: string,
+  scalar: (key: string) => boolean,
+): { readonly tags: readonly EntryValueTag[]; readonly recurse: boolean } {
   const tokens = tokenize(html);
   const pairs = matchSections(tokens);
   const lower = name.toLowerCase();
   const seen = new Set<number>();
-  const out: ModuleValueTag[] = [];
+  const tags: EntryValueTag[] = [];
+  let recurse = false;
   for (const [i, t] of tokens.entries()) {
     const close = pairs.get(i);
     if (close === undefined || t.sigil !== "#" || t.name.toLowerCase() !== lower) continue;
+    // The close token of every nested section inside, with whether it opens entries.
+    const nested: { close: number; entries: boolean }[] = [];
     for (let k = i + 1; k < close; k += 1) {
+      while (nested.length > 0 && k > (nested[nested.length - 1] as { close: number }).close) {
+        nested.pop();
+      }
       const inner = tokens[k] as Token;
+      const innerClose = pairs.get(k);
+      if (innerClose !== undefined) {
+        const key = inner.name.toLowerCase();
+        nested.push({ close: innerClose, entries: inner.sigil === "#" && !scalar(key) });
+        continue;
+      }
+      if (inner.sigil === ">" && inner.name === "recurse") recurse = true;
       // `{{&f}}` reads the module field, never the entry (moduleValueTags has it).
-      if (inner.sigil !== "" || isContextHead(inner.name)) continue;
-      if (seen.has(inner.start)) continue;
+      if (inner.sigil !== "" || isContextHead(inner.name) || seen.has(inner.start)) continue;
       seen.add(inner.start);
-      out.push({ start: inner.start, name: inner.name.toLowerCase() });
+      const level = nested.filter((n) => n.entries).length;
+      tags.push({ start: inner.start, name: inner.name.toLowerCase(), level });
     }
   }
-  return out;
+  return { tags, recurse };
 }
 
 /** #1748 — every `{{<head>.…}}` value tag of `html` (`site_text`, `page`), wherever it stands. */
