@@ -52,7 +52,10 @@ export function sitemapImagesOf(html: string, siteBaseUrl: string): string[] {
     const asset = assetOf(src);
     if (seen.has(asset)) continue;
     seen.add(asset);
-    out.push(`${base}${src}`);
+    // A fresh string: a part cut out of the page would keep the whole page's
+    // HTML alive while the sitemap waits for the last batch (the engine
+    // shares the characters of a substring with its source).
+    out.push(new URL(src, `${base}/`).href);
     if (out.length >= MAX_SITEMAP_IMAGES_PER_URL) break;
   }
   return out;
