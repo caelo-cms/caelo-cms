@@ -131,6 +131,40 @@ function text(result: unknown): string {
   return content.map((c) => c.text ?? "").join("\n");
 }
 
+/** The `cached` flag every catalogue result ends with. */
+function cachedFlag(result: unknown): boolean {
+  const content = (result as { content: Array<{ type: string; text?: string }> }).content;
+  const last = content[content.length - 1]?.text ?? "{}";
+  return (JSON.parse(last) as { cached: boolean }).cached;
+}
+
+async function makeModule(slug: string): Promise<string> {
+  const { adapter, registry } = getQueryContext();
+  const r = await execute(registry, adapter, ownerCtx, "modules.create", {
+    slug,
+    displayName: slug,
+    html: "<div>{{body}}</div>",
+    fields: [{ name: "body", kind: "text", label: "Body" } as never],
+  });
+  if (!r.ok) throw new Error(`module ${slug}: ${JSON.stringify(r.error)}`);
+  return (r.value as { moduleId: string }).moduleId;
+}
+
+/** A module's display name as the chat's branch sees it. */
+async function displayName(moduleId: string, chatBranchId: string): Promise<string> {
+  const { adapter, registry } = getQueryContext();
+  const r = await execute(registry, adapter, { ...ownerCtx, chatBranchId }, "modules.get", {
+    moduleId,
+  });
+  if (!r.ok) throw new Error(JSON.stringify(r.error));
+  return (r.value as { module: { displayName: string } }).module.displayName;
+}
+
+/** The arguments of an `update_modules_many` call that renames one module. */
+const renameArgs = (moduleId: string, to: string) => ({
+  items: [{ moduleId, displayName: to }],
+});
+
 beforeAll(async () => {
   await withSql(async (tx) => {
     for (const [u, role] of [
@@ -545,11 +579,83 @@ describe("remote MCP: one work session per agent (#1253)", () => {
       );
       return res.text();
     };
-    expect(await rpc(2, "caelo_open_session", { title: "t1253 raw" })).toContain("chatSessionId");
-    const first = await rpc(3, "list_pages", {});
+    const opened = await rpc(2, "caelo_open_session", { title: "t1253 raw" });
+    const chatBranchId = /\\"chatBranchId\\": \\"([0-9a-f-]{36})\\"/.exec(opened)?.[1];
+    expect(chatBranchId).toBeTruthy();
+    const moduleId = await makeModule("t1253-raw-repeat");
+    const first = await rpc(3, "update_modules_many", renameArgs(moduleId, "once"));
     expect(first).toContain('\\"cached\\":false');
-    const repeat = await rpc(3, "list_pages", {});
+    // A second rename in between: a replay that ran the first again would undo it.
+    await rpc(4, "update_modules_many", renameArgs(moduleId, "twice"));
+    const repeat = await rpc(3, "update_modules_many", renameArgs(moduleId, "once"));
     expect(repeat).toContain('\\"cached\\":true');
+    expect(await displayName(moduleId, chatBranchId as string)).toBe("twice");
+    // #1704 — a read is never replayed: it answers with the current state.
+    expect(await rpc(5, "list_pages", {})).toContain('\\"cached\\":false');
+    expect(await rpc(5, "list_pages", {})).toContain('\\"cached\\":false');
+  });
+});
+
+describe("remote MCP: a resumed MCP session gets each call's own result (#1704)", () => {
+  /**
+   * A client that reconnects with the `Mcp-Session-Id` it already holds:
+   * the SDK's `Client.connect` then skips `initialize`, and a new client
+   * counts its JSON-RPC ids from 0 again — the ids of the first
+   * connection's calls, under the same MCP session.
+   */
+  async function resume(surface: Surface, sessionId: string): Promise<Client> {
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://admin.test/api/mcp/remote/${surface}`),
+      {
+        sessionId,
+        requestInit: {
+          headers: { "x-goog-iap-jwt-assertion": assertion(OWNER.email), ...clientHeader() },
+        },
+        fetch: (url, init) => callRoute(surface, new Request(url, init)),
+      },
+    );
+    const client = new Client({ name: "t1704-resumed", version: "1.0.0" });
+    await client.connect(transport);
+    return client;
+  }
+
+  it("a reconnect that restarts the JSON-RPC ids runs every call, never another call's cached result", async () => {
+    const moduleId = await makeModule("t1704-resumed");
+    const first = await connect("power", OWNER.email);
+    const sessionId = (first.transport as StreamableHTTPClientTransport).sessionId;
+    expect(sessionId).toBeTruthy();
+    // ids: 0 initialize, 1 caelo_open_session, 2 the rename, 3 list_pages.
+    const opened = await first.callTool({
+      name: "caelo_open_session",
+      arguments: { title: "t1704 resumed session" },
+    });
+    const { chatBranchId } = JSON.parse(`${text(opened).split("\n}")[0]}\n}`) as {
+      chatBranchId: string;
+    };
+    const rename = (to: string) => ({
+      name: "update_modules_many",
+      arguments: renameArgs(moduleId, to),
+    });
+    expect((await first.callTool(rename("from the first connection"))).isError).toBeFalsy();
+    expect((await first.callTool({ name: "list_pages", arguments: {} })).isError).toBeFalsy();
+    await first.close();
+
+    const second = await resume("power", sessionId as string);
+    // ids 0 and 1 again, then 2 (the first connection's rename) and 3
+    // (its list_pages): each call runs and answers for itself.
+    await second.callTool({ name: "list_pages", arguments: {} });
+    await second.callTool({ name: "list_pages", arguments: {} });
+    const renamed = await second.callTool(rename("from the resumed connection"));
+    expect(renamed.isError).toBeFalsy();
+    expect(cachedFlag(renamed)).toBe(false);
+    expect(await displayName(moduleId, chatBranchId)).toBe("from the resumed connection");
+    const modules = await second.callTool({
+      name: "list_modules",
+      arguments: { filter: "t1704-resumed" },
+    });
+    expect(cachedFlag(modules)).toBe(false);
+    expect(text(modules)).toContain(moduleId);
+    await second.close();
   });
 });
 

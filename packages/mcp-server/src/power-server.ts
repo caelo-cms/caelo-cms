@@ -27,8 +27,9 @@
  *   rides the response so a restarted server can resume a specific session
  *   via `chatSessionId`. Agents sharing this process (sub-agents) each pass
  *   their own as `workSessionId` (#1253);
- * - every call carries an idempotency key made of this process's id and the
- *   call's JSON-RPC id, so a repeated request returns the first result.
+ * - every call carries an idempotency key made of this process's id, the
+ *   call's JSON-RPC id and the call itself (#1704), so a repeated request
+ *   returns the first result and a reused id with another call runs it.
  */
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -149,7 +150,7 @@ export async function startPowerMcpServer(opts: StartPowerOpts): Promise<void> {
           body: {
             ...call,
             chatSessionId: session,
-            toolCallId: rpcToolCallId(`stdio:${processKey}`, rpcRequestId),
+            toolCallId: rpcToolCallId(`stdio:${processKey}`, rpcRequestId, call),
           },
           timeoutMs: resolveTimeoutMs(120_000),
         });
