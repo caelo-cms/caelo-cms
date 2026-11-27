@@ -7,9 +7,12 @@ import {
   MEDIA_VARIANT_MISSING,
   mediaFailureMarker,
   mediaReferenceMarker,
+  NESTED_MODULE_WITHHELD,
+  nestedModuleWithheldMarker,
   ogImageFailureMarker,
   parseMediaFailureMarker,
   parseMediaReferenceMarker,
+  parseNestedModuleWithheldMarker,
   parseOgImageFailureMarker,
   renderFailureKind,
   renderFailureMarker,
@@ -140,5 +143,36 @@ describe("reference image and share image markers (#1719)", () => {
       expect(parseMediaReferenceMarker(m)).toBeNull();
       expect(parseOgImageFailureMarker(m)).toBeNull();
     }
+  });
+});
+
+describe("withheld nested module marker (#1708)", () => {
+  const withheld = {
+    moduleId: "00000000-0000-4000-8000-000000000708",
+    pluginSlug: "consent-manager",
+    reason: "marketing",
+  };
+
+  it("is content a Stage reports, never a Caelo fault that stops it", () => {
+    const marker = nestedModuleWithheldMarker(withheld);
+    expect(marker).toBe(
+      "nested-module-withheld:00000000-0000-4000-8000-000000000708/consent-manager/marketing",
+    );
+    expect(isCaeloFaultMarker(marker)).toBe(false);
+    expect(renderFailureKind(marker)).toBe(NESTED_MODULE_WITHHELD);
+  });
+
+  it("reads its parts back, from the marker and from the backstop's comment", () => {
+    const marker = nestedModuleWithheldMarker({ ...withheld, reason: "unclassified" });
+    expect(parseNestedModuleWithheldMarker(marker)).toEqual({
+      ...withheld,
+      reason: "unclassified",
+    });
+    expect(parseNestedModuleWithheldMarker(`<!-- caelo:missing reason=${marker} -->`)).toEqual({
+      ...withheld,
+      reason: "unclassified",
+    });
+    expect(parseNestedModuleWithheldMarker("module-missing:abc")).toBeNull();
+    expect(parseNestedModuleWithheldMarker("nested-module-withheld:not-a-uuid/x/y")).toBeNull();
   });
 });

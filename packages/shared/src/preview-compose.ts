@@ -484,6 +484,7 @@ function renderModuleFields(
     readonly lists?: ListPageContext;
     readonly nestedModules?: NestedRenderResolver;
     readonly linkResolver?: LinkResolver;
+    readonly deferredModules?: Readonly<Record<string, ComposeDeferral>>;
   },
   /** #1729 — refuse the module's plugin values with this rule (`page-reading.ts`). */
   refusePluginValues?: string,
@@ -516,6 +517,7 @@ function renderModuleFields(
       }
     : undefined;
   if (input.nestedModules) {
+    const deferred = input.deferredModules;
     const r = renderPlacedModule(
       {
         html: m.html,
@@ -524,6 +526,9 @@ function renderModuleFields(
       },
       input.nestedModules,
       {
+        // #1708 — a withheld module nested in a field is left out and
+        // reported: only a placed module can be wrapped in its gate.
+        ...(deferred ? { withheld: (id: string) => deferred[id] } : {}),
         themeAssets,
         ...(input.lists ? { lists: input.lists } : {}),
         ...(m.contentInstanceId ? { contentInstanceId: m.contentInstanceId } : {}),
@@ -738,12 +743,12 @@ export interface ComposeWithLayoutInput extends ComposeInput {
  *   - `layout-missing-content`: the layout HTML lacks
  *     `<caelo-slot name="content">…</caelo-slot>` so the page body has
  *     nowhere to land.
- *   - `nested-module-deferred`: a plugin withholds a module that sits
- *     INSIDE another module's `module` / `module-list` field. Only placed
- *     modules can be parked behind the plugin's gate, so rendering it
- *     would ship the withheld content ungated.
+ *
+ * A plugin-withheld module nested inside another module's field is no
+ * error (#1708): the renderer leaves it out and reports it as a
+ * `nested-module-withheld` module failure, which a Stage records.
  */
-export type ComposeErrorKind = "layout-missing-content" | "nested-module-deferred";
+export type ComposeErrorKind = "layout-missing-content";
 
 export class ComposeError extends Error {
   readonly kind: ComposeErrorKind;
@@ -873,14 +878,13 @@ function composePageWithLayoutOnce(
     const baseHtml = rendered.html;
     recordFailures(moduleFailures, blockName, m, rendered.failures);
     for (const id of rendered.nestedModuleIds) {
-      const nestedDeferral = input.deferredModules?.[id];
-      if (nestedDeferral) {
-        const nestedSlug = input.nestedModules?.getModule(id)?.slug ?? id;
-        throw new ComposeError(
-          "nested-module-deferred",
-          `module "${nestedSlug}" is withheld by plugin "${nestedDeferral.pluginSlug}" (${nestedDeferral.reason}) but sits inside module "${m.slug}" in block "${blockName}", where it cannot be gated — ` +
-            "place it on the page directly instead of inside another module's field",
-          input.layoutSlug,
+      // #1708 — the renderer leaves a withheld nested module out (a
+      // `nested-module-withheld` failure in `rendered.failures`), so it
+      // never reaches this list. One that did would put its CSS/JS in the
+      // page-wide bundles, before consent: a renderer bug, never content.
+      if (input.deferredModules?.[id]) {
+        throw new Error(
+          `compose: module ${id} is withheld by a plugin but was rendered nested inside module "${m.slug}" (block "${blockName}"): the nested renderer did not get the withheld modules`,
         );
       }
       // Inside a withheld parent the nested module is withheld too:

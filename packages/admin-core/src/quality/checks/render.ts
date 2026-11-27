@@ -25,7 +25,7 @@
  * `render/page-path-unknown`, `render/module-missing`,
  * `render/link-target-missing`, `render/media-variant-missing`,
  * `render/media-missing`, `render/media-reference`, `render/og-image-missing`,
- * `render/og-image-reference`, …), plus
+ * `render/og-image-reference`, `render/nested-module-withheld` (#1708), …), plus
  * `render/limit-reached` (info) when the run recorded more failures than
  * it lists.
  */
