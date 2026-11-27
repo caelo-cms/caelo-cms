@@ -27,8 +27,8 @@ import {
   describeCrawlerPolicy,
   planCrawlerPolicy,
   policyContradictions,
-} from "./policy.js";
-import { PURPOSE_LABEL } from "./table.js";
+} from "./crawler-policy.js";
+import { PURPOSE_LABEL } from "./crawler-table.js";
 
 /** The planning tool's operation. */
 export const PLAN_CRAWLER_POLICY_OPERATION = "plan_crawler_policy";

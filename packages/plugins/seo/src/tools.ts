@@ -11,7 +11,7 @@
  */
 
 import type { PluginToolSpec } from "@caelo-cms/plugin-sdk";
-import { PLAN_CRAWLER_POLICY_TOOL } from "./crawlers/operations.js";
+import { PLAN_CRAWLER_POLICY_TOOL } from "./rules/crawler-operations.js";
 
 /** Every tool the plugin registers while it is active. */
 export const SEO_TOOLS: readonly PluginToolSpec[] = [PLAN_CRAWLER_POLICY_TOOL];

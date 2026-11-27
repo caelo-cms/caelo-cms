@@ -12,9 +12,9 @@
  */
 
 import type { PluginAuditFinding, PluginContextTier1, RobotsRules } from "@caelo-cms/plugin-sdk";
-import { mayFetch } from "../crawlers/robots-match.js";
-import type { SeoAuditRule } from "./index.js";
+import type { SeoAuditRule } from "../checks/index.js";
 import { isNoindex, pageFindings } from "./page-rules.js";
+import { mayFetch } from "./robots-match.js";
 
 /** The crawler whose group decides whether search engines read a page. */
 const SEARCH_CRAWLER = "Googlebot";

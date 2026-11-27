@@ -8,11 +8,12 @@
 import { describe, expect, it } from "bun:test";
 import type { PluginContextTier1, RobotsRules } from "@caelo-cms/plugin-sdk";
 import { seoWriteHints } from "../hints/index.js";
+import { WRITE_HINT_RULES } from "../rule-sets.js";
 import {
   CRAWLER_POLICY_AUDIT_RULE,
   packSentences,
   planCrawlerPolicyOperation,
-} from "./operations.js";
+} from "./crawler-operations.js";
 import {
   blocksWholeSite,
   type CrawlerPolicy,
@@ -20,14 +21,14 @@ import {
   groupOf,
   planCrawlerPolicy,
   policyContradictions,
-} from "./policy.js";
+} from "./crawler-policy.js";
 import {
   CRAWLER_PURPOSES,
   CRAWLER_TOKENS,
   crawlerToken,
   TRAINING_PREFERENCE_TOKEN,
   tokensFor,
-} from "./table.js";
+} from "./crawler-table.js";
 
 const g = (
   userAgents: string[],
@@ -237,18 +238,22 @@ describe("plan_crawler_policy and the card hint", () => {
 
   it("puts the policy and its caveats on the card, within the SDK's hint limits", async () => {
     const rules = planCrawlerPolicy([], { ...NO_TRAINING, userFetch: "block" }).rules;
-    const { hints } = await seoWriteHints(ctxWith([]), {
-      writes: [{ kind: "robots_rules", rules }],
-    });
+    const { hints } = await seoWriteHints(
+      ctxWith([]),
+      { writes: [{ kind: "robots_rules", rules }] },
+      WRITE_HINT_RULES,
+    );
     expect(hints.length).toBeGreaterThan(0);
     expect(hints.length).toBeLessThanOrEqual(5);
     for (const h of hints) expect(h.length).toBeLessThanOrEqual(600);
     expect(hints[0]).toContain("AI training: blocked");
     expect(hints.join(" ")).toContain("ChatGPT-User");
     // Module writes get nothing from this rule.
-    const none = await seoWriteHints(ctxWith([]), {
-      writes: [{ kind: "module", moduleId: null, html: "<p>x</p>", fields: [] }],
-    });
+    const none = await seoWriteHints(
+      ctxWith([]),
+      { writes: [{ kind: "module", moduleId: null, html: "<p>x</p>", fields: [] }] },
+      WRITE_HINT_RULES,
+    );
     expect(none.hints).toEqual([]);
   });
 

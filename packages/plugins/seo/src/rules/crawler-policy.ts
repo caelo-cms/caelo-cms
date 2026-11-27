@@ -8,7 +8,7 @@
  *
  * What a plan does to the rules the site has:
  * - Every token of a blocked purpose (by its first purpose,
- *   ./table.ts) gets `Disallow: /` in a group of the policy's, and leaves
+ *   ./crawler-table.ts) gets `Disallow: /` in a group of the policy's, and leaves
  *   any group of the Owner's it was named in. A crawler follows only the
  *   most specific group that names it, so a blocked crawler must be named.
  * - Every token of an allowed purpose stays where it was: falling through
@@ -35,7 +35,7 @@ import {
   TRAINING_PREFERENCE_NOTE,
   TRAINING_PREFERENCE_TOKEN,
   tokensFor,
-} from "./table.js";
+} from "./crawler-table.js";
 
 /** One group of the rules. */
 export type RobotsGroup = RobotsRules[number];

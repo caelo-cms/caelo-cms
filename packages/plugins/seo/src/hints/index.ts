@@ -14,8 +14,6 @@
  */
 
 import { type PluginContextTier1, type PluginWrite, z } from "@caelo-cms/plugin-sdk";
-import { CRAWLER_POLICY_HINT_RULE } from "../crawlers/operations.js";
-import { ALT_TEXT_HINT_RULE } from "./alt-text.js";
 
 type Ctx = PluginContextTier1;
 
@@ -27,10 +25,7 @@ export interface SeoWriteHintRule {
 }
 
 /** Every hint family, in the order their sentences are shown. */
-export const SEO_WRITE_HINT_RULES: readonly SeoWriteHintRule[] = [
-  CRAWLER_POLICY_HINT_RULE,
-  ALT_TEXT_HINT_RULE,
-];
+export const SEO_WRITE_HINT_RULES: readonly SeoWriteHintRule[] = [];
 
 /** Most hints one answer may carry (the SDK's `pluginWriteHints`: five). */
 const MAX_HINTS = 5;

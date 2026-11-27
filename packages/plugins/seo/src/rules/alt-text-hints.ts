@@ -5,7 +5,7 @@
  * text: a library image's alt (`media_alt`), the `<img alt>` of module
  * markup, or a content value of an alt field. Rules of thumb, so hints and
  * never findings (an alt that is missing or a file name is a finding, at
- * the Stage: ../checks/page-rules.ts):
+ * the Stage: ./page-rules.ts):
  *
  * - "Image of …" — screen readers already announce an image.
  * - longer than {@link ALT_LONG} characters — screen readers read it in one
@@ -17,8 +17,8 @@
  */
 
 import type { PluginWrite } from "@caelo-cms/plugin-sdk";
-import { isFileNameAlt } from "../checks/page-rules.js";
-import type { SeoWriteHintRule } from "./index.js";
+import type { SeoWriteHintRule } from "../hints/index.js";
+import { isFileNameAlt } from "./page-rules.js";
 
 /** An alt above this many characters reads as a paragraph (a common guideline: 125). */
 export const ALT_LONG = 125;

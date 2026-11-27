@@ -8,13 +8,13 @@ import {
   type PluginContextTier1,
   pluginManifest,
 } from "@caelo-cms/plugin-sdk";
+import seo from "../index.js";
 import {
   AGENT_FILES_OPERATION,
   agentFiles,
   LLMS_TXT_CONFIG,
   LLMS_TXT_SETTING,
 } from "./agent-files.js";
-import seo from "./index.js";
 
 const withConfig = (config: Record<string, unknown>) =>
   ({ config: { get: async () => config } }) as unknown as PluginContextTier1;

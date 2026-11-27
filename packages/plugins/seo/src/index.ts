@@ -22,9 +22,9 @@
  */
 
 import { definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
-import { AGENT_FILES_OPERATION } from "./agent-files.js";
 import { SEO_CONFIG } from "./config.js";
 import { AUDIT_OPERATION, SEO_OPERATIONS, WRITE_HINTS_OPERATION } from "./operations.js";
+import { AGENT_FILES_OPERATION } from "./rules/agent-files.js";
 import { SEO_SKILLS } from "./skills.js";
 import { SEO_TOOLS } from "./tools.js";
 

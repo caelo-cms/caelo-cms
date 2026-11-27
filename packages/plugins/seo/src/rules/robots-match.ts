@@ -10,8 +10,8 @@
  */
 
 import type { RobotsRules } from "@caelo-cms/plugin-sdk";
-import type { RobotsGroup } from "./policy.js";
-import { groupOf } from "./policy.js";
+import type { RobotsGroup } from "./crawler-policy.js";
+import { groupOf } from "./crawler-policy.js";
 
 /** A rule pattern as a regular expression anchored at the path's start. */
 function patternRegex(pattern: string): RegExp {

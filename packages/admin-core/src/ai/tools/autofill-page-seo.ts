@@ -13,9 +13,10 @@
 
 import { autofillPageSeoToolInput } from "@caelo-cms/shared";
 import { makeBulkTool } from "./_make-bulk-tool.js";
+import { pageSeoWrites, withPluginWrites } from "./_plugin-write-hints.js";
 import { stageReadinessSuffix } from "./_stage-readiness.js";
 
-export const autofillPageSeoManyTool = makeBulkTool({
+const autofillPageSeoManyBase = makeBulkTool({
   name: "autofill_page_seo_many",
   description: [
     "Write pages' FIRST meta description (+ optional og:image), one transaction. A Stage refuses pages without one -> run after building, before Staging.",
@@ -68,3 +69,8 @@ export const autofillPageSeoManyTool = makeBulkTool({
       : `SEO autofilled on ${filled} page(s); ${unchanged.length} already had exactly this meta description — nothing changed: ${unchanged.join(", ")}.`;
   },
 });
+
+/** The tool, with the plugins' hints on the SEO texts it filled (epic #1751). */
+export const autofillPageSeoManyTool = withPluginWrites(autofillPageSeoManyBase, (input) =>
+  pageSeoWrites(input.items),
+);

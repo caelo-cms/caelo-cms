@@ -11,9 +11,10 @@
 import { execute } from "@caelo-cms/query-api";
 import { bulkOptimizeSeoToolInput } from "@caelo-cms/shared";
 import { describeError, toolError } from "./_describe-error.js";
+import { pageSeoWrites, withPluginWrites } from "./_plugin-write-hints.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
-export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
+const bulkOptimizeSeoBase: ToolDefinitionWithHandler<
   import("@caelo-cms/shared").BulkOptimizeSeoToolInput
 > = {
   name: "bulk_optimize_seo",
@@ -81,3 +82,8 @@ export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
     };
   },
 };
+
+/** The tool, with the plugins' hints on the SEO texts it rewrote (epic #1751). */
+export const bulkOptimizeSeoTool = withPluginWrites(bulkOptimizeSeoBase, (input) =>
+  pageSeoWrites(input.items),
+);

@@ -7,13 +7,14 @@
  */
 
 import type { PluginContextTier1, PluginOperation } from "@caelo-cms/plugin-sdk";
-import { AGENT_FILES_OPERATION, agentFiles } from "./agent-files.js";
 import { seoAudit } from "./checks/index.js";
+import { seoWriteHints } from "./hints/index.js";
+import { AUDIT_RULES, WRITE_HINT_RULES } from "./rule-sets.js";
+import { AGENT_FILES_OPERATION, agentFiles } from "./rules/agent-files.js";
 import {
   PLAN_CRAWLER_POLICY_OPERATION,
   planCrawlerPolicyOperation,
-} from "./crawlers/operations.js";
-import { seoWriteHints } from "./hints/index.js";
+} from "./rules/crawler-operations.js";
 
 /** The operation core calls at every Stage audit (`auditFindingsOperation`). */
 export const AUDIT_OPERATION = "audit";
@@ -23,8 +24,8 @@ export const WRITE_HINTS_OPERATION = "write_hints";
 
 /** Every operation, by name. */
 export const SEO_OPERATIONS: Readonly<Record<string, PluginOperation<PluginContextTier1>>> = {
-  [AUDIT_OPERATION]: (ctx, args) => seoAudit(ctx, args),
-  [WRITE_HINTS_OPERATION]: (ctx, args) => seoWriteHints(ctx, args),
+  [AUDIT_OPERATION]: (ctx, args) => seoAudit(ctx, args, AUDIT_RULES),
+  [WRITE_HINTS_OPERATION]: (ctx, args) => seoWriteHints(ctx, args, WRITE_HINT_RULES),
   [PLAN_CRAWLER_POLICY_OPERATION]: (ctx, args) => planCrawlerPolicyOperation(ctx, args),
   [AGENT_FILES_OPERATION]: (ctx) => agentFiles(ctx),
 };

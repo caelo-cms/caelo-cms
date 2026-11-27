@@ -88,6 +88,29 @@ export function withPluginWrites<T>(
 }
 
 /**
+ * Epic #1751 — the `page_seo` writes of an SEO tool's items: each page with
+ * the SEO texts the item set (a plugin reads the resolved head itself).
+ */
+export function pageSeoWrites(
+  items: readonly {
+    readonly pageId: string;
+    readonly seoTitle?: string | undefined;
+    readonly metaDescription?: string | undefined;
+    readonly ogTitle?: string | undefined;
+    readonly ogDescription?: string | undefined;
+  }[],
+): PluginWrite[] {
+  return items.map((i) => ({
+    kind: "page_seo",
+    pageId: i.pageId,
+    ...(i.seoTitle !== undefined ? { seoTitle: i.seoTitle } : {}),
+    ...(i.metaDescription !== undefined ? { metaDescription: i.metaDescription } : {}),
+    ...(i.ogTitle !== undefined ? { ogTitle: i.ogTitle } : {}),
+    ...(i.ogDescription !== undefined ? { ogDescription: i.ogDescription } : {}),
+  }));
+}
+
+/**
  * Wrap a module-writing tool: a successful write carries the plugins'
  * hints on the modules `moduleIdsOf` names.
  */

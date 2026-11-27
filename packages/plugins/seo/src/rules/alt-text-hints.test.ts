@@ -4,8 +4,9 @@
 
 import { describe, expect, it } from "bun:test";
 import type { PluginContextTier1 } from "@caelo-cms/plugin-sdk";
-import { ALT_TEXT_HINT_RULE, altTextHints } from "./alt-text.js";
-import { seoWriteHints } from "./index.js";
+import { seoWriteHints } from "../hints/index.js";
+import { WRITE_HINT_RULES } from "../rule-sets.js";
+import { ALT_TEXT_HINT_RULE, altTextHints } from "./alt-text-hints.js";
 
 const ctx = {} as PluginContextTier1;
 
@@ -49,13 +50,17 @@ describe("the alt text hint rule", () => {
   });
 
   it("goes through the write hints operation within the SDK's limits", async () => {
-    const { hints } = await seoWriteHints(ctx, {
-      writes: Array.from({ length: 8 }, (_, i) => ({
-        kind: "media_alt",
-        assetId: `a${i}`,
-        alt: `Image of thing ${i}`,
-      })),
-    });
+    const { hints } = await seoWriteHints(
+      ctx,
+      {
+        writes: Array.from({ length: 8 }, (_, i) => ({
+          kind: "media_alt",
+          assetId: `a${i}`,
+          alt: `Image of thing ${i}`,
+        })),
+      },
+      WRITE_HINT_RULES,
+    );
     expect(hints.length).toBeLessThanOrEqual(5);
     for (const h of hints) expect(h.length).toBeLessThanOrEqual(600);
   });

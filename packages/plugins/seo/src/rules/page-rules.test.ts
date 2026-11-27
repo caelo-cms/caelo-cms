@@ -12,8 +12,8 @@ import type {
   PluginAuditPageFacts,
   PluginContextTier1,
 } from "@caelo-cms/plugin-sdk";
-import { groupAllows } from "../crawlers/robots-match.js";
-import { seoAudit } from "./index.js";
+import { seoAudit } from "../checks/index.js";
+import { AUDIT_RULES } from "../rule-sets.js";
 import {
   headingFindings,
   imageFindings,
@@ -24,7 +24,8 @@ import {
   placeholderFindings,
   shareImageFindings,
 } from "./page-rules.js";
-import { PAGE_AUDIT_RULE } from "./pages.js";
+import { PAGE_AUDIT_RULE } from "./pages-check.js";
+import { groupAllows } from "./robots-match.js";
 
 const PAGE = "00000000-0000-4000-8000-000000000001";
 const place = { moduleId: null, listItem: null, pluginSlug: null };
@@ -245,15 +246,19 @@ describe("through the audit operation", () => {
     const ctx = {
       cms: { call: async () => ({ robotsRules: [] }) },
     } as unknown as PluginContextTier1;
-    const first = await seoAudit(ctx, { pages: [{ pageId: PAGE, path: "/guide" }] });
+    const first = await seoAudit(ctx, { pages: [{ pageId: PAGE, path: "/guide" }] }, AUDIT_RULES);
     expect(first.factBatches).toEqual([[PAGE]]);
     expect(first.batchPages).toBe("own");
-    const batch = await seoAudit(ctx, {
-      pages: [{ pageId: PAGE, path: "/guide" }],
-      facts: [facts({ headings: [] })],
-      batchPages: "own",
-      auditRunId: "00000000-0000-4000-8000-0000000000aa",
-    });
+    const batch = await seoAudit(
+      ctx,
+      {
+        pages: [{ pageId: PAGE, path: "/guide" }],
+        facts: [facts({ headings: [] })],
+        batchPages: "own",
+        auditRunId: "00000000-0000-4000-8000-0000000000aa",
+      },
+      AUDIT_RULES,
+    );
     expect(rules(batch.findings)).toEqual(["h1-count"]);
     for (const f of batch.findings) expect(f.fix?.tool).toBeTruthy();
   });

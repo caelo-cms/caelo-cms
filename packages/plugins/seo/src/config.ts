@@ -8,7 +8,7 @@
  */
 
 import type { ConfigFieldInput } from "@caelo-cms/plugin-sdk";
-import { LLMS_TXT_CONFIG, LLMS_TXT_SETTING } from "./agent-files.js";
+import { LLMS_TXT_CONFIG, LLMS_TXT_SETTING } from "./rules/agent-files.js";
 
 /** The plugin-wide settings. */
 export const SEO_CONFIG: Readonly<Record<string, ConfigFieldInput>> = {
