@@ -575,11 +575,21 @@ describe("#1155 — plugin data reaches the HTML without publishing anything els
     // … and the page differs only inside the plugin's region.
     const liveHome = live.get(homePath)?.toString("utf8") ?? "";
     const modifiedTime = /<meta property="article:modified_time" content="[^"]*" \/>/;
-    const strip = (html: string) => replaceBakeRegions(html, () => "").replace(modifiedTime, "");
+    // #1753 — the JSON-LD graph's modified dates move with it; nothing else does.
+    const graphModified = /"dateModified":"[^"]*"/g;
+    const strip = (html: string) =>
+      replaceBakeRegions(html, () => "")
+        .replace(modifiedTime, "")
+        .replace(graphModified, "");
     expect(strip(liveHome)).toBe(strip(baseHome));
     // #1752 — the article's modified time moved to the same date as its sitemap entry.
     expect(baseHome).toMatch(modifiedTime);
     expect(liveHome).toContain(`<meta property="article:modified_time" content="${changedAt}" />`);
+    expect(liveHome).toContain(`"dateModified":"${changedAt}"`);
+    // The publication date stays, though it was the same instant (Codex review on #1797).
+    const graphPublished = /"datePublished":"([^"]*)"/.exec(baseHome)?.[1];
+    expect(graphPublished).toBeDefined();
+    expect(liveHome).toContain(`"datePublished":"${graphPublished}"`);
     expect(liveHome).toContain("second entry");
     for (const unpublished of ["UNPUBLISHED EDIT", "UNPUBLISHED SEO", SECRET_SLUG, "t1155-old"]) {
       expect(liveHome).not.toContain(unpublished);
