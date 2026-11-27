@@ -61,7 +61,10 @@ const deps = mergeRenderDeps(
   null,
   new Map([
     [HOME, { ...NONE, lists: [MENU], listTypes: ["menu"] }],
-    [NEWS_INDEX, { ...NONE, queries: [{ pageType: "news", terms: [], parent: null }] }],
+    [
+      NEWS_INDEX,
+      { ...NONE, queries: [{ pageType: "news", terms: [], parent: null, refersTo: null }] },
+    ],
     [ABOUT, NONE],
   ]),
   data(false).pages.values(),
@@ -96,6 +99,58 @@ describe("incrementalPageIds", () => {
     expect(
       incrementalPageIds({ pageIds: [], listIds: [MENU], listTypeIds: [] }, null, data(true)),
     ).toBeNull();
+  });
+
+  it("a new article naming an author rebuilds the author's page (#1754)", () => {
+    const AUTHOR = id(5);
+    const ARTICLE = id(6);
+    const before = data(true);
+    const withAuthor = (articleNames: string[]): ListRenderData => ({
+      ...before,
+      pages: new Map([
+        ...before.pages,
+        [AUTHOR, page(AUTHOR, "Anna", "author")],
+        ...(articleNames.length > 0
+          ? ([
+              [
+                ARTICLE,
+                {
+                  ...page(ARTICLE, "Post", "article"),
+                  properties: { authors: articleNames.map((a) => `caelo:page/${a}`) },
+                },
+              ],
+            ] as const)
+          : []),
+      ]),
+    });
+    // The last build: Anna's page lists the articles naming her (none yet).
+    const authorDeps = mergeRenderDeps(
+      deps,
+      new Map([
+        [
+          AUTHOR,
+          {
+            ...NONE,
+            queries: [
+              {
+                pageType: "article",
+                terms: [],
+                parent: null,
+                refersTo: { property: "authors", pages: [AUTHOR] },
+              },
+            ],
+          },
+        ],
+      ]),
+      withAuthor([]).pages.values(),
+    );
+    expect(
+      incrementalPageIds(
+        { pageIds: [ARTICLE], listIds: [], listTypeIds: [] },
+        authorDeps,
+        withAuthor([AUTHOR]),
+      )?.sort(),
+    ).toEqual([ARTICLE, AUTHOR].sort());
   });
 
   it("a build is incremental when anything is named as changed", () => {

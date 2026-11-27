@@ -17,6 +17,7 @@ export const KNOB_LABELS: Readonly<Record<QueryKnob, string>> = {
   terms: "Terms",
   terms_mode: "Match",
   parent: "Below page",
+  refers_to: "Pages that name",
   exclude_current: "Leave out the page being shown",
   order: "Order",
   limit: "How many",

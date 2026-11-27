@@ -19,6 +19,7 @@
   import MediaFieldInput from "./fields/MediaFieldInput.svelte";
   import ModuleFieldInput from "./fields/ModuleFieldInput.svelte";
   import NumberFieldInput from "./fields/NumberFieldInput.svelte";
+  import PageRefsFieldInput from "./fields/PageRefsFieldInput.svelte";
   import RichtextFieldInput from "./fields/RichtextFieldInput.svelte";
   import SelectFieldInput from "./fields/SelectFieldInput.svelte";
   import TermFieldInput from "./fields/TermFieldInput.svelte";
@@ -77,6 +78,8 @@
       {disabled}
       {onchange}
     />
+  {:else if spec.widget === "page"}
+    <PageRefsFieldInput {id} {spec} {value} {disabled} {ctx} {onchange} />
   {/if}
   {#each problems as p (p)}
     <p class="text-xs text-destructive">{p}</p>

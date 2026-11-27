@@ -122,7 +122,7 @@ export const upsertListTypesManyTool = makeOpTool({
     "CORE RULES:\n" +
     "- `root.allow` = top-level node kinds. `purpose` = why the type exists (later reads decide by it). `current_from` names the node's link field that marks the current page.\n" +
     "- Field types: text, richtext, link (value {href}), media, select (`options`), boolean, number, date, icon, module (embedded; `accepts` = module types, absent = any), term (entries of vocabulary list `list: <slug>`).\n" +
-    "- Vocabulary types: one node kind with text fields `name` + `slug`.\n" +
+    "- Vocabulary types: one node kind with text fields `name` + `slug` and link `landing_page` (the term's overview page: term chips link there, breadcrumbs lead through it).\n" +
     "- `source` -> generated entries instead of stored children: {kind:'query', editable:[knobs an entry may change], defaults:{page_type, order, limit, …}} | {kind:'system', name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:'plugin', name}.\n" +
     '- Mega menu: root.allow ["column"]; `column` {fields:[heading text], children:{name:"links", allow:["link","news"]}}; `link` {fields:[label text*, link link*], current_from:"link"}; `news` {fields:[heading text], source:{kind:"query", editable:["limit"], defaults:{page_type:"news", order:"published_desc", limit:3}}} (`*` = required:true).\n' +
     "- `dropValues:true` deletes values of removed kinds/fields: only with the operator's consent.\n" +

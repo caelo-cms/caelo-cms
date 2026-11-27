@@ -11,6 +11,7 @@ export * from "./list-type.js";
 export * from "./overlay-scope.js";
 export * from "./page-paths.js";
 export * from "./page-props.js";
+export * from "./page-refs.js";
 export * from "./page-type.js";
 export * from "./paginated-render.js";
 export * from "./pagination.js";
