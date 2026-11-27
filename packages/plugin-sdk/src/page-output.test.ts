@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 import { describe, expect, it } from "bun:test";
-import { placementStep } from "./page-output.js";
+import { headingLevel, placementStep } from "./page-output.js";
+
+describe("headingLevel (#1755, one rule for observer and audit facts)", () => {
+  it("names h1 to h6 and nothing else", () => {
+    expect(["h1", "h2", "h3", "h4", "h5", "h6"].map(headingLevel)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(["h0", "h7", "h10", "header", "hr", "H1", ""].map(headingLevel)).toEqual(
+      Array(7).fill(null),
+    );
+  });
+});
 
 describe("placementStep (#1651 counting steps)", () => {
   it("steps by thresholds, with the last step past the last one", () => {

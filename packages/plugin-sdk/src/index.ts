@@ -86,7 +86,11 @@ import {
   type PluginMailUnsubscribe,
   pluginMailTemplates,
 } from "./mail-templates.js";
-import { type PageOutputObserverManifest, pageOutputObserverManifest } from "./page-output.js";
+import {
+  type HeadingLevel,
+  type PageOutputObserverManifest,
+  pageOutputObserverManifest,
+} from "./page-output.js";
 import {
   checkPublicSurface,
   type PluginRequirement,
@@ -900,11 +904,130 @@ export interface PluginAuditUrl {
   readonly path: string | null;
 }
 
+/** Where a fact sits on the page: the module, list entry and baked plugin output around it. */
+export interface PluginAuditPlace {
+  /** The module root it sits in (`data-caelo-module-id`), if any. */
+  readonly moduleId: string | null;
+  /** The list entry it sits in (`data-caelo-list-item`), if any. */
+  readonly listItem: string | null;
+  /** Baked plugin output it sits in (`data-caelo-plugin`), if any. */
+  readonly pluginSlug: string | null;
+}
+
+/** #1755 — one `h1`–`h6` of the body, in document order. */
+export interface PluginAuditHeading extends PluginAuditPlace {
+  readonly level: HeadingLevel;
+  /**
+   * Its visible text with the `alt` of images inside it, whitespace-collapsed
+   * and cut at `AUDIT_FACT_LIMITS.textLength`; `""` for a heading that shows
+   * nothing.
+   */
+  readonly text: string;
+}
+
+/** #1755 — one `<img>` of the body, in document order. */
+export interface PluginAuditImage extends PluginAuditPlace {
+  /**
+   * Its `src`, resolved like a link (an `href` longer than
+   * `AUDIT_FACT_LIMITS.urlLength`, an inline `data:` image, is cut); null
+   * when it has none.
+   */
+  readonly src: PluginAuditUrl | null;
+  /**
+   * The media library image it shows, read from its published URL
+   * (`/_assets/<slug>.<hash>.<ext>`, `/_assets/<slug>/<variant>.<hash>.<ext>`,
+   * or a `/_caelo/media/…` URL the Stage could not publish): `ref` is the
+   * asset's slug (its id in content from before slugs), `variant` the size
+   * (`orig`, `webp-800`, …). `find_media` finds the asset by its slug. Null
+   * for an image that is not from the library.
+   */
+  readonly media: { readonly ref: string; readonly variant: string } | null;
+  /**
+   * `alt`, whitespace-collapsed and cut at `AUDIT_FACT_LIMITS.textLength`;
+   * null when the attribute is missing, `""` when it is empty.
+   */
+  readonly alt: string | null;
+  /** The `width` attribute in CSS pixels as a browser reads it; null when absent or a percentage. */
+  readonly width: number | null;
+  /** The `height` attribute, read like `width`. */
+  readonly height: number | null;
+  /**
+   * The markup says it is decorative: an empty or blank `alt`,
+   * `role="presentation"` or `role="none"`, or `aria-hidden="true"` on it
+   * or an element around it.
+   * Assistive technology skips it, so it needs no alt text.
+   */
+  readonly decorative: boolean;
+}
+
+/**
+ * #1755 — one `<script type="application/ld+json">` of the page (head or
+ * body), in document order. A block that is not JSON is reported, never
+ * thrown: `invalid`, with the parser's message. A block past
+ * `AUDIT_FACT_LIMITS.jsonLdChars` (all blocks of the page together) is
+ * `omitted` with its size, and `truncatedFacts` names `jsonLd`.
+ */
+export type PluginAuditJsonLd = PluginAuditPlace &
+  (
+    | {
+        readonly kind: "parsed";
+        /** The block as `JSON.parse` reads it: an object, an array of them, or one with `@graph`. */
+        readonly data: unknown;
+      }
+    | { readonly kind: "invalid"; readonly error: string }
+    | { readonly kind: "omitted"; readonly chars: number }
+  );
+
+/** #1755 — one Open Graph or Twitter `<meta>` of the page, in document order. */
+export interface PluginAuditSocialMeta {
+  /**
+   * Its key, lower-case: `og:*`, the Open Graph object properties
+   * (`article:*`, `book:*`, `profile:*`, `music:*`, `video:*`) and `twitter:*`.
+   */
+  readonly key: string;
+  /** The attribute that holds the key: Open Graph defines `property`, Twitter `name`. */
+  readonly attribute: "property" | "name";
+  /** `content`, entities decoded, cut at `AUDIT_FACT_LIMITS.socialMetaLength`. */
+  readonly content: string;
+}
+
+/** The facts of {@link PluginAuditPageFacts} that a cap can cut. */
+export type PluginAuditFactName =
+  | "links"
+  | "texts"
+  | "headings"
+  | "images"
+  | "jsonLd"
+  | "socialMeta";
+
+/**
+ * The caps core reads a page's audit facts with ({@link PluginAuditPageFacts}).
+ * Past a count cap the rest of that fact is left out and `truncatedFacts`
+ * names it; a text past `textLength` is cut without a flag.
+ */
+export const AUDIT_FACT_LIMITS = {
+  links: 1_000,
+  texts: 2_000,
+  /** Characters of one text run, link text, heading text or `alt`. */
+  textLength: 300,
+  headings: 500,
+  images: 500,
+  /** Characters of an image's `src.href` kept: an inline `data:` image is cut. */
+  urlLength: 2_000,
+  jsonLdBlocks: 20,
+  /** Characters of JSON-LD read per page, all blocks together. */
+  jsonLdChars: 64_000,
+  socialMeta: 100,
+  /** Characters of one social meta `content`; a longer one is cut and flagged. */
+  socialMetaLength: 2_000,
+} as const;
+
 /**
  * What core read from one staged page — the rendered HTML as Publish
  * live ships it — for plugins that check the build. Core extracts it
  * (the plugin sandbox has no HTML parser), so every plugin reads the
- * same facts the same way. Long pages are cut: `truncated` says so.
+ * same facts the same way. Long pages are cut at {@link AUDIT_FACT_LIMITS}:
+ * `truncated` says so, `truncatedFacts` says which facts.
  */
 export interface PluginAuditPageFacts {
   readonly pageId: string;
@@ -961,7 +1084,18 @@ export interface PluginAuditPageFacts {
      */
     readonly source: string;
   }[];
+  /** #1755 — every heading of the body, in document order. */
+  readonly headings: readonly PluginAuditHeading[];
+  /** #1755 — every image of the body, in document order. */
+  readonly images: readonly PluginAuditImage[];
+  /** #1755 — every JSON-LD block of the page, in document order. */
+  readonly jsonLd: readonly PluginAuditJsonLd[];
+  /** #1755 — every Open Graph and Twitter `<meta>`, in document order (`og:locale` included). */
+  readonly socialMeta: readonly PluginAuditSocialMeta[];
+  /** Some fact was cut at its cap; `truncatedFacts` says which. */
   readonly truncated: boolean;
+  /** #1755 — the facts a cap cut, so a plugin can tell a whole heading list from part of one. */
+  readonly truncatedFacts: readonly PluginAuditFactName[];
 }
 
 /** What an `auditFindingsOperation` is called with: the staged build's pages. */

@@ -4,8 +4,10 @@
  * The facts of a staged page that plugins check (`PluginAuditPageFacts`
  * in the plugin SDK): language, head signals (canonical, robots,
  * hreflang, og:locale), the sitemap's alternates for the page, every
- * body link, and the visible text — each attributed to the module, list
- * entry or plugin output it sits in.
+ * body link, the visible text, and (#1755, ./page-facts-collectors.ts)
+ * headings, images, JSON-LD and Open Graph / Twitter tags — each
+ * attributed to the module, list entry or plugin output it sits in. One
+ * parser pass reads all of them.
  *
  * Why core extracts them: a plugin's backend runs in the sandbox, whose
  * bundle resolves nothing but the plugin entry and the SDK — no HTML
@@ -13,21 +15,31 @@
  * the core checks do (htmlparser2, real attributes only, URLs resolved
  * like a browser resolves them, see ./links-analysis.ts).
  *
- * Long pages are cut at fixed caps and flagged `truncated`, so a plugin
- * can say it saw part of a page instead of reporting on a guess.
+ * Long pages are cut at the SDK's `AUDIT_FACT_LIMITS` and flagged
+ * `truncated`, with the facts that were cut in `truncatedFacts`, so a
+ * plugin can say it saw part of a page instead of reporting on a guess.
  */
 
-import type { PluginAuditPageFacts, PluginAuditUrl } from "@caelo-cms/plugin-sdk";
+import {
+  AUDIT_FACT_LIMITS,
+  type PluginAuditFactName,
+  type PluginAuditPageFacts,
+  type PluginAuditUrl,
+} from "@caelo-cms/plugin-sdk";
 import { Parser } from "htmlparser2";
 import type { StagedPage } from "./check.js";
 import { resolveLink, type SiteHosts } from "./links-analysis.js";
+import { type CollectorScope, createPageFactCollectors } from "./page-facts-collectors.js";
 
-/** Most body links read from one page. */
-export const MAX_FACT_LINKS = 1_000;
-/** Most text runs read from one page. */
-export const MAX_FACT_TEXTS = 2_000;
-/** Longest text run kept (longer runs are cut). */
-export const MAX_FACT_TEXT_LENGTH = 300;
+/** The order `truncatedFacts` lists cut facts in. */
+const FACT_ORDER: readonly PluginAuditFactName[] = [
+  "links",
+  "texts",
+  "headings",
+  "images",
+  "jsonLd",
+  "socialMeta",
+];
 
 /** Elements whose content is never visible text. */
 const INVISIBLE = new Set(["script", "style", "noscript", "template", "head"]);
@@ -50,12 +62,8 @@ type Alternate = PluginAuditUrl & { readonly hreflang: string };
 /** Sitemap alternates per page path key, or "no-sitemap". */
 export type SitemapAlternates = ReadonlyMap<string, readonly Alternate[]> | "no-sitemap";
 
-interface Scope {
+interface Scope extends CollectorScope {
   readonly tag: string;
-  readonly moduleId: string | null;
-  readonly listItem: string | null;
-  readonly pluginSlug: string | null;
-  readonly invisible: boolean;
   /** Inside a {@link LITERAL} element. */
   readonly code: boolean;
   /** The `translate` state: `no` holds until a descendant says `yes`. */
@@ -76,7 +84,7 @@ function collapse(s: string): string {
 }
 
 function cut(s: string): string {
-  return s.length > MAX_FACT_TEXT_LENGTH ? s.slice(0, MAX_FACT_TEXT_LENGTH) : s;
+  return s.length > AUDIT_FACT_LIMITS.textLength ? s.slice(0, AUDIT_FACT_LIMITS.textLength) : s;
 }
 
 function urlOf(raw: string, base: string, hosts: SiteHosts): PluginAuditUrl {
@@ -158,7 +166,7 @@ export function extractPageFacts(
   const alternates: Alternate[] = [];
   const links: PluginAuditPageFacts["links"][number][] = [];
   const texts: PluginAuditPageFacts["texts"][number][] = [];
-  let truncated = false;
+  const cutFacts = new Set<PluginAuditFactName>();
   let base = page.url;
   let inTitle = false;
   let titleText = "";
@@ -171,14 +179,20 @@ export function extractPageFacts(
       listItem: null,
       pluginSlug: null,
       invisible: false,
+      inert: false,
+      ariaHidden: false,
       code: false,
       noTranslate: false,
     };
+  const collectors = createPageFactCollectors(
+    (raw) => urlOf(raw, base, hosts),
+    (fact) => cutFacts.add(fact),
+  );
   const addText = (raw: string, scope: Scope, source: string) => {
     const text = collapse(raw);
     if (text === "" || !/\p{L}/u.test(text)) return;
-    if (texts.length >= MAX_FACT_TEXTS) {
-      truncated = true;
+    if (texts.length >= AUDIT_FACT_LIMITS.texts) {
+      cutFacts.add("texts");
       return;
     }
     texts.push({
@@ -203,10 +217,13 @@ export function extractPageFacts(
             attrs["data-caelo-list-item"] ?? (moduleId === undefined ? parent.listItem : null),
           pluginSlug: attrs["data-caelo-plugin"] ?? parent.pluginSlug,
           invisible: parent.invisible || INVISIBLE.has(name),
+          inert: parent.inert || name === "template",
+          ariaHidden: parent.ariaHidden || attrs["aria-hidden"]?.trim().toLowerCase() === "true",
           code: parent.code || LITERAL.has(name),
           noTranslate: translate === "no" || (translate !== "yes" && parent.noTranslate),
         };
         stack.push(scope);
+        collectors.open(name, attrs, scope, stack.length);
         if (name === "html" && attrs.lang !== undefined) lang = attrs.lang;
         if (name === "base" && attrs.href !== undefined && base === page.url) {
           try {
@@ -260,6 +277,7 @@ export function extractPageFacts(
       ontext(raw) {
         if (inTitle) titleText += raw;
         const scope = top();
+        collectors.text(raw, scope);
         if (scope.invisible) return;
         for (const l of open) l.text += raw;
         addText(raw, scope, "text");
@@ -272,7 +290,7 @@ export function extractPageFacts(
         const last = open[open.length - 1];
         if (name === "a" && last && last.depth === stack.length) {
           open.pop();
-          if (links.length >= MAX_FACT_LINKS) truncated = true;
+          if (links.length >= AUDIT_FACT_LIMITS.links) cutFacts.add("links");
           else {
             links.push({
               ...urlOf(last.href, base, hosts),
@@ -284,6 +302,7 @@ export function extractPageFacts(
             });
           }
         }
+        collectors.close(name, stack.length);
         stack.pop();
       },
     },
@@ -306,7 +325,9 @@ export function extractPageFacts(
       sitemap === "no-sitemap" ? "no-sitemap" : (sitemap.get(resolvePathKey(page, hosts)) ?? null),
     links,
     texts,
-    truncated,
+    ...collectors.result(),
+    truncated: cutFacts.size > 0,
+    truncatedFacts: FACT_ORDER.filter((f) => cutFacts.has(f)),
   };
 }
 

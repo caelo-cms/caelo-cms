@@ -136,7 +136,12 @@ function facts(
     sitemapAlternates: "no-sitemap",
     links: [],
     texts: [],
+    headings: [],
+    images: [],
+    jsonLd: [],
+    socialMeta: [],
     truncated: false,
+    truncatedFacts: [],
     ...extra,
   };
 }
