@@ -10,7 +10,6 @@ export {
   BUILD_INTERNAL_FILES,
   readAssetReferences,
 } from "./asset-references.js";
-
 // #1155 — the marked plugin bake regions a plugin-data build rewrites.
 export {
   type BakeRegion,
@@ -89,6 +88,9 @@ export {
   hostingGzip,
   type PublishedDigest,
 } from "./published-digest.js";
+// #1454 — the CSP a build derives from its pages and plugin sources, for a
+// fixture that serves a page with the headers a host would send.
+export { CspScanner } from "./security-headers-pass.js";
 export {
   buildRobotsTxtWithSitemap,
   followUpHeadEntries,

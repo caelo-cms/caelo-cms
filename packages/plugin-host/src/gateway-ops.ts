@@ -107,6 +107,7 @@ function pageOf<R extends { id: string; cursor_at: string }>(
  */
 export const commentArchiveListForPageOp = defineOperation({
   name: "comment_archive.list_for_page",
+  pluginAccess: "read",
   readScope: "request",
   actorScope: ["human", "ai", "system", "plugin"],
   database: "cms_admin",
@@ -174,6 +175,7 @@ export const commentArchiveListForPageOp = defineOperation({
  */
 export const publishedCommentsListForPageOp = defineOperation({
   name: "comment_archive.list_for_page",
+  pluginAccess: "read",
   readScope: "request",
   actorScope: ["system", "plugin"],
   database: "cms_public",

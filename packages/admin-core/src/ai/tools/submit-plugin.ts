@@ -6,6 +6,7 @@
  * Owner activates and grants. It never edits plugins shipped with Caelo.
  */
 
+import { externallyRequestable, externallyUnavailableDeclarations } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import { type SubmitPluginToolInput, submitPluginToolInput } from "@caelo-cms/shared";
 import { describeError, toolError } from "./_describe-error.js";
@@ -19,6 +20,11 @@ export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> 
     "- TWO-STEP: validates and queues only. The Owner approves the exact source at /settings/plugins (/settings/plugins/installations if it requests access) — say it is submitted for approval; never claim it is active.\n" +
     "- `slug` and `version` must equal the manifest's.\n" +
     "- Extra access must be requested + explained: `cms_admin_schema` for private author storage (declare `adminSchema`), `chat_runner_tools` for chat-callable tools (declare `tools`, each named `<slug_with_underscores>__<name>`); a reason per capability in `capabilityReasons`. The Owner sees every tool name + description verbatim — describe honestly what each does. Private-storage writes from a chat stay in the chat until it is published.\n" +
+    // #1729 — generated from the status record, so it never offers a grant
+    // a runtime-installed plugin cannot get.
+    `- Requestable capabilities: ${externallyRequestable()}. Any other is refused.\n` +
+    `- Not available yet, refused: ${externallyUnavailableDeclarations()}; render a widget in the browser from its \`component\`.\n` +
+    "- `ai_provider` needs a daily cap: `capabilityConstraints.ai_provider.maxDailyCostMicrocents` (100000000 = $1). `email` gives `ctx.email.queue` of the plugin's `mailTemplates` (from a worker, the Owner panel or an approved tool call) and `unsubscribeLink`; no `send`.\n" +
     "- Result has validationErrors[]; on failure read each `hint`, fix the source, resubmit in the same turn.",
   schema: submitPluginToolInput,
   inputSchema: {
@@ -36,7 +42,7 @@ export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> 
         type: "object",
         additionalProperties: true,
         description:
-          "{slug, version, tier: 2, schema (public tables for its own visitor data), operations, optional adminSchema, tools, requestedCapabilities, capabilityReasons, publicOperations, tableKinds, hasStaticRender}. publicOperations entries are {name, kind: read|write, captcha: required|none, inputJsonSchema, reads, writes, rateLimit?: {max, windowSeconds}}; tableKinds gives every schema table one kind (published: visitors read; inbox: visitors only insert; visitor-state: visitors read+write; private: admin only).",
+          "{slug, version, tier: 2, schema (public tables for its own visitor data), operations, optional adminSchema, tools, requestedCapabilities, capabilityReasons, publicOperations, tableKinds, component}. publicOperations entries are {name, kind: read|write, captcha: required|none, inputJsonSchema, reads, writes, rateLimit?: {max, windowSeconds}}; tableKinds gives every schema table one kind (published: visitors read; inbox: visitors only insert; visitor-state: visitors read+write; private: admin only).",
       },
       source: {
         type: "string",

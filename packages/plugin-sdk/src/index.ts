@@ -9,7 +9,7 @@
  * actually constructed for a given invocation.
  *
  * - Tier 1 (core)  — runs in-process in Bun. Receives `PluginContextTier1`
- *                    with the full set of handles (cms, ai, snapshots,
+ *                    with the full set of handles (cms, ai, email,
  *                    tools, workers).
  * - Tier 2 (user)  — runs in a Deno subprocess with --no-read --no-write
  *                    --no-net. Receives `PluginContext` only — the locked
@@ -45,6 +45,14 @@ import {
   type PluginChatTools,
 } from "./ai-chat-operations.js";
 import { MAX_BATCH_OPERATIONS, pluginBatchOperation } from "./batch.js";
+import {
+  clientOrigins,
+  type DeferralPlaceholders,
+  deferralPlaceholderRef,
+  deferralPlaceholders,
+  type PluginClientFiles,
+  pluginClientFiles,
+} from "./client-assets.js";
 import {
   type CollectionOperationInput,
   checkCollectionOperations,
@@ -110,16 +118,22 @@ export {
   validateFieldValue,
 } from "@caelo-cms/shared/lists-model";
 export * from "./admin-panels.js";
+export * from "./client-assets.js";
 export * from "./editor-toolbar.js";
+export * from "./head-contributions.js";
 export * from "./index-coverage.js";
 export * from "./indexes.js";
 export * from "./mail-templates.js";
 export * from "./public-run.js";
 export * from "./public-surface.js";
+export * from "./url-tables.js";
 export * from "./visitor-auth.js";
+
 /** Re-exported so plugins can validate at their boundaries (CLAUDE.md
  *  §4 "Zod at every boundary") without importing zod directly — the
  *  sandbox validator allowlists only the SDK + component-kit. */
+import { type PluginUrlTables, pluginUrlTables, urlTableSlots } from "./url-tables.js";
+
 export { z };
 
 // ---------------------------------------------------------------------------
@@ -167,15 +181,16 @@ export const pluginSchemaMap = z.record(z.string(), pluginTableSchema);
 
 export type PluginSchemaMap = z.infer<typeof pluginSchemaMap>;
 
-/** Capability requests. Every capability is runtime-enforced; what is
- *  release signature determines origin and execution path. External access
- *  requires individual installation receipts and an implemented host broker.
- *  Unsupported external requests fail activation; declarations never grant access. */
+/** Capability requests. Every capability is runtime-enforced; the release
+ *  signature determines origin and execution path. External access requires
+ *  individual installation receipts and a host broker: which capabilities
+ *  have one is `EXTERNAL_CAPABILITY_STATUS` (#1729), and a runtime-installed
+ *  plugin requesting any other is refused at staging and approval.
+ *  Declarations never grant access. */
 export const pluginCapability = z.enum([
   "cms_admin",
   "cms_admin_schema",
   "ai_provider",
-  "snapshots",
   "chat_runner_tools",
   "background_workers",
   "change_journal",
@@ -203,6 +218,19 @@ export const pluginCapability = z.enum([
 export type PluginCapability = z.infer<typeof pluginCapability>;
 
 export { PLUGIN_CAPABILITY_INFO, type PluginCapabilityInfo } from "./capability-info.js";
+export {
+  CAPABILITY_MANIFEST_FIELDS,
+  EXTERNAL_CAPABILITY_STATUS,
+  EXTERNAL_UNAVAILABLE_DECLARATIONS,
+  type ExternalCapabilityStatus,
+  externalCapabilityHint,
+  externalCapabilityRefusal,
+  externalDeclarationRefusals,
+  externallyBrokeredCapabilities,
+  externallyRequestable,
+  externallyUnavailableDeclarations,
+  isExternallyBrokered,
+} from "./external-capabilities.js";
 
 /**
  * Provenance is the trust axis (epic #380): who authored the plugin and
@@ -374,63 +402,12 @@ export const urlContributionClaim = z.object({ slot: urlSlot }).strict();
 // #391 — head + sitemap contribution points.
 // ---------------------------------------------------------------------------
 
-/**
- * A typed per-page `<head>` entry. STRUCTURED on purpose — the §2
- * invariant "no raw HTML into <head>" holds for plugins too: plugins
- * return these shapes, CORE serializes + escapes them, and the same
- * serializer feeds the static generator and the admin preview (one
- * code path, byte parity).
- */
-export const headEntry = z.discriminatedUnion("kind", [
-  z
-    .object({
-      kind: z.literal("link"),
-      rel: z.string().min(1).max(60),
-      href: z.string().min(1).max(2000),
-      hreflang: z.string().min(2).max(35).optional(),
-      media: z.string().max(200).optional(),
-      type: z.string().max(100).optional(),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("meta"),
-      name: z.string().min(1).max(120).optional(),
-      property: z.string().min(1).max(120).optional(),
-      content: z.string().max(2000),
-    })
-    .strict()
-    .refine((v) => (v.name !== undefined) !== (v.property !== undefined), {
-      message: "meta entries carry exactly one of `name` or `property`",
-    }),
-]);
+// The entries a contribution answers carry (`headEntry`,
+// `sitemapContribution`, the vocabulary every plugin is held to) live in
+// head-contributions.ts, re-exported above.
 
-export type HeadEntry = z.infer<typeof headEntry>;
-
-/** Per-page sitemap adjustments contributed by a plugin. */
-export const sitemapContribution = z
-  .object({
-    /** Drop this page from the sitemap entirely (e.g. an unpublished
-     *  variant URL must not appear — clean-404 semantics). */
-    exclude: z.boolean().optional(),
-    /** xhtml alternate links attached to the page's <url> entry. */
-    alternates: z
-      .array(
-        z
-          .object({
-            hreflang: z.string().min(2).max(35),
-            href: z.string().min(1).max(2000),
-          })
-          .strict(),
-      )
-      .optional(),
-  })
-  .strict();
-
-export type SitemapContribution = z.infer<typeof sitemapContribution>;
-
-/** Manifest-side claim of contribution kinds (release-signed only,
- *  capability `head_contributions`). */
+/** Manifest-side claim of contribution kinds (capability
+ *  `head_contributions`). */
 export const contributionKind = z.enum(["head", "sitemap"]);
 
 export type ContributionKind = z.infer<typeof contributionKind>;
@@ -603,10 +580,6 @@ const deferralReasonKey = z
   .max(64)
   .regex(/^[a-z][a-z0-9_-]*$/, "reason is a lowercase key");
 
-const deferralMarkup = z
-  .object({ html: z.string().min(1).max(20_000), css: z.string().max(20_000) })
-  .strict();
-
 /**
  * A module withheld from the page until the withholding plugin says
  * otherwise.
@@ -635,10 +608,11 @@ export const moduleDeferralSpec = z.union([
       /** Slug of the module rendered in the withheld one's place. An
        *  ordinary module, so the AI authors and styles it. */
       placeholderModuleSlug: z.string().min(1).max(200),
-      /** The plugin's own built-in placeholder, rendered while no module
-       *  with `placeholderModuleSlug` exists yet. Without it a site whose
+      /** #1729 — one of the plugin's declared `deferralPlaceholders`,
+       *  rendered while no module with `placeholderModuleSlug` exists yet,
+       *  with text for its slots (core escapes it). Without it a site whose
        *  placeholder was never designed cannot render the page at all. */
-      defaultPlaceholder: deferralMarkup.optional(),
+      placeholder: deferralPlaceholderRef.optional(),
     })
     .strict(),
   z
@@ -647,10 +621,12 @@ export const moduleDeferralSpec = z.union([
       omit: z.literal(true),
       /**
        * Shown in the editor preview only, in the module's place: what is
-       * held back and why. A `<button data-caelo-ask-ai>` inside it adds
-       * the module to the current chat as a reference chip.
+       * held back and why. One of the plugin's declared
+       * `deferralPlaceholders` (#1729) with text for its slots. A
+       * `<button data-caelo-ask-ai>` inside it adds the module to the
+       * current chat as a reference chip.
        */
-      editorNotice: deferralMarkup,
+      editorNotice: deferralPlaceholderRef,
     })
     .strict(),
 ]);
@@ -757,6 +733,25 @@ export const linkResolvePageVariant = z
   .strict();
 
 export type LinkResolvePageVariant = z.infer<typeof linkResolvePageVariant>;
+
+const storageIdentifier = z.string().regex(/^[a-z_][a-z0-9_]{0,62}$/);
+
+/**
+ * #1269, #1729 — what a link-resolve answer is computed from, as manifest
+ * data (see `PluginDefinition.linkResolveReads`). The validator checks that
+ * every table is one of the plugin's `adminSchema` tables and every column
+ * one of theirs; `tables` may be empty for an answer that depends on the
+ * page ids alone.
+ */
+export const linkResolveReadsSchema = z
+  .object({
+    tables: z.array(storageIdentifier).max(20),
+    columns: z.array(storageIdentifier).max(64).optional(),
+    pageColumns: z.record(storageIdentifier, storageIdentifier).optional(),
+  })
+  .strict();
+
+export type LinkResolveReads = z.infer<typeof linkResolveReadsSchema>;
 
 /**
  * Epic #724 (rollout E) — one place in a plugin's private storage that
@@ -1062,7 +1057,11 @@ export const pluginChangeConsumerSpec = z
   .object({
     /** Operation taking {@link PluginChangesArgs}. */
     operationName: z.string().min(1).max(120),
-    /** Operation taking `{}` that recomputes everything the plugin derives. */
+    /**
+     * Operation that recomputes everything the plugin derives: called with
+     * {@link PluginRebuildArgs}, answering {@link PluginRebuildResult}
+     * (resumable chunks, #1729).
+     */
     rebuildOperationName: z.string().min(1).max(120),
     /** Core kinds; each needs the `cms_admin` read grant. */
     kinds: z.array(z.enum(PLUGIN_CHANGE_KINDS)).max(PLUGIN_CHANGE_KINDS.length),
@@ -1098,6 +1097,31 @@ export interface PluginChange {
   readonly siteSnapshotId: string | null;
   readonly prevSnapshotId: string | null;
 }
+
+/**
+ * #1729 (decision Q11) — what a `changeConsumer.rebuildOperationName` is
+ * called with: nothing at the start, then the `cursor` its previous chunk
+ * answered.
+ */
+export interface PluginRebuildArgs {
+  readonly cursor?: string;
+}
+
+/**
+ * #1729 (Q11) — what a rebuild chunk answers. Anything but `done: false`
+ * means the rebuild is done (so a rebuild that recomputes everything in
+ * one call needs no change). With `done: false`, `cursor` says where the
+ * next chunk starts: the host keeps it on the consumer and calls again
+ * with it, at the next tick if not in this one. A chunk that answers the
+ * cursor it was given makes no progress and is recorded as a failure.
+ */
+export interface PluginRebuildResult {
+  readonly done?: boolean;
+  readonly cursor?: string;
+}
+
+/** Longest cursor a rebuild chunk may answer. */
+export const PLUGIN_REBUILD_CURSOR_MAX = 4096;
 
 /** What a `changeConsumer.operationName` is called with. */
 export interface PluginChangesArgs {
@@ -1307,6 +1331,15 @@ export const pluginManifest = z
     operations: z.array(z.string().min(1).max(120)).max(200),
     component: pluginComponent.optional(),
     hasStaticRender: z.boolean().default(false),
+    /**
+     * #1729 — the plugin's definition has an `onActivate` (create-time
+     * defaults, run on main whenever the host brings the plugin up). Only a
+     * runtime-installed plugin declares it: the host builds that plugin's
+     * definition from the manifest and runs `onActivate` in the sandbox. A
+     * shipped plugin carries the function itself, so no shipped manifest
+     * changes. Optional with no default for the same reason.
+     */
+    hasOnActivate: z.boolean().optional(),
     /** See `PluginDefinition.publicOperations` (#1332): each visitor
      *  operation with its input JSON Schema, captcha, rate limit and the
      *  tables it reads and writes. */
@@ -1335,13 +1368,20 @@ export const pluginManifest = z
           .max(64),
       )
       .optional(),
-    /** See `PluginDefinition.buildAssets`. Release-signed only — the
-     *  files land on every page of the public site, so authorship has
-     *  to be auditable. */
-    hasBuildAssets: z.boolean().default(false),
-    /** See `PluginDefinition.deferralsOperation`. Release-signed only:
-     *  withholding a module changes what visitors see. */
+    /** See `PluginDefinition.clientFiles` (#1729): the JS and CSS the
+     *  plugin puts on every page, reviewed byte for byte with the artifact.
+     *  Requires the `client_assets` capability. */
+    clientFiles: pluginClientFiles.optional(),
+    /** See `PluginDefinition.buildDataOperation` (#1729). Requires the
+     *  `client_assets` capability and `clientFiles` that read the data. */
+    hasBuildData: z.boolean().default(false),
+    /** See `PluginDefinition.deferralsOperation`. Requires the
+     *  `client_assets` capability: withholding a module changes what
+     *  visitors see. */
     hasDeferrals: z.boolean().default(false),
+    /** See `PluginDefinition.deferralPlaceholders` (#1729): reviewed
+     *  markup a deferral verdict names instead of returning its own. */
+    deferralPlaceholders: deferralPlaceholders.optional(),
     /** See `PluginDefinition.contentVariantsOperation` (#592). Requires
      *  the `content_variants` capability: it changes what every page
      *  renders. */
@@ -1350,6 +1390,14 @@ export const pluginManifest = z
      *  `link_resolve` capability: it changes where every internal link
      *  on a page goes. */
     hasLinkResolve: z.boolean().default(false),
+    /**
+     * #1729 — see `PluginDefinition.linkResolveReads`: the private tables
+     * (and columns) the link-resolve answer is computed from. Required for
+     * every plugin with `hasLinkResolve`, so core keeps the answer per
+     * render scope and asks only about what changed (O(request), #1269).
+     * Optional in the schema: only a link resolver carries it.
+     */
+    linkResolveReads: linkResolveReadsSchema.optional(),
     /** See `PluginDefinition.shareImagesOperation` (#1452). Requires the
      *  `head_contributions` capability: it changes every affected page's
      *  head. */
@@ -1382,6 +1430,10 @@ export const pluginManifest = z
               .max(100)
               .optional(),
             maxDailyCostMicrocents: z.number().int().positive().optional(),
+            /** #1729 — `client_assets`: the third-party origins the client
+             *  files may reach, per CSP kind. Shown on the approval card;
+             *  the site's CSP allows nothing else of the plugin. */
+            origins: clientOrigins.optional(),
           })
           .strict(),
       )
@@ -1393,8 +1445,13 @@ export const pluginManifest = z
     /** #390 — URL-slot claims (release-signed only). The definition
      *  supplies the matching pure encode/decode pairs. */
     urlContributions: z.array(urlContributionClaim).optional(),
-    /** #391 — head/sitemap contribution claims (release-signed only,
-     *  requires the `head_contributions` capability). */
+    /** #1729 — see `PluginDefinition.urlTables`: the `host` and
+     *  `path-prefix` slots as tables the host reads, which is how a
+     *  runtime-installed plugin claims them. */
+    urlTables: pluginUrlTables.optional(),
+    /** #391 — head/sitemap contribution claims; requires the
+     *  `head_contributions` capability. The entries come from
+     *  `contributionsOperation` (`$contributions` for an installed plugin). */
     contributes: z.array(contributionKind).optional(),
     /** Plugin-shipped instructions; external packages require a companion_skills receipt. */
     skills: z.array(pluginSkillSpec).optional(),
@@ -2080,15 +2137,22 @@ export interface PluginCaptcha {
 }
 
 /**
- * Tier-1 only — outbound email. Configurable transport (SMTP / Resend /
- * SES / no-op stub). The host's /settings/email page configures which
- * transport is live; ctx.email.send dispatches to it. Plugins that
- * declare requestedCapabilities: ['email'] get this handle; others throw.
+ * Outbound email, for a plugin granted `email`. Configurable transport
+ * (SMTP / Resend / SES / no-op stub); the host's /settings/email page
+ * configures which transport is live.
+ *
+ * #1729 — a mail goes out only from a call someone decided on: a worker or
+ * system call, the Owner panel, an approved tool call, or a visitor's own
+ * request. `queue` and `send` throw on a render, a page-output observer, a
+ * batch job and a chat call. A runtime-installed plugin's handle has `queue`
+ * and `unsubscribeLink` only: in its sandbox `ctx.email.send` is undefined.
  */
 export interface PluginEmail {
   /**
    * Send a mail now. Admin side only (a campaign the Owner approved, sent
    * by a worker); a visitor call has no transport and throws: it queues.
+   * Not available to runtime-installed plugins yet (#1735, a capped send
+   * for every plugin): they queue their `mailTemplates`.
    */
   send(args: {
     to: string;
@@ -2195,17 +2259,6 @@ export interface PluginAi {
     /** Declared use of the call; selects the Owner's per-purpose model. */
     purpose?: PluginAiPurpose;
   }): Promise<{ object: unknown | undefined; inputTokens: number; outputTokens: number }>;
-}
-
-/** Tier 1 only — emit a snapshot when a write affects a tracked entity.
- *  Mirrors the existing `emitSnapshot` helper in admin-core. */
-export interface PluginSnapshots {
-  emit(args: {
-    entity: { kind: string; id: string };
-    opKind: string;
-    payload: unknown;
-    description?: string;
-  }): Promise<{ siteSnapshotId: string }>;
 }
 
 /** Where a plugin call came from (CMS_REQUIREMENTS §14.7). */
@@ -2348,6 +2401,24 @@ export interface PluginContext {
    * for a plugin with the `visitor_ai` grant that declares a conversation.
    */
   readonly chatTools?: PluginChatTools;
+  /**
+   * #1729 — the plugin's own change consumer. Present on the admin side
+   * for a plugin with the `change_journal` grant that declares a
+   * `changeConsumer`; it needs no `cms_admin` grant.
+   */
+  readonly changes?: PluginChanges;
+}
+
+/** #1729 — what a plugin may ask about its own change consumer (`ctx.changes`). */
+export interface PluginChanges {
+  /**
+   * Whether the consumer's cursor is continuous: it exists, no rebuild is
+   * pending, and the journal's retention has not passed it. Only then has
+   * every change since the plugin's derived state was last correct been
+   * (or is about to be) delivered, so only then may a plugin adopt the
+   * current content as its baseline instead of waiting for its rebuild.
+   */
+  cursorState(): Promise<{ readonly continuous: boolean }>;
 }
 
 /** Reads a plugin's configuration (#1645). Missing stored configuration is an error, never a silent default. */
@@ -2550,7 +2621,6 @@ export interface PluginContextTier1 extends PluginContext {
   readonly siteMedia?: PluginSiteMedia;
   readonly cms?: PluginCms;
   readonly ai?: PluginAi;
-  readonly snapshots?: PluginSnapshots;
   readonly email?: PluginEmail;
   /** Attached when the manifest holds (and the Owner granted) `consent_provider`. */
   readonly consentPurposes?: PluginConsentPurposes;
@@ -2656,40 +2726,45 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
     args: { pageId: string; pageUrlStyle: PageUrlStyle; lang: string },
   ) => Promise<string> | string;
   /**
-   * The plugin's channel to the browser: files emitted ONCE per build
-   * and referenced from every page of the site.
+   * #1729 — the plugin's channel to the browser: JS and CSS files on every
+   * page, reviewed with the artifact (decision Q4 B, one plugin model).
    *
-   * Returns `{ "runtime.js": "…", "runtime.css": "…" }`. `.js` files
+   * `{ "runtime.js": "…", "runtime.css": "…" }`. The bytes are part of the
+   * manifest, so the Owner approves them and the artifact's digest binds
+   * them: a changed file is a new version and a new approval. `.js` files
    * are linked (deferred) before `</body>`, `.css` files go before
-   * `</head>`: a stylesheet up to 2 KB is inlined as `<style>` so it does
-   * not block first paint (#1124), a larger one is linked. Files run in
-   * plugin-slug order, so a runtime that reads what another plugin's runtime
-   * sets on `window` (the consent decision) starts at DOMContentLoaded,
-   * when every deferred file has run. The host
-   * hashes each file's content into its name so a CDN can cache it
-   * forever and a changed file still lands.
+   * `</head>` (a stylesheet up to 2 KB is inlined as `<style>` so it does
+   * not block first paint, #1124). Files run in plugin-slug order, so a
+   * runtime that reads what another plugin's runtime sets on `window` (the
+   * consent decision) starts at DOMContentLoaded. The host hashes each
+   * file's content into its name so a CDN can cache it forever.
    *
-   * Why once per build rather than per page: the point of this channel
-   * is behaviour a plugin must guarantee itself — a consent dialog that
-   * has to work regardless of how the site's markup was authored, an
-   * embed that must not load before the visitor opts in. Such a runtime
-   * usually needs configuration BEFORE it can decide anything, and a
-   * static site cannot afford a blocking fetch to obtain it. Emitting
-   * once per build lets the plugin bake that configuration into the
-   * file it ships.
+   * Reviewed for every plugin (plugin-sandbox `client-assets.ts`): no
+   * `eval`, `Function`, string timers, `import`, `document.write`, no URL
+   * of another site except an origin the grant names
+   * (`capabilityConstraints.client_assets.origins`), CSS without `@import`
+   * or `url()` to another site. A file shows, hides and toggles markup the
+   * page already has; it never builds content (CLAUDE.md §1A).
    *
-   * The reserved name `csp-sources.json` is no file: it is JSON saying what
-   * the plugin's client code reaches at runtime (`origins` per kind,
-   * `inlineScripts` as exact text), so the site's CSP allows it. The build
-   * validates it, and the Owner sees it by plugin (`get_security_headers`).
-   *
-   * @param args.pageIds every page in this build, so a plugin can bake
-   *   per-page data into a lookup rather than fetching it at runtime.
+   * A plugin whose `consentPurposes` name a category other than
+   * `necessary` has its scripts started by the consent provider only once
+   * the visitor granted every such category.
    */
-  readonly buildAssets?: (
-    ctx: C,
-    args: { pageIds: ReadonlyArray<string> },
-  ) => Promise<Record<string, string>> | Record<string, string>;
+  readonly clientFiles?: PluginClientFiles;
+  /**
+   * #1729 — the one part of the client side a build may change: an
+   * operation in `operations` taking `{}` and returning `{ data }`, a JSON
+   * object of at most 64 KB (BUILD_DATA_MAX_BYTES). Core embeds it in every
+   * page as `<script type="application/json" data-caelo-plugin-data="<slug>">`
+   * with `<` escaped, where the client files read it
+   * (`JSON.parse(el.textContent)`); it never becomes code. Keys
+   * `__proto__`, `constructor` and `prototype` are refused anywhere in it.
+   *
+   * The site's consent provider may add `csp` (`pluginCspSourcesSchema`):
+   * what its tags reach, each tag an Owner approval of its own
+   * (`add_tracking_tag`). Any other plugin names its origins in its grant.
+   */
+  readonly buildDataOperation?: string;
   /**
    * P13 audit fix #4 — optional cheap signature of the plugin's data
    * for this page. Folded into the static_bakes
@@ -2780,6 +2855,18 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    *  entry's slot must also be claimed in the manifest. */
   readonly urlContributions?: ReadonlyArray<UrlContributionDef>;
   /**
+   * #1729 (decision Q7 A) — the `host` and `path-prefix` slots as data
+   * instead of code: a `pages` table naming each shaped page's value and a
+   * `values` table naming each value's segment or host, both in
+   * `adminSchema` (url-tables.ts). The host reads them itself while it
+   * composes addresses, on the composing writer's branch, and builds the
+   * encode/decode pair; the plugin's code never runs on the URL path.
+   * Writes to them are refused except from an Owner-approved call.
+   * Declare this OR code `urlContributions`, never both; a runtime-installed
+   * plugin can only declare this.
+   */
+  readonly urlTables?: PluginUrlTables;
+  /**
    * #390 — the I/O half of URL resolution: given page ids, return each
    * page's URL annotations from the plugin's own data (e.g. its locale
    * from the variant table). Called by core BEFORE composing; the
@@ -2801,18 +2888,33 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   readonly skills?: ReadonlyArray<PluginSkillSpec>;
   /**
    * #391 — the I/O half of head/sitemap contributions: an operation in
-   * `operations` taking `{pageIds: string[], siteBaseUrl: string,
-   * pageUrlStyle: PageUrlStyle}` and returning `{head?: Record<pageId,
+   * `operations` taking `{pageIds: string[]}` (the pages of the render, at
+   * most a few hundred per call) and returning `{head?: Record<pageId,
    * HeadEntry[]>, sitemap?: Record<pageId, SitemapContribution>, lang?:
-   * Record<pageId, string>}`. A href that points at a page must be the
-   * page's public URL as core resolves it — ask
-   * `ctx.cms.call("pages.resolve_public_urls", {pageIds, pageUrlStyle})`
-   * rather than composing one, so it equals the page's canonical (#590).
+   * Record<pageId, string>}`, at most `HEAD_ANSWER_MAX_BYTES`.
+   *
+   * The vocabulary is closed (`head-contributions.ts`, #1729): `link` only
+   * as `rel: "alternate"` with an `hreflang` and the `pageId` of the other
+   * version, `meta` only `property` `og:locale` / `og:locale:alternate`,
+   * sitemap `exclude` and `alternates` by `pageId`, at most
+   * `HEAD_ENTRIES_PER_PAGE` of each per page. A plugin never writes a URL:
+   * core builds every alternate's with the builder that makes the target's
+   * canonical, on the render's branch, so they agree byte for byte (#590).
    * `lang` is the page's document language (BCP 47, set as `<html
    * lang>`; e.g. the page's locale) and overrides the site's stored
-   * language for that page — it rides the `head` contribution kind. The
-   * host Zod-validates every entry and serializes them itself — a plugin
-   * can never inject raw head HTML.
+   * language for that page. Anything outside the vocabulary is refused and
+   * reported as a render failure: the preview lists it, a Stage records it
+   * and Publish live refuses the build.
+   *
+   * @example
+   *   head: async (_ctx, { pageIds }) => ({
+   *     head: { [pageIds[0]]: [
+   *       { kind: "link", rel: "alternate", hreflang: "de", pageId: GERMAN_PAGE_ID },
+   *       { kind: "meta", property: "og:locale", content: "en_GB" },
+   *     ] },
+   *     sitemap: { [pageIds[0]]: { alternates: [{ hreflang: "de", pageId: GERMAN_PAGE_ID }] } },
+   *     lang: { [pageIds[0]]: "en-GB" },
+   *   }),
    */
   readonly contributionsOperation?: string;
   /** See `pluginManifest.listSources`; resolved by `listSourcesOperation`. */
@@ -2915,9 +3017,25 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * Withholding is per MODULE, not per placement: a video module
    * classified once is withheld everywhere it appears, including from
    * a layout. Return only the modules actually withheld — an absent id
-   * renders normally.
+   * renders normally. Called once per render pass for the whole site; the
+   * host splits the modules into calls of about 512 KB.
    */
   readonly deferralsOperation?: string;
+  /**
+   * #1729 — the markup a verdict of `deferralsOperation` may name, by name:
+   * a withheld module's built-in placeholder and an omitted one's editor
+   * notice. Part of the reviewed artifact (the manifest), checked at review
+   * like module HTML: no script, no element or attribute that loads
+   * anything, no CSS `url()` or `@import`. `{{name}}` slots take the text a
+   * verdict hands over, which core escapes, so a verdict carries data and
+   * never markup.
+   *
+   * @example
+   *   deferralPlaceholders: {
+   *     consent: { html: '<div><p>Loads with your consent to {{label}}.</p><button data-consent-grant="{{key}}">Allow</button></div>', css: "" },
+   *   }
+   */
+  readonly deferralPlaceholders?: DeferralPlaceholders;
   /**
    * #592 — the content-variants composition point: which content a
    * placement shows on THIS page. An operation in `operations` taking
@@ -2961,6 +3079,11 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * it without a base URL and without the rest of a head. Requires the
    * `head_contributions` capability.
    *
+   * #1729 — each image must exist and be a library image (not a reference
+   * image, not a file of another kind). Core refuses any other: the page
+   * then ships without `og:image` (never with the site default instead) and
+   * the refusal is a render failure that Publish live refuses.
+   *
    * @example
    *   share_images: async (_ctx, { pageIds }) => ({
    *     images: { [pageIds[0]]: "6f1c2c1e-3f43-4a55-9b0f-0a6a2f6f8e11" },
@@ -2973,10 +3096,12 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * columns of them that matter. When declared, core keeps the answer per
    * render scope and asks again only for pages it has not asked about, or
    * after a journaled change to these tables (an update counts only when
-   * it changed one of `columns`; inserts and deletes always count). Every
-   * preview otherwise asks about every page of the site. Declare exactly
-   * what the operation reads: an answer that also depends on something
-   * else would be served stale.
+   * it changed one of `columns`; inserts and deletes always count).
+   * Required with `linkResolveOperation` (#1729): without it every preview
+   * would ask about every page of the site. Declare exactly what the
+   * operation reads: an answer that also depends on something else would
+   * be served stale. An answer computed from the page ids alone declares
+   * `tables: []`.
    *
    * `pageColumns` names, per table, the column of the page a row answers
    * for, when a row of that table changes the answer of that page and of
@@ -3255,6 +3380,7 @@ export function manifestFromDefinition(def: {
   readonly aiReadableTables?: ReadonlyArray<string>;
   readonly indexes?: PluginIndexes;
   readonly urlContributions?: ReadonlyArray<{ readonly slot: UrlSlot }>;
+  readonly urlTables?: PluginUrlTables;
   readonly contributes?: ReadonlyArray<ContributionKind>;
   readonly listSources?: ReadonlyArray<PluginListSourceSpec>;
   readonly listTypes?: ReadonlyArray<ListTypeDef>;
@@ -3264,10 +3390,17 @@ export function manifestFromDefinition(def: {
   readonly operations: Readonly<Record<string, unknown>>;
   readonly component?: PluginComponent;
   readonly staticRender?: unknown;
-  readonly buildAssets?: unknown;
+  readonly clientFiles?: PluginClientFiles;
+  readonly buildDataOperation?: string;
   readonly deferralsOperation?: string;
+  readonly deferralPlaceholders?: DeferralPlaceholders;
   readonly contentVariantsOperation?: string;
   readonly linkResolveOperation?: string;
+  readonly linkResolveReads?: {
+    readonly tables: ReadonlyArray<string>;
+    readonly columns?: ReadonlyArray<string>;
+    readonly pageColumns?: Readonly<Record<string, string>>;
+  };
   readonly shareImagesOperation?: string;
   readonly auditFindingsOperation?: string;
   readonly writeHintsOperation?: string;
@@ -3335,10 +3468,27 @@ export function manifestFromDefinition(def: {
           ),
         }
       : {}),
-    hasBuildAssets: Boolean(def.buildAssets),
+    ...(def.clientFiles && Object.keys(def.clientFiles).length > 0
+      ? { clientFiles: { ...def.clientFiles } }
+      : {}),
+    hasBuildData: Boolean(def.buildDataOperation),
     hasDeferrals: Boolean(def.deferralsOperation),
+    ...(def.deferralPlaceholders && Object.keys(def.deferralPlaceholders).length > 0
+      ? { deferralPlaceholders: structuredClone(def.deferralPlaceholders) }
+      : {}),
     hasContentVariants: Boolean(def.contentVariantsOperation),
     hasLinkResolve: Boolean(def.linkResolveOperation),
+    ...(def.linkResolveReads
+      ? {
+          linkResolveReads: {
+            tables: [...def.linkResolveReads.tables],
+            ...(def.linkResolveReads.columns ? { columns: [...def.linkResolveReads.columns] } : {}),
+            ...(def.linkResolveReads.pageColumns
+              ? { pageColumns: { ...def.linkResolveReads.pageColumns } }
+              : {}),
+          },
+        }
+      : {}),
     hasShareImages: Boolean(def.shareImagesOperation),
     hasListResolve: Boolean(def.listResolveOperation),
     ...(def.auditFindingsOperation ? { auditFindingsOperation: def.auditFindingsOperation } : {}),
@@ -3352,6 +3502,16 @@ export function manifestFromDefinition(def: {
     ...(def.skills ? { skills: [...def.skills] } : {}),
     ...(def.urlContributions && def.urlContributions.length > 0
       ? { urlContributions: def.urlContributions.map((c) => ({ slot: c.slot })) }
+      : {}),
+    // #1729 — declared tables claim the slots they fill, so a plugin that
+    // shapes addresses as data has the same manifest claim as one with code.
+    ...(def.urlTables
+      ? {
+          urlTables: structuredClone(def.urlTables),
+          ...(def.urlContributions && def.urlContributions.length > 0
+            ? {}
+            : { urlContributions: urlTableSlots(def.urlTables).map((slot) => ({ slot })) }),
+        }
       : {}),
     ...(def.contributes && def.contributes.length > 0 ? { contributes: [...def.contributes] } : {}),
     ...(def.listSources && def.listSources.length > 0 ? { listSources: [...def.listSources] } : {}),

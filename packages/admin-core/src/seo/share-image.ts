@@ -22,7 +22,10 @@ import { sql } from "drizzle-orm";
 /** A page's share image as a surface shows it. */
 export interface PageShareImage {
   readonly source: ShareImageSource;
-  /** The asset the build would publish; null only when `source` is `none`. */
+  /**
+   * The asset the build would publish; null only when `source` is `none`,
+   * or when a plugin's answer was refused before it named an image.
+   */
   readonly assetId: string | null;
   /**
    * The image's `/_caelo/media` URL (the build rewrites it to `/_assets`).
@@ -30,6 +33,12 @@ export interface PageShareImage {
    * the next Stage reports it and Publish live refuses that build (#1719).
    */
   readonly url: string | null;
+  /**
+   * #1729 — the `plugin-value-refused` marker when the language's default
+   * a plugin named is not a library image (or its answer was refused): the
+   * page shows no image, not the site default, and the build refuses it.
+   */
+  readonly refused?: string;
 }
 
 /** Runs a read in one short transaction (an op's `reads.read` / `tx.transaction`). */
@@ -108,24 +117,41 @@ export async function resolvePageShareImages(
     pages.filter((p) => p.ownAssetId === null).map((p) => p.pageId),
     scope,
   );
-  const picks = pages.map((p) => ({
-    pageId: p.pageId,
-    ...pickShareImage({
-      page: p.ownAssetId,
-      language: language.get(p.pageId) ?? null,
-      site,
-    }),
-  }));
-  const assetIds = [...new Set(picks.flatMap((p) => (p.assetId === null ? [] : [p.assetId])))];
+  const picks = pages.map((p) => {
+    // #1729 — a refused language default is not replaced by the site's:
+    // the page shows none, as the build ships it.
+    const refused = p.ownAssetId === null ? language.refused.get(p.pageId) : undefined;
+    if (refused) {
+      return {
+        pageId: p.pageId,
+        source: "language" as const,
+        assetId: refused.assetId,
+        refused: refused.marker,
+      };
+    }
+    return {
+      pageId: p.pageId,
+      ...pickShareImage({
+        page: p.ownAssetId,
+        language: language.images.get(p.pageId) ?? null,
+        site,
+      }),
+    };
+  });
+  const assetIds = [
+    ...new Set(picks.flatMap((p) => (p.assetId === null || "refused" in p ? [] : [p.assetId]))),
+  ];
   const urls = await read((tx) => loadShareImageUrls(tx, assetIds));
   return new Map(
     picks.map((p) => [
       p.pageId,
-      {
-        source: p.source,
-        assetId: p.assetId,
-        url: p.assetId === null ? null : (urls.get(p.assetId) ?? null),
-      },
+      "refused" in p
+        ? { source: p.source, assetId: p.assetId, url: null, refused: p.refused }
+        : {
+            source: p.source,
+            assetId: p.assetId,
+            url: p.assetId === null ? null : (urls.get(p.assetId) ?? null),
+          },
     ]),
   );
 }

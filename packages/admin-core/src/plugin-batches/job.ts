@@ -198,6 +198,9 @@ export async function runOrderedBatch(
       context: ctx as PluginContext,
       // The admin authorises every call it answers; the job has nothing to add.
       authorize: async () => {},
+      // #1729 — the background pool: on a self-hosted install the job runs
+      // inside the admin, and a batch must not take the slots of a chat.
+      kind: "batch",
       timeoutMs: order.maxRunSeconds * 1000,
       callLimit: SANDBOX_BATCH_CALL_LIMIT,
     });

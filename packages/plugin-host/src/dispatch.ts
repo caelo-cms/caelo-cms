@@ -51,6 +51,12 @@ import {
 } from "./published-state.js";
 import type { PluginRenderFailure } from "./render-failures.js";
 import { recordPluginError } from "./runtime-health.js";
+import {
+  SANDBOX_ANSWER_BYTES,
+  SANDBOX_KIND,
+  type SandboxKind,
+  type SandboxKindCarrier,
+} from "./sandbox-kind.js";
 import { consumeExternalToolApproval } from "./tool-approval-binding.js";
 import type { AIProvider } from "./types.js";
 
@@ -202,11 +208,6 @@ export interface PluginHostInfra {
   readonly registry: OperationRegistry;
   /** Optional — only required if any active plugin requested `ai_provider`. */
   readonly aiProvider?: AIProvider;
-  /** Optional — only required if any active plugin requested `snapshots`.
-   *  The host calls this from inside `adapter.withAdminTransaction(...)`,
-   *  so the supplied function gets the live tx. Mirrors admin-core's
-   *  `emitSnapshot` signature; bootstrap passes that fn here. */
-  readonly emitSnapshot?: SnapshotEmitter;
   /** P12 PR1.3 — optional outbound email transport. When omitted,
    *  ctx.email.send falls back to a no-op stderr stub. */
   readonly emailTransport?: EmailTransport;
@@ -238,25 +239,6 @@ export interface EmailTransport {
   }): Promise<{ messageId: string }>;
 }
 
-export interface SnapshotEmitterInput {
-  readonly actorId: string;
-  readonly opKind: string;
-  readonly description: string;
-  readonly entities: ReadonlyArray<{
-    readonly kind: string;
-    readonly id: string;
-    readonly payload: unknown;
-  }>;
-  readonly chatBranchId?: string | null;
-  readonly chatTaskId?: string | null;
-  readonly revertOf?: string | null;
-}
-
-export type SnapshotEmitter = (
-  tx: unknown,
-  input: SnapshotEmitterInput,
-) => Promise<{ siteSnapshotId: string }>;
-
 /** The capability factory is injected to break a circular import between
  *  dispatch + capabilities (capabilities call dispatch.runPluginOperation
  *  for `ctx.cms.call`-style cases). The loader sets this once at boot. */
@@ -277,6 +259,8 @@ interface MakeContextOpts {
   readonly publicTarget?: "live" | "staging";
   /** #1495 — see `MakePluginContextOpts.liveUrls`. */
   readonly liveUrls?: LiveBuildUrls;
+  /** #1729 — see `MakePluginContextOpts.sandboxKind`. */
+  readonly sandboxKind?: SandboxKind;
 }
 
 /**
@@ -351,6 +335,22 @@ export interface RunPluginOperationOpts {
    * attaches no other handle (capabilities.ts).
    */
   readonly publicTarget?: "live" | "staging";
+  /**
+   * #1729 — what a plugin's call is for, when the origin alone does not
+   * say it: a change-journal batch or a rebuild chunk. For a sandboxed
+   * (runtime-installed) plugin it picks the slot pool and time budget
+   * (sandbox-kind.ts); for every plugin it sets what the context's handles
+   * allow (capabilities.ts: no public-table writes from journal work,
+   * site-wide reads only from background work).
+   */
+  readonly sandboxKind?: SandboxKind;
+  /**
+   * #1729 — the largest answer this call may return, serialized: a render
+   * point's own cap (render-points.ts). A sandboxed plugin's answer over
+   * one wire line arrives in parts up to it; a shipped plugin's answer is
+   * checked against the same number by the point. Default: one line (1 MB).
+   */
+  readonly maxAnswerBytes?: number;
 }
 
 /**
@@ -826,6 +826,7 @@ async function runPluginOperationNow(
       invocation: opts.invocation,
       ...(publicOperation ? { publicOperation } : {}),
       ...(opts.publicTarget ? { publicTarget: opts.publicTarget } : {}),
+      ...(opts.sandboxKind ? { sandboxKind: opts.sandboxKind } : {}),
     });
   } catch (e) {
     if (isProjectionNotPublished(e)) {
@@ -848,6 +849,13 @@ async function runPluginOperationNow(
       ok: false,
       error: { kind: "OperationNotPublic", message: `"${opts.operationName}" has no declared run` },
     };
+  }
+  if (opts.sandboxKind || opts.maxAnswerBytes) {
+    const marked: SandboxKindCarrier = {
+      ...(opts.sandboxKind ? { [SANDBOX_KIND]: opts.sandboxKind } : {}),
+      ...(opts.maxAnswerBytes ? { [SANDBOX_ANSWER_BYTES]: opts.maxAnswerBytes } : {}),
+    };
+    ctx = Object.assign({}, ctx, marked);
   }
   try {
     const value = await handler(
@@ -1156,37 +1164,6 @@ export async function runPluginStaticRender(opts: {
     lang: opts.lang,
   });
   return typeof out === "string" ? out : "";
-}
-
-/**
- * #449 — invoke the plugin's `buildAssets(...)` once for a build.
- *
- * Returns `{}` for a plugin that declares none, so callers can iterate
- * every plugin without branching. A plugin that DOES declare it and
- * throws propagates: see `collectBuildAssets` for why a missing runtime
- * has to stop the build rather than ship a silently inert page.
- */
-export async function runPluginBuildAssets(opts: {
-  pluginSlug: string;
-  pageIds: ReadonlyArray<string>;
-  invocation: PluginInvocation;
-}): Promise<Record<string, string>> {
-  const plugin = loadedPlugins.bySlug(opts.pluginSlug);
-  if (!plugin) return {};
-  const build = plugin.definition.buildAssets;
-  if (typeof build !== "function") return {};
-  if (!cachedInfra || !makeContext) {
-    throw new Error("plugin host not bootstrapped");
-  }
-  assertInvocationConsistent(opts.invocation, undefined);
-  const ctx = await makeContext({ plugin, infra: cachedInfra, invocation: opts.invocation });
-  const out = await build(ctx as PluginContext, { pageIds: opts.pageIds });
-  if (out === null || typeof out !== "object" || Array.isArray(out)) {
-    throw new Error(
-      `plugin "${opts.pluginSlug}" buildAssets returned ${Array.isArray(out) ? "an array" : typeof out} — expected an object of {fileName: contents}`,
-    );
-  }
-  return out;
 }
 
 /**

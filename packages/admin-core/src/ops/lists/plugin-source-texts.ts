@@ -26,6 +26,7 @@ import { branchOf, handlerError } from "./_shared.js";
 
 export const pluginSourceTextsOp = defineOperation({
   name: "lists.plugin_source_texts",
+  pluginAccess: "read",
   readScope: "request",
   // Why system-only (+plugin): this is the read a translating plugin has
   // of another plugin's visitor-facing texts, and it holds no other way

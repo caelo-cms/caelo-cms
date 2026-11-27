@@ -12,14 +12,21 @@
  * is only resolved when the template actually reaches it, so render
  * dependencies (`ListRenderDeps`) record what a page really rendered,
  * not what it could have.
+ *
+ * A value a plugin supplied carries its `plugin` origin (#1729, §4.5): the
+ * template engine escapes or refuses it by where the module places it
+ * (`template-contexts.ts`); a value without one is core's and substitutes
+ * as it always has.
  */
+
+import type { PluginValueOrigin } from "./plugin-values.js";
 
 /** One value a template key resolves to. */
 export type ScopeValue =
   /** Plain text (`{{f}}`); a section over it renders when it is non-empty. */
-  | { readonly kind: "text"; readonly text: string }
+  | { readonly kind: "text"; readonly text: string; readonly plugin?: PluginValueOrigin }
   /** A flag (`{{#is_current}}`); `{{f}}` renders `true` / `false`. */
-  | { readonly kind: "bool"; readonly value: boolean }
+  | { readonly kind: "bool"; readonly value: boolean; readonly plugin?: PluginValueOrigin }
   /**
    * A compound value with dot access (`link`, `media`, `date`, `props`,
    * `page`). `text` is what the bare key renders (`{{link}}` = href);
@@ -28,6 +35,8 @@ export type ScopeValue =
   | {
       readonly kind: "record";
       readonly text: string | null;
+      /** Set when a plugin supplied the bare value (`text`). */
+      readonly plugin?: PluginValueOrigin;
       /** Section truthiness of the bare key (`{{#link}}` — set or not). */
       readonly present: boolean;
       get(key: string): ScopeValue | undefined;

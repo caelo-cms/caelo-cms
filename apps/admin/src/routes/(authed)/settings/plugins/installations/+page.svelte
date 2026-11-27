@@ -27,7 +27,12 @@
         <h3 class="mt-3 font-semibold">Source</h3><pre class="max-h-72 overflow-auto whitespace-pre-wrap text-xs">{item.source}</pre>
         <h3 class="mt-3 font-semibold">Current manifest</h3><pre class="max-h-72 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(item.currentManifest, null, 2)}</pre>
       </details>
-      {#if item.status === 'pending' || item.status === 'retired' || (item.status === 'active' && item.currentStatus === 'disabled')}
+      {#if item.unavailable.length && item.status !== 'active'}
+        <div role="alert" class="space-y-1 rounded border border-red-500 p-3 text-sm" data-testid="installation-unavailable-{item.slug}">
+          <p class="font-semibold">This package cannot be approved: it asks for access runtime-installed plugins cannot have yet.</p>
+          {#each item.unavailable as reason (reason)}<p>{reason}</p>{/each}
+        </div>
+      {:else if item.status === 'pending' || item.status === 'retired' || (item.status === 'active' && item.currentStatus === 'disabled')}
         <form method="post" action="?/approve" use:enhance class="space-y-3">
           <input type="hidden" name="_csrf" value={data.csrfToken} />
           <input type="hidden" name="installationId" value={item.id} />
@@ -96,11 +101,54 @@
               </ul>
             </section>
           {/if}
+          {#if item.aiDailyCapUsd !== null}
+            <section class="space-y-2" data-testid="installation-ai-cap-{item.slug}">
+              <h3 class="font-semibold">AI spending</h3>
+              <p class="text-sm">This plugin can spend at most <strong>${item.aiDailyCapUsd}</strong> of your AI budget in any 24 hours. Its AI calls stop once that is reached. After activation you can set a lower limit; a higher one needs a new version you approve.</p>
+            </section>
+          {/if}
+          {#if item.mails.length}
+            <section class="space-y-2" data-testid="installation-mails-{item.slug}">
+              <h3 class="font-semibold">Emails it can send</h3>
+              <p class="text-sm">These are the only emails this plugin can send, from your site's mail address. Your site's sending limits apply to each one.</p>
+              <ul class="space-y-2">
+                {#each item.mails as mail (mail.name)}
+                  <li class="rounded border p-2">
+                    <p class="font-semibold">{mail.subject}</p>
+                    {#each mail.body as paragraph, i (i)}<p class="whitespace-pre-wrap text-sm">{paragraph}</p>{/each}
+                    {#if mail.linkLabel}<p class="text-sm">Button: "{mail.linkLabel}"</p>{/if}
+                  </li>
+                {/each}
+              </ul>
+            </section>
+          {/if}
           <fieldset class="space-y-2"><legend class="font-semibold">Requested access</legend>
             {#each item.manifest.requestedCapabilities ?? [] as capability}
               <label class="flex items-start gap-2"><input type="checkbox" name="capability" value={capability} required />
                 <span><strong>{capability}</strong>: {item.manifest.capabilityReasons?.[capability]}
-                  {#if item.manifest.capabilityConstraints?.[capability]}<span class="block text-xs">Scope: {JSON.stringify(item.manifest.capabilityConstraints[capability])}</span>{/if}
+                  {#if capability === 'cms_admin' && item.cmsOperations}
+                    <span class="block text-xs">Only these site operations. A page preview can never change anything through them.</span>
+                    <ul class="ml-4 list-disc text-xs">
+                      {#each item.cmsOperations as group}
+                        <li><strong>{group.domain}</strong>:
+                          {#if group.reads.length > 0}reads {group.reads.join(', ')}{/if}{#if group.reads.length > 0 && group.writes.length > 0}; {/if}{#if group.writes.length > 0}changes {group.writes.join(', ')}{/if}{#if group.unavailable.length > 0}{#if group.reads.length + group.writes.length > 0}; {/if}not callable by plugins (refused when used): {group.unavailable.join(', ')}{/if}
+                        </li>
+                      {/each}
+                    </ul>
+                  {:else if capability === 'client_assets'}
+                    <span class="block text-xs">Files that run on every page of the public site ({Object.keys(item.manifest.clientFiles ?? {}).join(', ') || 'none'}). They show, hide and toggle what the page has; they never build its content.</span>
+                    {#if Object.keys(item.manifest.capabilityConstraints?.client_assets?.origins ?? {}).length > 0}
+                      <span class="block text-xs">They may also reach these other sites, and the site's security headers will allow them:</span>
+                      <ul class="ml-4 list-disc text-xs">
+                        {#each Object.entries(item.manifest.capabilityConstraints?.client_assets?.origins ?? {}) as [kind, origins]}
+                          <li><strong>{kind}</strong>: {(origins ?? []).join(', ')}</li>
+                        {/each}
+                      </ul>
+                    {:else}
+                      <span class="block text-xs">They reach only this site.</span>
+                    {/if}
+                    {#if (item.manifest.consentPurposes ?? []).length > 0}<span class="block text-xs">Their scripts start only after the visitor consents.</span>{/if}
+                  {:else if item.manifest.capabilityConstraints?.[capability]}<span class="block text-xs">Scope: {JSON.stringify(item.manifest.capabilityConstraints[capability])}</span>{/if}
                 </span>
               </label>
             {/each}

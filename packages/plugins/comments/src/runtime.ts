@@ -45,7 +45,7 @@
  * A long thread bakes only its newest comments, so something has to bring
  * the rest. `component.mounted` cannot: nothing mounts a plugin's Web
  * Component on a built page (#455), and this plugin no longer declares
- * one. This file reaches the browser through `buildAssets`, the channel
+ * one. This file reaches the browser through `clientFiles`, the channel
  * that does run. On load it asks for what was approved after the bake
  * (`since` = `data-baked-at`, CMS_REQUIREMENTS §6.1) and puts that on
  * top; the older-comments button then reads older pages on demand. The
@@ -109,7 +109,7 @@ export const RUNTIME_CSS =
 
 const C = COMMENTS_CONTRACT;
 
-/** Sent as `runtime.js` by `buildAssets`. */
+/** Sent as `runtime.js` (`clientFiles`, reviewed with the plugin, #1729). */
 export const THREAD_RUNTIME_JS = `(function () {
   "use strict";
   var regions = document.querySelectorAll('div[data-caelo-plugin="comments"][data-page-id]');

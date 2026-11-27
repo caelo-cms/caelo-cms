@@ -48,12 +48,27 @@ import {
   pagedUrl,
   splitPaginationValue,
 } from "./pagination.js";
+import {
+  checkPluginListEntries,
+  checkPluginMedia,
+  checkPluginValue,
+  PLUGIN_VALUE_REFUSED,
+  type PluginMediaFacts,
+  type PluginValueOrigin,
+  pluginLocalListOf,
+  pluginValue,
+  pluginValueOf,
+  pluginValueRefusedMarker,
+  refusedPluginValue,
+  refusedPluginValueMarker,
+} from "./plugin-values.js";
 import { mergeQuerySource } from "./query-merge.js";
 import { parseListRef } from "./refs.js";
 import type {
   ListPageRecord,
   ListRenderData,
   ListRenderDeps,
+  ListVariantOverlay,
   LoadedList,
   PluginSourceEntry,
 } from "./render-data.js";
@@ -66,6 +81,7 @@ import {
   linkValue,
   listValue,
   mediaValue,
+  plainValue,
   positionValue,
   selectFlag,
   text,
@@ -85,6 +101,8 @@ const LIST_MARKER_PREFIXES = [
   // #1257 — a second paginated list on one page; a paginated page without a pager.
   "list-pagination-conflict:",
   "list-pager-missing:",
+  // #1729 — a plugin value the host refused (`lists/plugin-values.ts`).
+  `${PLUGIN_VALUE_REFUSED}:`,
 ] as const;
 
 /** True for a list failure marker — the editor's missing-content surface shows these. */
@@ -210,7 +228,10 @@ export interface ListPageContext {
    */
   pagePropertyType(name: string): string | null;
   /** A module `link` field's value as a scope (`{{f.href}}`, `{{f.title}}`, #1433). */
-  linkScope(link: { readonly href: string; readonly target?: string }): ScopeValue;
+  linkScope(
+    link: { readonly href: string; readonly target?: string },
+    plugin?: PluginValueOrigin,
+  ): ScopeValue;
   /**
    * `{{site_text.<key>}}`: the site texts (entries of every list of type
    * {@link SITE_TEXTS_LIST_TYPE}) in the rendering page's variant. An
@@ -282,6 +303,9 @@ interface PreparedOverlay {
   readonly instanceHidden: Set<string>;
   /** pageId → property → value. */
   readonly pageProps: Map<string, Map<string, unknown>>;
+  /** #1729 — who set each value, and the media facts, for the lazy checks. */
+  readonly owners?: ReadonlyMap<string, string>;
+  readonly media?: ReadonlyMap<string, PluginMediaFacts>;
 }
 
 /** Field types an overlay may not replace: they change structure, not text. */
@@ -316,6 +340,8 @@ function prepareOverlays(
       instanceValues: new Map(),
       instanceHidden: new Set(),
       pageProps: new Map(),
+      ...(overlay.owners ? { owners: overlay.owners } : {}),
+      ...(overlay.media ? { media: overlay.media } : {}),
     };
     const refuse = (address: string, reason: string): void => {
       issues.push({ variant, address, reason });
@@ -332,7 +358,13 @@ function prepareOverlays(
         const field = fieldOf(data, hit.list.typeSlug, hit.item.node, fieldName);
         const problem = overlayValueProblem(field, value, address);
         if (problem) refuse(address, problem);
-        else setIn(prepared.listValues, `${listId}/${itemId}`, fieldName, value);
+        else
+          setIn(
+            prepared.listValues,
+            `${listId}/${itemId}`,
+            fieldName,
+            pluginOverlayValue(overlay, field as FieldDef, value, address),
+          );
         continue;
       }
       const im = INSTANCE_VALUE_RE.exec(address);
@@ -358,7 +390,13 @@ function prepareOverlays(
         else {
           const problem = overlayValueProblem(def, value, address);
           if (problem) refuse(address, problem);
-          else setIn(prepared.pageProps, pageId, prop, value);
+          else
+            setIn(
+              prepared.pageProps,
+              pageId,
+              prop,
+              pluginOverlayValue(overlay, def as FieldDef, value, address),
+            );
         }
         continue;
       }
@@ -392,6 +430,37 @@ function fieldOf(
 ): FieldDef | undefined {
   return data.listTypes.get(typeSlug)?.def.nodes[node]?.fields.find((f) => f.name === fieldName);
 }
+
+/**
+ * #1729 — an overlay value a plugin set, held to the rule for its field
+ * (§4.5, `plugin-values.ts`): text escaped, richtext prose, links to the
+ * allowed schemes, media to library images. A refused value becomes its
+ * stand-in, which renders raw and records `plugin-value-refused` (a render
+ * failure that blocks Publish live), never a cleaned or source-language
+ * value. An overlay without owners carries core's own values: unchanged.
+ */
+function pluginOverlayValue(
+  overlay: Pick<ListVariantOverlay, "owners" | "media">,
+  field: FieldDef,
+  value: unknown,
+  address: string,
+): unknown {
+  const owner = overlay.owners?.get(address);
+  if (owner === undefined) return value;
+  const mediaRule =
+    field.type === "media" ? checkPluginMedia(value, overlay.media ?? NO_MEDIA) : null;
+  const checked = mediaRule
+    ? ({ ok: false, rule: mediaRule } as const)
+    : checkPluginValue(field, value);
+  return checked.ok
+    ? pluginValue(
+        { plugin: owner, point: "list-resolve", address, type: field.type },
+        checked.value,
+      )
+    : refusedPluginValue(pluginValueRefusedMarker(owner, "list-resolve", address, checked.rule));
+}
+
+const NO_MEDIA: ReadonlyMap<string, PluginMediaFacts> = new Map();
 
 /** Why an overlay value cannot replace a stored one; null when it can. */
 function overlayValueProblem(
@@ -494,8 +563,16 @@ interface TreeCtx {
   /** Overlay values for an entry id. */
   readonly overlayValues: (itemId: string) => ReadonlyMap<string, unknown> | undefined;
   readonly hidden: (itemId: string) => boolean;
-  /** Validate an overlay value lazily (instance overlays); returns the value to use. */
-  readonly checkOverlay?: (item: ListItem, field: FieldDef, value: unknown) => boolean;
+  /**
+   * Validate an overlay value lazily (instance overlays): the value to use
+   * (#1729: checked for its field, §4.5), or `undefined` to render the
+   * stored one.
+   */
+  readonly checkOverlay?: (
+    item: ListItem,
+    field: FieldDef,
+    value: unknown,
+  ) => { readonly value: unknown } | undefined;
   /** Term entries alias `link` to `landing_page`. */
   readonly termLink: boolean;
 }
@@ -636,7 +713,9 @@ function createPageContext(
     const storedValue = (f: FieldDef): unknown => {
       if (overlayValues?.has(f.name)) {
         const v = overlayValues.get(f.name);
-        if (!tree.checkOverlay || tree.checkOverlay(item, f, v)) return v;
+        if (!tree.checkOverlay) return v;
+        const checked = tree.checkOverlay(item, f, v);
+        if (checked) return checked.value;
       }
       return item.values[f.name];
     };
@@ -646,7 +725,7 @@ function createPageContext(
     const isCurrent = (): boolean => {
       if (isCurrentMemo === undefined) {
         const f = node.current_from ? node.fields.find((x) => x.name === node.current_from) : null;
-        const v = f ? storedValue(f) : undefined;
+        const v = f ? plainValue(storedValue(f)) : undefined;
         const href =
           typeof (v as { href?: unknown })?.href === "string" ? (v as { href: string }).href : "";
         isCurrentMemo = isCurrentHref(href);
@@ -655,7 +734,7 @@ function createPageContext(
     };
     const isAncestor = (): boolean => {
       const f = node.current_from ? node.fields.find((x) => x.name === node.current_from) : null;
-      const v = f ? storedValue(f) : undefined;
+      const v = f ? plainValue(storedValue(f)) : undefined;
       const href =
         typeof (v as { href?: unknown })?.href === "string" ? (v as { href: string }).href : "";
       const ref = href ? parseLinkRef(href) : null;
@@ -1145,9 +1224,22 @@ function createPageContext(
           itemAttr: null,
           childrenKey: null,
           depth: 1,
-          get: (key: string) => {
-            if (key === "id") return text(e.id);
-            if (Object.hasOwn(e.values, key)) return untypedValue(e.values[key]) ?? EMPTY_TEXT;
+          get: (key: string): ScopeValue | undefined => {
+            // #1729 — the entry's id is the plugin's too: `href="{{id}}"` holds it to the link rule.
+            if (key === "id") {
+              return text(e.id, {
+                plugin: e.plugin ?? "unknown",
+                point: name,
+                address: "id",
+                type: "text",
+              });
+            }
+            if (Object.hasOwn(e.values, key)) {
+              // #1729 — a value the plugin host refused stays raw and fails.
+              const refused = refusedPluginValueMarker(e.values[key]);
+              if (refused !== null) return { kind: "failed", marker: refused };
+              return untypedValue(e.values[key]) ?? EMPTY_TEXT;
+            }
             return positionValue(key, pos);
           },
         };
@@ -1172,7 +1264,7 @@ function createPageContext(
       case "system": {
         const termFields = node.fields.filter((f) => f.type === "term");
         const terms = termFields.flatMap((f) => {
-          const v = item.values[f.name];
+          const v = plainValue(item.values[f.name]);
           return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
         });
         const vocabSlugs = termFields.map((f) => (f.type === "term" ? f.list : ""));
@@ -1287,10 +1379,24 @@ function createPageContext(
         entries: entriesOf(checked.items, sharedTree(list, type, field.name, false), 1),
       };
     }
-    const raw = value === undefined || value === null ? field.default : value;
+    const given = value === undefined || value === null ? field.default : value;
+    // #1729 (§4.5) — entries a plugin handed the placement (a content
+    // variant) are checked here, where their list type is known.
+    const fromPlugin = pluginLocalListOf(given);
+    const raw = fromPlugin ? fromPlugin.entries : given;
     if (raw === undefined || raw === null) return { ok: true, entries: [] };
-    const checked = checkTree(type, raw, field.name);
-    if (!checked.ok) return checked;
+    const tree = checkTree(type, raw, field.name);
+    if (!tree.ok && fromPlugin) {
+      const { plugin, address } = fromPlugin.owner;
+      return {
+        ok: false,
+        marker: pluginValueRefusedMarker(plugin, "content-variants", address, "list-shape"),
+      };
+    }
+    if (!tree.ok) return tree;
+    const checked = fromPlugin
+      ? { ok: true as const, items: checkPluginListEntries(type, tree.items, fromPlugin.owner) }
+      : tree;
     const ci = holder.contentInstanceId;
     const local: TreeCtx = {
       type,
@@ -1306,7 +1412,8 @@ function createPageContext(
         if (problem && variant !== null && !pageIssues.some((i) => i.address === address)) {
           pageIssues.push({ variant, address, reason: problem });
         }
-        return problem === null;
+        if (problem !== null) return undefined;
+        return { value: overlay ? pluginOverlayValue(overlay, f, v, address) : v };
       },
       termLink: false,
     };
@@ -1377,11 +1484,18 @@ function createPageContext(
         else {
           const { list, item } = found[0] as { list: LoadedList; item: ListItem };
           const translated = overlay?.listValues.get(`${list.id}/${item.id}`)?.get("text");
-          const raw = translated ?? item.values.text;
+          const stored = translated ?? item.values.text;
+          const refused = refusedPluginValueMarker(stored);
+          // #1729 — a plugin's translation keeps its origin, so the engine
+          // checks it where `{{site_text.<key>}}` lands.
+          const owned = pluginValueOf(stored);
+          const raw = owned ? owned.value : stored;
           v =
-            typeof raw === "string"
-              ? text(raw)
-              : { kind: "failed", marker: `site-text-missing:${key}` };
+            refused !== null
+              ? { kind: "failed", marker: refused }
+              : typeof raw === "string"
+                ? text(raw, owned?.origin)
+                : { kind: "failed", marker: `site-text-missing:${key}` };
         }
         memo.set(key, v);
         return v;
@@ -1395,11 +1509,11 @@ function createPageContext(
     pageId,
     resolveField,
     siteTextScope,
-    linkScope: (link) => {
+    linkScope: (link, plugin) => {
       // `{{f.title}}` shows the target's title: its edit must rebuild this page.
       const ref = link.href.length > 0 ? parseLinkRef(link.href) : null;
       if (ref?.kind === "page") depPages.add(ref.pageId);
-      return linkValue(link, data);
+      return linkValue(link, data, plugin);
     },
     breadcrumbTrail: () => trail,
     pagePropertyType: (name) => (current === null ? null : propertyTypeOf(current, name)),

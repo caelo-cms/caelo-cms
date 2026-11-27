@@ -84,6 +84,7 @@ function rowTo(r: {
 export const getPageModuleContentOp = withHumanisedLinks(
   defineOperation({
     name: "page_module_content.get",
+    pluginAccess: "read",
     readScope: "request",
     // #397 — plugin actors read too (international-site's translator).
     actorScope: ["human", "ai", "plugin", "system"],
@@ -170,6 +171,7 @@ async function resolveNestedTarget(
  */
 export const setPageModuleContentOp = defineOperation({
   name: "page_module_content.set",
+  pluginAccess: "write",
   readScope: "request",
   // #397 — plugin actors write translated values (decision 3: signed
   // plugins hold cms_admin writes; every write still snapshots).
@@ -378,6 +380,7 @@ export const setPageModuleContentOp = defineOperation({
  */
 export const setPageModuleContentManyOp = defineOperation({
   name: "page_module_content.set_many",
+  pluginAccess: "write",
   readScope: "request",
   actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
@@ -418,6 +421,7 @@ export const setPageModuleContentManyOp = defineOperation({
 export const listPageModuleContentOp = withHumanisedLinks(
   defineOperation({
     name: "page_module_content.list_for_page",
+    pluginAccess: "read",
     readScope: "request",
     actorScope: ["human", "ai", "plugin", "system"],
     database: "cms_admin",

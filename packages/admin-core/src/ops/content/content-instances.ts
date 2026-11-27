@@ -576,6 +576,7 @@ export const CONTENT_INSTANCE_LIST_MAX_LIMIT = 1000;
 export const listContentInstancesOp = withHumanisedLinks(
   defineOperation({
     name: "content_instances.list",
+    pluginAccess: "read",
     readScope: "request",
     // #453 — plugin actors read too. The vendor URL an embed points at
     // usually lives in a content value rather than in module HTML (the
@@ -754,6 +755,7 @@ export const listContentInstancesOp = withHumanisedLinks(
 export const getContentInstanceOp = withHumanisedLinks(
   defineOperation({
     name: "content_instances.get",
+    pluginAccess: "read",
     readScope: "request",
     // Why plugin: a change consumer (#1267, international-site) resolves the
     // pages an edited shared instance renders on (`renderedOn`) to flag
@@ -1780,6 +1782,7 @@ export async function rebindPlacementToFork(
  */
 export const forkPlacementContentOp = defineOperation({
   name: "placement.fork_content",
+  pluginAccess: "write",
   readScope: "request",
   // #397 — plugin actors fork too: translating a SYNCED placement must
   // detach it first (a translation is by definition page-private).

@@ -53,7 +53,7 @@ function now(overrides: Partial<CurrentNarrowing> = {}): CurrentNarrowing {
     activePluginIds: new Set([SHIPPED, AUTHORED]),
     liveGrantIds: new Set(["7"]),
     releaseSignedApprovals: new Map([
-      [SHIPPED, { capabilities: ["snapshots"], manifestDigest: AFTER_UPDATE }],
+      [SHIPPED, { capabilities: ["ai_provider"], manifestDigest: AFTER_UPDATE }],
     ]),
     pluginActorIds: new Map([
       [SHIPPED, "33333333-3333-4333-8333-333333333333"],
@@ -68,7 +68,7 @@ describe("narrowRelease", () => {
     const published = narrowRelease(frozen, now());
     expect(published.plugins[0]).toMatchObject({
       id: SHIPPED,
-      approved_capabilities: ["snapshots"],
+      approved_capabilities: ["ai_provider"],
       approved_manifest_digest: AFTER_UPDATE,
     });
     // Everything else of the release stays as it was frozen.

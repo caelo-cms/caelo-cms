@@ -19,7 +19,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   bootstrap,
+  collectContributions,
   decodePagePath,
+  MAIN_RENDER,
   resetPluginHost,
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
@@ -961,17 +963,18 @@ describe("prefixDefaultLocale — every locale prefixed, default home at '/'", (
     // URL; no-extension style keeps the bare-path shape asserted here.
     const base = "https://t395.example";
     const restoreBase = await pinSiteBaseUrl(ADMIN_URL, base);
-    const contributions = await pluginOp<{
-      head: Record<string, { hreflang: string; href: string }[]>;
-      sitemap: Record<string, { alternates: { hreflang: string; href: string }[] }>;
-    }>("head_contributions", {
-      pageIds: [homeId, preiseId],
+    // #1729 — the plugin names the versions by page id; core builds the URLs.
+    const contributions = await collectContributions([homeId, preiseId], {
+      ...MAIN_RENDER,
       siteBaseUrl: base,
       pageUrlStyle: "no-extension",
     }).finally(restoreBase);
+    expect(contributions.refused.size).toBe(0);
     const alternates = (pageId: string) =>
       Object.fromEntries(
-        (contributions.head[pageId] ?? []).map((e) => [e.hreflang, e.href] as const),
+        (contributions.head.get(pageId) ?? []).map((e) =>
+          e.kind === "link" ? ([e.hreflang, e.href] as const) : (["meta", e.content] as const),
+        ),
       );
     expect(alternates(homeId)).toEqual({
       de: `${base}/`,
@@ -983,7 +986,7 @@ describe("prefixDefaultLocale — every locale prefixed, default home at '/'", (
       en: `${base}/en/t395-px-pricing`,
       "x-default": `${base}/de/t395-px-preise`,
     });
-    expect(contributions.sitemap[homeId]?.alternates).toContainEqual({
+    expect(contributions.sitemap.get(homeId)?.alternates).toContainEqual({
       hreflang: "x-default",
       href: `${base}/`,
     });
@@ -1048,30 +1051,31 @@ describe("#1305 — the 404 page is no language version", () => {
 
     const base = "https://t1305.example";
     const restoreBase = await pinSiteBaseUrl(ADMIN_URL, base);
-    const contributions = await pluginOp<{
-      head: Record<string, { hreflang: string; href: string }[]>;
-      sitemap: Record<string, { alternates: { hreflang: string; href: string }[] }>;
-    }>("head_contributions", {
-      pageIds: [preiseId, notFoundId, enPricing.pageId, enNotFound.pageId],
-      siteBaseUrl: base,
-      pageUrlStyle: "no-extension",
-    }).finally(restoreBase);
+    const contributions = await collectContributions(
+      [preiseId, notFoundId, enPricing.pageId, enNotFound.pageId],
+      { ...MAIN_RENDER, siteBaseUrl: base, pageUrlStyle: "no-extension" },
+    ).finally(restoreBase);
+    expect(contributions.refused.size).toBe(0);
 
     // The 404 page (served as /404.html, never at its own URL) and its
     // English version are no alternates of each other.
     for (const id of [notFoundId, enNotFound.pageId]) {
-      expect(contributions.head[id]).toBeUndefined();
-      expect(contributions.sitemap[id]).toBeUndefined();
+      expect(contributions.head.get(id)).toBeUndefined();
+      expect(contributions.sitemap.get(id)).toBeUndefined();
     }
     // Every other group keeps its full hreflang set.
     expect(
-      Object.fromEntries((contributions.head[preiseId] ?? []).map((e) => [e.hreflang, e.href])),
+      Object.fromEntries(
+        (contributions.head.get(preiseId) ?? []).map((e) =>
+          e.kind === "link" ? [e.hreflang, e.href] : ["meta", e.content],
+        ),
+      ),
     ).toEqual({
       de: `${base}/t395-nf-preise`,
       en: `${base}/en/t395-nf-pricing`,
       "x-default": `${base}/t395-nf-preise`,
     });
-    expect(contributions.sitemap[enPricing.pageId]?.alternates).toHaveLength(3);
+    expect(contributions.sitemap.get(enPricing.pageId)?.alternates).toHaveLength(3);
   });
 
   it("the structure check reads the language groups from the link-resolve point", async () => {

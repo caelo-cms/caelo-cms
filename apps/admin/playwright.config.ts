@@ -10,6 +10,15 @@ import { defineConfig } from "@playwright/test";
 const port = process.env.CAELO_E2E_PORT ?? "4173";
 const origin = `http://localhost:${port}`;
 
+/** Specs that write a staging build and read the latest one (the `staging-runs` project). */
+const STAGING_RUN_SPECS = [
+  "**/international-site.browser.ts",
+  "**/live-edit-draft-and-publish-review.browser.ts",
+  "**/live-edit-stage-again.browser.ts",
+  "**/quality-fix-offer.browser.ts",
+  "**/quality-page-checks.browser.ts",
+];
+
 export default defineConfig({
   testDir: "./e2e",
   // Custom glob — file ends with `.browser.ts` so Bun's default test runner
@@ -33,10 +42,21 @@ export default defineConfig({
     {
       name: "main",
       testIgnore: [
+        ...STAGING_RUN_SPECS,
         "**/no-ai-key.browser.ts",
         "**/site-search-visitor.browser.ts",
         "**/site-assistant-visitor.browser.ts",
       ],
+    },
+    // #1729 — these specs each write a staging build (a `deploy_runs` row)
+    // and read the gate or the menu of the latest one. Run side by side,
+    // one spec's build replaced another's mid-test (#1240's link notice
+    // read as "missing"), so they run after `main`, one file at a time.
+    {
+      name: "staging-runs",
+      testMatch: STAGING_RUN_SPECS,
+      dependencies: ["main"],
+      workers: 1,
     },
     // Epic #1644 — both visitor sites activate the site search, publish its
     // index (published_collections, the plugin's row) and the plugin
@@ -46,7 +66,9 @@ export default defineConfig({
     {
       name: "site-search-visitor",
       testMatch: "**/site-search-visitor.browser.ts",
-      dependencies: ["main"],
+      // After the staging specs too: international-site's activation
+      // republishes the plugin registry, like the consent site does.
+      dependencies: ["staging-runs"],
     },
     {
       name: "site-assistant-visitor",

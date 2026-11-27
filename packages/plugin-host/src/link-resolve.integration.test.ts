@@ -45,6 +45,7 @@ function resolver(slug: string, answer: unknown | (() => never)) {
     schema: {},
     requestedCapabilities: ["link_resolve"],
     linkResolveOperation: "resolve",
+    linkResolveReads: { tables: [] },
     operations: {
       resolve: async () => (typeof answer === "function" ? (answer as () => never)() : answer),
     },
@@ -177,6 +178,7 @@ describe("#724 D — link-resolve composition point", () => {
       tier: 1,
       schema: {},
       linkResolveOperation: "resolve",
+      linkResolveReads: { tables: [] },
       operations: { resolve: async () => ({ pages: {} }) },
     });
     const manifest = manifestFromDefinition(def);

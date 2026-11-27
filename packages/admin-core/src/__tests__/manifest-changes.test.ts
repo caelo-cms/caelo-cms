@@ -31,13 +31,13 @@ describe("#1420 — what a plugin release changes", () => {
   });
 
   it("reports a flag as one change and ignores a flag that stays off", () => {
-    expect(describeManifestChanges({}, { hasBuildAssets: false })).toEqual([]);
-    expect(describeManifestChanges({ hasBuildAssets: false }, { hasBuildAssets: true })).toEqual([
+    expect(describeManifestChanges({}, { hasBuildData: false })).toEqual([]);
+    expect(describeManifestChanges({ hasBuildData: false }, { hasBuildData: true })).toEqual([
       {
-        area: "Files added to every page",
+        area: "Data added to every page",
         added: [],
         removed: [],
-        changed: ["Files added to every page"],
+        changed: ["Data added to every page"],
       },
     ]);
   });
@@ -58,11 +58,11 @@ describe("#1420 — what a plugin release changes", () => {
   it("names a permission a release gives up, which no approval list would show", () => {
     expect(
       describeManifestChanges(
-        { requestedCapabilities: ["email", "snapshots"] },
+        { requestedCapabilities: ["email", "ai_provider"] },
         { requestedCapabilities: ["email"] },
       ),
     ).toEqual([
-      { area: "Permissions it asks for", added: [], removed: ["snapshots"], changed: [] },
+      { area: "Permissions it asks for", added: [], removed: ["ai_provider"], changed: [] },
     ]);
   });
 });

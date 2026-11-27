@@ -4,6 +4,13 @@
 import { z } from "zod";
 
 export const SANDBOX_MESSAGE_BYTES = 1_048_576;
+
+/**
+ * UTF-16 code units of an answer's JSON text per `part` message (#1729).
+ * JSON escaping grows a unit to at most 6 bytes (`\u0000`), so a part
+ * stays below {@link SANDBOX_MESSAGE_BYTES} whatever the text holds.
+ */
+export const SANDBOX_PART_UNITS = 128 * 1024;
 export const SANDBOX_CALL_LIMIT = 1024;
 
 /**
@@ -12,6 +19,12 @@ export const SANDBOX_CALL_LIMIT = 1024;
  * operation's `maxRunSeconds` instead.
  */
 export const SANDBOX_BATCH_CALL_LIMIT = 200_000;
+
+/**
+ * SDK calls one background run (a worker, a journal batch, a rebuild chunk)
+ * may make (#1729): it pages through rows; its time budget bounds it.
+ */
+export const SANDBOX_BACKGROUND_CALL_LIMIT = 20_000;
 
 /** Only these SDK calls may cross the process boundary. */
 export const sandboxMethod = z.enum([
@@ -41,6 +54,10 @@ export const sandboxMethod = z.enum([
   "adminQuery.delete",
   // #1659 — private storage only: `query.upsert` does not exist.
   "adminQuery.upsert",
+  // #1729 — the plugin's own change consumer (change_journal grant).
+  "changes.cursorState",
+  // #1729 — core operations through the cms_admin broker (§7.1).
+  "cms.call",
   "query.insert",
   "query.list",
   "query.update",
@@ -65,6 +82,12 @@ export const sandboxMethod = z.enum([
   "collections.setProfile",
   // #1655 — the declared tools of the plugin's own conversations.
   "chatTools.run",
+  // #1729 — the install's AI under the plugin's caps (`ai_provider`), and
+  // its reviewed mail templates (`email`). No `email.send` (decision Q5 A).
+  "ai.complete",
+  "ai.generateObject",
+  "email.queue",
+  "email.unsubscribeLink",
 ]);
 
 export const sandboxMessage = z.discriminatedUnion("kind", [
@@ -76,7 +99,16 @@ export const sandboxMessage = z.discriminatedUnion("kind", [
       args: z.array(z.unknown()).max(4),
     })
     .strict(),
-  z.object({ kind: z.literal("result"), value: z.unknown() }).strict(),
+  // #1729 — an answer over one line arrives as `part`s of its JSON text,
+  // then a `result` that says how many there were (render-points.ts).
+  z.object({ kind: z.literal("part"), text: z.string() }).strict(),
+  z
+    .object({
+      kind: z.literal("result"),
+      value: z.unknown(),
+      parts: z.number().int().positive().optional(),
+    })
+    .strict(),
   z.object({ kind: z.literal("error"), message: z.string().max(4000) }).strict(),
 ]);
 

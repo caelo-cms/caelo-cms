@@ -123,6 +123,7 @@ export const listDeployTargetsOp = defineOperation({
 
 export const listDeployRunsOp = defineOperation({
   name: "deploy.list_runs",
+  pluginAccess: "read",
   readScope: "request",
   // CLAUDE.md §11: AI inspects deploy history when troubleshooting
   // ("did the last build succeed?"). Read-only. Plugin actors read it

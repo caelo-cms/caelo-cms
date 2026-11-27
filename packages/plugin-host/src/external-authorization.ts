@@ -17,6 +17,7 @@ import {
   type PluginCapability,
   type PluginToolPermission,
   pluginManifest,
+  z,
 } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
@@ -28,13 +29,20 @@ export interface ExternalApproval {
   readonly grantIds: readonly string[];
   readonly capabilities: readonly PluginCapability[];
   readonly systemActorId: string;
+  /**
+   * #1729 — the operations the Owner approved for this artifact's
+   * `cms_admin` receipt (its `constraints.operations`), read from the
+   * receipt, never from the manifest at call time. Null without the grant,
+   * and on the gateway, where no installed plugin's code calls core.
+   */
+  readonly cmsOperations: readonly string[] | null;
 }
 
 interface ApprovalState {
   readonly active: boolean;
   readonly artifactDigest: string | null;
   readonly manifest: unknown;
-  readonly grants: readonly { id: string; capability: string }[];
+  readonly grants: readonly { id: string; capability: string; constraints?: unknown }[];
 }
 
 async function approvalState(
@@ -105,7 +113,30 @@ export async function readExternalApproval(opts: {
     grantIds: manifest.requestedCapabilities?.length ? state.grants.map((g) => g.id) : [],
     capabilities: manifest.requestedCapabilities ?? [],
     systemActorId: opts.systemActorId,
+    // The gateway runs no installed plugin's code against core, and the
+    // grants it reads (published_plugin_grants) carry no constraints.
+    cmsOperations: isPublicSideHost(opts.infra)
+      ? null
+      : receiptOperations(state.grants.find((g) => g.capability === "cms_admin")),
   });
+}
+
+/** A receipt's approved operations (`constraints.operations`), or null without a list. */
+const receiptOperationsSchema = z.object({
+  operations: z.array(z.string().regex(/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/)).max(100),
+});
+
+function receiptOperations(grant: { constraints?: unknown } | undefined): string[] | null {
+  if (!grant) return null;
+  const parsed = receiptOperationsSchema.safeParse(grant.constraints);
+  if (!parsed.success) {
+    // Approval refuses cms_admin without a list (installation-policy.ts),
+    // so a receipt without one is corrupt: load nothing that could call core.
+    throw new Error(
+      "ExternalPluginGrantInvalid: the cms_admin receipt names no operations — approve the version again",
+    );
+  }
+  return parsed.data.operations;
 }
 
 /**

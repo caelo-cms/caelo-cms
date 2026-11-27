@@ -16,7 +16,7 @@ One `ai-chat` operation, `ask`: `requestedCapabilities` includes `visitor_ai`, `
 
 ## The widget
 
-A client asset (`runtime.ts`, `buildAssets`), bound to markup the AI writes into a layout module, so the launcher looks like the site and every text is a site text (`get_site_assistant_setup` returns the markup and the `assistant_*` keys):
+A client asset (`runtime.ts`, `clientFiles`), bound to markup the AI writes into a layout module, so the launcher looks like the site and every text is a site text (`get_site_assistant_setup` returns the markup and the `assistant_*` keys):
 
 - Until opened, the launcher is the site's static button and nothing is fetched. Opening it mounts `<caelo-assistant>`: Shadow DOM, a non-modal dialog (role and label inside the shadow root), the AI disclosure and the privacy link always shown, the conversation in `role="log"` (`aria-busy` while an answer streams), the field focused at once, Escape closes and returns the focus.
 - The first question solves the gateway's proof of work for `site-assistant.ask`; the answer streams from the info call's `streamOrigin` (the site's origin elsewhere) and is rendered as text. `[n]` becomes a link only to a source the gateway sent, and only as a path on this site.
