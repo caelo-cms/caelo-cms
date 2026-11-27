@@ -269,8 +269,10 @@ export const mergeTermsOp = defineOperation({
 
     // 3. The merged terms leave the vocabulary. Removing an entry removes
     // its sub-entries, so a merged term's sub-terms that stay (a category's
-    // children) first move under the kept term, and only the topmost merged
-    // terms are removed.
+    // children) first move under the kept term. A merged term whose direct
+    // parent is merged goes with that parent; any other is removed itself,
+    // also one a moved sub-term carries along (A > B > C with A and C merged:
+    // B moves, C is removed from under it).
     const childCount = new Map<string, number>();
     const moves: { op: "move"; itemId: string; parentId: string; position: number }[] = [];
     for (const f of fromAll) {
@@ -283,7 +285,7 @@ export const mergeTermsOp = defineOperation({
       }
     }
     const removed = [...fromAll]
-      .filter((id) => ![...fromAll].some((other) => isBelow(parents, id, other)))
+      .filter((id) => !fromAll.has(parents.get(id) ?? ""))
       .map((itemId) => ({ op: "remove" as const, itemId }));
     const r = await patchListItemsManyOp.handler(
       ctx,

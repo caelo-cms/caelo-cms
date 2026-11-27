@@ -319,4 +319,78 @@ describe("#1759 lists.merge_terms", () => {
     // The moved sub-categories keep their ids, so the pages filed under them keep their terms.
     expect(after.items[0]?.children?.[1]?.id).toBe(email.id);
   });
+
+  it("removes a merged grandchild whose parent stays, in one merge and across two", async () => {
+    // A > B > C, K1, K2: B is not merged, so it moves and C must not ride along.
+    const tree = async (slug: string) => {
+      await op(SYS, "lists.upsert_many", {
+        lists: [
+          {
+            slug,
+            name: slug,
+            purpose: "Nested categories for the merge test",
+            type: "categories",
+            items: [
+              {
+                node: "category",
+                values: { name: "A", slug: "a" },
+                children: [
+                  {
+                    node: "category",
+                    values: { name: "B", slug: "b" },
+                    children: [{ node: "category", values: { name: "C", slug: "c" } }],
+                  },
+                ],
+              },
+              { node: "category", values: { name: "K1", slug: "k1" } },
+              { node: "category", values: { name: "K2", slug: "k2" } },
+            ],
+          },
+        ],
+      });
+      const items = (await op<{ list: { items: ListItem[] } }>(SYS, "lists.get", { slug })).list
+        .items;
+      const a = items[0] as ListItem;
+      const b = a.children?.[0] as ListItem;
+      return {
+        a,
+        b,
+        c: b.children?.[0] as ListItem,
+        k1: items[1] as ListItem,
+        k2: items[2] as ListItem,
+      };
+    };
+    const shape = async (slug: string) => {
+      const items = (await op<{ list: { items: ListItem[] } }>(SYS, "lists.get", { slug })).list
+        .items;
+      const walk = (xs: readonly ListItem[]): unknown[] =>
+        xs.map((x) =>
+          x.children && x.children.length > 0
+            ? { [x.values.name as string]: walk(x.children) }
+            : x.values.name,
+        );
+      return walk(items);
+    };
+
+    const one = `${PFX}-nest-one`;
+    const t1 = await tree(one);
+    const r1 = await op<{ removedTerms: number }>(SYS, "lists.merge_terms", {
+      list: one,
+      merges: [{ from: [t1.a.id, t1.c.id], into: t1.k1.id }],
+    });
+    expect(r1.removedTerms).toBe(2);
+    expect(await shape(one)).toEqual([{ K1: ["B"] }, "K2"]);
+
+    const two = `${PFX}-nest-two`;
+    const t2 = await tree(two);
+    const r2 = await op<{ removedTerms: number }>(SYS, "lists.merge_terms", {
+      list: two,
+      merges: [
+        { from: [t2.a.id], into: t2.k1.id },
+        { from: [t2.c.id], into: t2.k2.id },
+      ],
+    });
+    expect(r2.removedTerms).toBe(2);
+    expect(await shape(two)).toEqual([{ K1: ["B"] }, "K2"]);
+  });
 });

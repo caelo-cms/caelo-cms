@@ -103,7 +103,8 @@ page 1 has them, because only those are in the live record.
 
 - **Build:** the date is known only after the live comparison, which reads
   the finished page (plugin regions included). `apply` renders
-  `ARTICLE_MODIFIED_TIME_PENDING`; `recordStates` replaces it
+  `ARTICLE_MODIFIED_TIME_PENDING`, in the meta and as every live
+  `dateModified` of the JSON-LD graph (#1753); `recordStates` replaces it
   (`setArticleModifiedTime`) and refuses a page that kept it.
 - **Plugin-data build:** a page whose baked data moved its date gets the
   same date in its `article:modified_time` (`patchSearchFiles`).

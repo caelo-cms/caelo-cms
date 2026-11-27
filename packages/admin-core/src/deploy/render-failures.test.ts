@@ -475,6 +475,18 @@ describe("structured data and news / video sitemap entries a plugin added (#1753
     });
     expect(other.hint).toContain("submit_plugin");
     expect(other.hint).not.toContain("A reference must");
+    // The rules the graph builder and the host emit for references and pages.
+    const dangling = renderRepairOf({
+      reason: "plugin-value-refused:seo.structured-data.author:ref-dangling",
+      moduleSlug: null,
+    });
+    expect(dangling.hint).toContain("A reference must name a node of this page");
+    const page = renderRepairOf({
+      reason: "plugin-value-refused:seo.structured-data.url:page-unknown",
+      moduleSlug: null,
+    });
+    expect(page.hint).toContain("must be a published page of this site");
+    expect(page.hint.length).toBeLessThan(500);
   });
 
   it("sends a news entry without the site name to the site identity", () => {

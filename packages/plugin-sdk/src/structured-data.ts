@@ -25,9 +25,10 @@
  * - `{live: "published" | "modified"}`: the date the page went live first
  *   or last changed live, from the live page record (`dateModified` agrees
  *   with the sitemap's `<lastmod>`); a page outside the record has no such
- *   date and the property is left out. `"modified"` stands only as
- *   `dateModified` (`live-modified-property` otherwise): a later build
- *   re-dates the written graph by that name;
+ *   date and the property is left out. `"modified"` stands only as the
+ *   one value of a `dateModified`, never in a list
+ *   (`live-modified-property` otherwise): the build re-dates the written
+ *   graph by that name;
  * - `{page: <page id>}`: that page's public URL, built by core;
  * - `{media: <media id>}`: the URL of that library image, published by core;
  * - `{url: "https://…"}`: an address on ANOTHER site (a profile on a social

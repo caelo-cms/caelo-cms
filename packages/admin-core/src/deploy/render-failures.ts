@@ -307,9 +307,11 @@ export function pluginValueRefusedHint(body: string): string {
   }
   // #1753 — the page's JSON-LD graph: typed nodes, never free JSON.
   if (source === PLUGIN_STRUCTURED_DATA_POINT) {
-    const refs = /^(ref-unknown|id-taken|id-reserved)$/.test(rule)
+    const refs = /^(ref-unknown|ref-dangling|id-taken|id-reserved)$/.test(rule)
       ? " A reference must name a node of this page, a core node (organization, website, webpage, breadcrumb) or a node of a page the answer names; one node per @id."
-      : "";
+      : rule === "page-unknown"
+        ? " A page it names must be a published page of this site: a draft or deleted page has no address."
+        : "";
     return (
       `The plugin "${plugin}" added structured data (${field}) that Caelo refuses (${rule}); the page's JSON-LD graph leaves that part out.${refs} ` +
       pluginDataFix(

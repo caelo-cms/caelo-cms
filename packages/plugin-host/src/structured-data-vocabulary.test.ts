@@ -261,6 +261,11 @@ describe("structured-data vocabulary (#1753)", () => {
         temporalCoverage: [{ live: "modified" }],
       }),
     ).toEqual(["uploadDate:live-modified-property", "temporalCoverage:live-modified-property"]);
+    // In a list it would ship undated even as dateModified: the build dates a string value.
+    expect(refusalsOf({ dateModified: [{ live: "modified" }] })).toEqual([
+      "dateModified:live-modified-property",
+    ]);
+    expect(refusalsOf({ datePublished: [{ live: "published" }] })).toEqual([]);
   });
 
   it("refuses nesting past the depth cap", () => {

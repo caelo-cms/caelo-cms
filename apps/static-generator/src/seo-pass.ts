@@ -545,6 +545,13 @@ export async function prepareSeoPass(args: {
         });
         // #1752 — the article's modified time is the date the record gives.
         p.html = setArticleModifiedTime(p.html, contentStates.changedAt(bundle.pageId));
+        // #1753 — and every graph value that asked for it: one that kept the
+        // marker would ship undated (the vocabulary refuses every such shape).
+        if (p.html.includes(ARTICLE_MODIFIED_TIME_PENDING)) {
+          throw new Error(
+            `seo-pass: page ${bundle.pageId} still carries an undated modified date after dating it`,
+          );
+        }
       }
     },
 

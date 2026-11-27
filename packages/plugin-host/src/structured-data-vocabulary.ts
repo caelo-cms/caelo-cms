@@ -248,16 +248,20 @@ function checkValue(raw: unknown, depth: number): CheckedValue | { rule: string 
 
 /**
  * Check a property's value. `{live: "modified"}` is the page's modified
- * date, which a later build re-dates in the written graph by its property
- * name (`setArticleModifiedTime`), so it may only stand as `dateModified`.
+ * date, which the build re-dates in the written graph as the string value
+ * of a `dateModified` (`setArticleModifiedTime`), so it may only stand as
+ * the one value of a `dateModified`: under another name, or in a list, it
+ * would ship undated.
  */
 function checkNamed(name: string, raw: unknown, depth: number): CheckedValue | { rule: string } {
   const checked = checkValue(raw, depth);
-  if ("rule" in checked || name === "dateModified") return checked;
-  const values = checked.k === "list" ? checked.items : [checked];
-  return values.some((v) => v.k === "live" && v.v === "modified")
-    ? { rule: "live-modified-property" }
-    : checked;
+  if ("rule" in checked) return checked;
+  const liveModified = (v: CheckedScalar) => v.k === "live" && v.v === "modified";
+  const misplaced =
+    checked.k === "list"
+      ? checked.items.some(liveModified)
+      : name !== "dateModified" && liveModified(checked);
+  return misplaced ? { rule: "live-modified-property" } : checked;
 }
 
 /**
