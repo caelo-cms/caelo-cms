@@ -12,6 +12,7 @@
  */
 
 import type { PluginSkillSpec } from "@caelo-cms/plugin-sdk";
+import { CRAWLER_POLICY_SKILL, SEO_AUDIT_SKILL } from "./skills-checks.js";
 
 /** Every skill the plugin ships. */
-export const SEO_SKILLS: readonly PluginSkillSpec[] = [];
+export const SEO_SKILLS: readonly PluginSkillSpec[] = [SEO_AUDIT_SKILL, CRAWLER_POLICY_SKILL];
