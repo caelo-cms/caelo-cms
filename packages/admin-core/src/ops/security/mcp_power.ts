@@ -55,6 +55,7 @@ import { z } from "zod";
 import { buildSkillsContext } from "../../ai/chat-runner/context/skills.js";
 import { buildStatusLine } from "../../ai/chat-runner/context-blocks.js";
 import { loadMemory } from "../../ai/chat-runner/persistence.js";
+import { isWriteTool } from "../../ai/chat-runner/write-tools.js";
 import { delegatedProvider } from "../../ai/delegated-provider.js";
 import { chatPluginInvocation } from "../../ai/plugin-invocation.js";
 import { queuePluginToolApproval } from "../../ai/queued-tool-approval.js";
@@ -73,6 +74,7 @@ import { getMcpBridge, resolveMcpPrincipal, type SendChatBridgeOpts } from "./mc
 import {
   bindTransportSession,
   type mcpBeginToolCallOp,
+  mcpCallDigest,
   readUnboundWorkSession,
   rememberUnboundWorkSession,
 } from "./mcp_tool_call.js";
@@ -564,8 +566,10 @@ export interface PowerExecuteInput {
   readonly toolName: string;
   readonly args?: Record<string, unknown>;
   /**
-   * Caller-supplied idempotency key. Re-sending the same (session,
-   * toolCallId) returns the cached first result instead of re-executing.
+   * Caller-supplied idempotency key. Re-sending the same write call under
+   * the same (session, toolCallId) returns the cached first result instead
+   * of re-executing; the key names that call only (#1704: another call under
+   * it is refused, a read is never replayed) and for `IDEMPOTENCY_WINDOW_MS`.
    */
   readonly toolCallId?: string;
   /** The work session; else the one bound to `transportSessionId`. */
@@ -663,12 +667,22 @@ export async function powerExecuteTool(
   } else {
     return refused(NO_WORK_SESSION);
   }
+  // #1704 — the key names this call (tool + arguments): it is replayed only
+  // for the same call, never for another one a client sent under a reused id.
+  // Only a write is replayed at all: the cache exists so a resend never runs
+  // a write twice, while a read runs again at no risk and answers with the
+  // current state instead of a replay from before a change.
+  const callDigest = mcpCallDigest(input.toolName, input.args ?? {});
+  const replayKey =
+    input.toolCallId !== undefined && isWriteTool(input.toolName)
+      ? { toolCallId: input.toolCallId, callDigest }
+      : undefined;
   const begun = await execute(registry, adapter, humanCtx, "mcp.begin_tool_call", {
     session,
     agent,
     label,
     toolName: input.toolName,
-    ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
+    ...(replayKey ? { replayKey } : {}),
     ...(capped ? { costCapMicrocents: principal.aiCostCapMicrocents as number } : {}),
   });
   if (!begun.ok) {
@@ -716,6 +730,15 @@ export async function powerExecuteTool(
       return refused(
         `in_progress: the same call (toolCallId ${toolCallId}) is still running, so it was not started again. Wait for it, then repeat the call to get its result.`,
       );
+    case "key_reused": {
+      const other =
+        start.toolName === input.toolName
+          ? `'${input.toolName}' with other arguments`
+          : `'${start.toolName}'`;
+      return refused(
+        `tool_call_id_reused: toolCallId ${toolCallId} already names another call in this work session (${other}), so nothing was executed and no earlier result is returned. Repeat this call with a toolCallId of its own, or none. If your MCP client chose the id, it reuses request ids: reconnect it.`,
+      );
+    }
     case "cost_capped":
       return refused(
         `cost cap reached: spent ~${start.spent} µ¢ / cap ${principal.aiCostCapMicrocents} µ¢ of the install's AI on this session — ` +
@@ -834,7 +857,8 @@ export async function powerExecuteTool(
     label,
     toolName: input.toolName,
     toolCallId,
-    cache: input.toolCallId !== undefined || keptArgs !== null,
+    cache: replayKey !== undefined || keptArgs !== null,
+    callDigest,
     ...(keptArgs ? { args: keptArgs } : {}),
     result: {
       ok: raw.ok,

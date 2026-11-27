@@ -226,6 +226,8 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM modules WHERE slug IN (${MOD_TEXT}, ${MOD_WIDGET}, ${MOD_ROTATE})`;
     await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${TPL_SLUG})`;
     await tx`DELETE FROM templates WHERE slug = ${TPL_SLUG}`;
+    // #1752 — seedSite makes the home pages articles.
+    await tx`UPDATE page_types SET definition = definition - 'seo' WHERE slug = 'home'`;
     await tx`DELETE FROM plugin_runtime WHERE plugin_slug = ${PLUGIN}`;
     await tx`DELETE FROM plugin_errors WHERE plugin_slug = ${PLUGIN}`;
     await tx`DELETE FROM audit_events WHERE actor_id IN (
@@ -357,6 +359,9 @@ async function seedSite(): Promise<void> {
     templateId,
     blocks: [{ name: "content", displayName: "Content", position: 0 }],
   });
+  // #1752 — an article page: its article:modified_time follows the date the
+  // plugin-data build gives its sitemap entry.
+  await ok("page_types.set_seo_many", { pageTypes: [{ pageType: "home", ogType: "article" }] });
   const home = await ok<{ pageId: string }>("pages.create", {
     slug: HOME_SLUG,
     title: "Home",
@@ -569,8 +574,12 @@ describe("#1155 — plugin data reaches the HTML without publishing anything els
     expect(notes.map((n) => n.channel)).toEqual(["indexnow", "websub"]);
     // … and the page differs only inside the plugin's region.
     const liveHome = live.get(homePath)?.toString("utf8") ?? "";
-    const strip = (html: string) => replaceBakeRegions(html, () => "");
+    const modifiedTime = /<meta property="article:modified_time" content="[^"]*" \/>/;
+    const strip = (html: string) => replaceBakeRegions(html, () => "").replace(modifiedTime, "");
     expect(strip(liveHome)).toBe(strip(baseHome));
+    // #1752 — the article's modified time moved to the same date as its sitemap entry.
+    expect(baseHome).toMatch(modifiedTime);
+    expect(liveHome).toContain(`<meta property="article:modified_time" content="${changedAt}" />`);
     expect(liveHome).toContain("second entry");
     for (const unpublished of ["UNPUBLISHED EDIT", "UNPUBLISHED SEO", SECRET_SLUG, "t1155-old"]) {
       expect(liveHome).not.toContain(unpublished);

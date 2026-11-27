@@ -371,6 +371,16 @@ export const upsertPageTypesManyOp = defineOperation({
           return failBatch(wrote, await entityWriteBlockedError(tx, op, "pageType", id, lock));
         }
       }
+      // #1752 — the type's SEO is set by page_types.set_seo_many; a
+      // replacement that does not name it keeps the one the caller sees
+      // now, read after the lock: a takeover may just have brought another
+      // chat's pending SEO of this type in.
+      const kept =
+        def.seo === undefined && existing !== null
+          ? await loadListEntityForUpsert(tx, "pageType", branchId, def.slug)
+          : null;
+      const keptSeo =
+        kept !== null && kept.state.deletedAt === null ? kept.state.definition.seo : undefined;
 
       // Re-check the type's pages against the new definition.
       const pages = existing ? await loadPagesInView(tx, branchId, { pageTypeIds: [id] }) : [];
@@ -435,10 +445,11 @@ export const upsertPageTypesManyOp = defineOperation({
         );
       }
 
+      const seo = def.seo ?? keptSeo;
       const state: PageTypeState = {
         schemaVersion: 1,
         slug: def.slug,
-        definition: def,
+        definition: seo === undefined ? def : { ...def, seo },
         version: (found?.state.version ?? 0) + 1,
         deletedAt: null,
       };

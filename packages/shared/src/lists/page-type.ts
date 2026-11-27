@@ -10,6 +10,7 @@
  */
 
 import { z } from "zod";
+import { pageTypeSeoSchema } from "../seo-head.js";
 import { checkFieldDef, fieldDefSchema, type ListIssue } from "./fields.js";
 
 export const pageTypeDefSchema = z
@@ -41,6 +42,12 @@ export const pageTypeDefSchema = z
       )
       .max(16)
       .default([]),
+    /**
+     * #1752 — its pages' title template and og:type (seo-head.ts). Absent,
+     * or a key of it absent: the page type adds nothing, the site's title
+     * template and og:type `website` apply.
+     */
+    seo: pageTypeSeoSchema.optional(),
   })
   .strict();
 export type PageTypeDef = z.infer<typeof pageTypeDefSchema>;

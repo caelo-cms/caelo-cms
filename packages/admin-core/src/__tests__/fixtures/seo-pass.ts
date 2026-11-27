@@ -32,7 +32,9 @@ export async function runSeoPass(args: {
     html: string;
     breadcrumbTrail?: readonly string[] | null;
   }[];
-  settings: SiteSeoSettings;
+  /** #1752 — the title template and site name default to today's title and none. */
+  settings: Omit<SiteSeoSettings, "titleTemplate" | "siteName"> &
+    Partial<Pick<SiteSeoSettings, "titleTemplate" | "siteName">>;
   pageUrlStyle: PageUrlStyle;
   notFoundPageId: string | null;
   /** #1452 — the theme's bound default share image; none unless set. */
@@ -55,7 +57,7 @@ export async function runSeoPass(args: {
     plugins: args.plugins,
     media,
     pageIds: [...new Set(args.pages.map((p) => p.pageId))],
-    settings: args.settings,
+    settings: { titleTemplate: "{page_title}", siteName: null, ...args.settings },
     pageUrlStyle: args.pageUrlStyle,
     notFoundPageId: args.notFoundPageId,
     siteShareImageAssetId: args.siteShareImageAssetId ?? null,
