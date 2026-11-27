@@ -10,7 +10,7 @@
    * `dropValues`. Read-only without `content.structure`.
    */
 
-  import { LIST_FIELD_TYPES, type PageTypeDef } from "@caelo-cms/shared";
+  import type { PageTypeDef } from "@caelo-cms/shared";
   import { Trash2 } from "lucide-svelte";
   import { untrack } from "svelte";
   import { enhance } from "$app/forms";
@@ -28,7 +28,7 @@
   import { Select } from "#lib/components/ui/select/index.js";
   import { Textarea } from "#lib/components/ui/textarea/index.js";
   import type { FieldEditorContext } from "#lib/lists/field-context.js";
-  import { pageTypeIssues } from "#lib/lists/type-editor.js";
+  import { PROPERTY_FIELD_TYPES, pageTypeIssues } from "#lib/lists/type-editor.js";
   import ConflictDialog from "./ConflictDialog.svelte";
   import DropValuesDialog from "./DropValuesDialog.svelte";
   import FieldsEditor from "./FieldsEditor.svelte";
@@ -43,9 +43,6 @@
     note: string;
   }
   let { definition, version, templates, ctx, csrfToken, form, note }: Props = $props();
-
-  /** Page properties cannot embed modules — the module is placed on the page instead. */
-  const PROPERTY_TYPES = LIST_FIELD_TYPES.filter((t) => t !== "module");
 
   // Seeded by the version effect below; untracked so editing never re-reads the prop.
   let def = $state<PageTypeDef>(untrack(() => structuredClone(definition)));
@@ -152,7 +149,7 @@
       <FieldsEditor
         fields={def.properties}
         savedNames={savedProps}
-        types={PROPERTY_TYPES}
+        types={PROPERTY_FIELD_TYPES}
         {ctx}
         idPrefix="pt-prop"
         addLabel="Add property"

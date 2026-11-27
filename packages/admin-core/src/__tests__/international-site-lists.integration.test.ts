@@ -268,6 +268,7 @@ beforeAll(async () => {
             fields: [
               { name: "name", label: "Name", type: "text", required: true },
               { name: "slug", label: "Slug", type: "text", required: true },
+              { name: "landing_page", label: "Overview page", type: "link" },
             ],
           },
         },

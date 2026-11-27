@@ -28,6 +28,7 @@
 import { dormantListSourceNames, resolveListSources } from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import {
+  canonicaliseQueryRefs,
   createListRenderContext,
   type ListFieldSpec,
   type ListTypeDef,
@@ -39,6 +40,7 @@ import {
   sourceDefSchema,
 } from "@caelo-cms/shared";
 import { z } from "zod";
+import { canonicaliseLinksForWrite } from "../../links/canonicalise.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
 import { loadListRenderData } from "../../lists/load.js";
 import {
@@ -78,7 +80,7 @@ const inputSchema = z
     source: sourceDefSchema.optional(),
     /** With `source`: the placement's overrides (query knobs, or `{terms}` for term_pages). */
     value: z.record(z.string(), z.unknown()).optional(),
-    /** With a `page_terms` source: the vocabulary (`caelo:list/<id>`). */
+    /** With a `page_terms` or `breadcrumbs` source: the vocabulary (`caelo:list/<id>`). */
     vocabulary: z.string().optional(),
     /**
      * A shared list holding the source node: its slug or its reference
@@ -332,8 +334,32 @@ export const previewListSourceOp = withHumanisedLinks(
         .optional(),
       items: z.array(entrySchema),
     }),
-    handler: async (ctx, input, tx) => {
+    handler: async (ctx, raw, tx) => {
       const branchId = branchOf(ctx);
+      // A query's page references as reads and the editor show them (a
+      // path for `parent` / `refers_to.page`, #1754) resolve as the saved
+      // ones will: the write path stores them as references.
+      const canon = await canonicaliseLinksForWrite(tx, ctx, (run) => ({
+        value: canonicaliseQueryRefs(raw.value, run, "value"),
+        defaults:
+          raw.source?.kind === "query"
+            ? canonicaliseQueryRefs(raw.source.defaults, run, "source.defaults")
+            : undefined,
+      }));
+      if (!canon.ok) return { ok: false, error: handlerError(OP, canon.message) };
+      const rawSource = raw.source;
+      const input: Input = {
+        ...raw,
+        ...(raw.value !== undefined ? { value: canon.value.value as Input["value"] } : {}),
+        ...(rawSource?.kind === "query"
+          ? {
+              source: {
+                ...rawSource,
+                defaults: canon.value.defaults as typeof rawSource.defaults,
+              },
+            }
+          : {}),
+      };
       if (input.value !== undefined && input.source?.kind === "query") {
         const parsed = pageQueryPartialSchema.safeParse(input.value);
         if (!parsed.success) {

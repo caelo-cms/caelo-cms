@@ -18,7 +18,10 @@ export interface VocabularyChoice {
 
 /** Pickers' data + mode for every field input of one form. */
 export interface FieldEditorContext {
-  pages: readonly { id: string; path: string; title: string }[];
+  /** Page pickers' choices; `pageType` (slug) lets a `page` property offer only its type. */
+  pages: readonly { id: string; path: string; title: string; pageType?: string }[];
+  /** #1754 — the site's page types, for a `page` property's type (definition editors). */
+  pageTypes?: readonly { slug: string; name: string }[];
   modules: readonly {
     id: string;
     slug: string;

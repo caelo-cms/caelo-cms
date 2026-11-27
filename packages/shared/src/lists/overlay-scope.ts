@@ -17,8 +17,10 @@
  *   - content instances: the instances the page renders (its placements
  *     and the instances nested in them), whose local lists the overlay
  *     translates.
- *   - pages: the rendered page (`{{page.props.*}}`) and, when a list on
- *     the page generates page entries (a query or a system source:
+ *   - pages: the rendered page (`{{page.props.*}}`), the pages its `page`
+ *     properties name and those pages' own, transitively (#1754: an
+ *     article's authors and their organisation, in its language) and,
+ *     when a list on the page generates page entries (a query or a system source:
  *     latest news, children, breadcrumbs), every page of the page's
  *     variant that has properties. A props overlay only exists for pages
  *     of the variant the page renders, and only for page types that
@@ -35,6 +37,7 @@
  */
 
 import type { TemplateField } from "../template-engine.js";
+import { pageRefsOfProperties } from "./page-refs.js";
 import type { ListRenderData } from "./render-data.js";
 
 /** The `scope` of a scoped `list-resolve` call (plugin-sdk `listResolveScope`). */
@@ -93,6 +96,62 @@ function generatesPages(fields: readonly ScopedField[], data: ListRenderData): b
 }
 
 /**
+ * The `link-resolve` groups of a partition (group → its pages), built once
+ * per partition: a build asks for one scope per page over the same render
+ * data, and a per-call index would make that quadratic.
+ */
+const groupMembers = new WeakMap<object, ReadonlyMap<string, readonly string[]>>();
+function groupMembersOf(data: ListRenderData): ReadonlyMap<string, readonly string[]> | null {
+  const partition = data.pageVariants;
+  if (partition === undefined) return null;
+  let members = groupMembers.get(partition);
+  if (members === undefined) {
+    const out = new Map<string, string[]>();
+    for (const [id, v] of partition) {
+      if (v.group === null) continue;
+      const list = out.get(v.group);
+      if (list) list.push(id);
+      else out.set(v.group, [id]);
+    }
+    members = out;
+    groupMembers.set(partition, members);
+  }
+  return members;
+}
+
+/**
+ * #1754 — every page of `variant` whose properties a render of `pageId` can
+ * show through `page` properties: `{{#page.props.authors}}{{props.role}}…`,
+ * and further down (article → author → organisation), each named page
+ * as the resolver shows it — its version in the variant, else itself.
+ * Walked with a visited set, so a cycle of references ends.
+ */
+function namedPagesOf(data: ListRenderData, pageId: string, variant: string): Set<string> {
+  const out = new Set<string>();
+  // Most pages name no page: no walk, and no look at the partition.
+  if (pageRefsOfProperties(data.pages.get(pageId)?.properties).size === 0) return out;
+  const versionsOf = (id: string): readonly string[] => {
+    const group = data.pageVariants?.get(id)?.group ?? null;
+    return group === null ? [id] : (groupMembersOf(data)?.get(group) ?? [id]);
+  };
+  const visited = new Set<string>([pageId]);
+  const queue = [pageId];
+  for (let next = queue.pop(); next !== undefined; next = queue.pop()) {
+    for (const ids of pageRefsOfProperties(data.pages.get(next)?.properties).values()) {
+      for (const id of ids) {
+        for (const version of [id, ...versionsOf(id)]) {
+          if (visited.has(version)) continue;
+          visited.add(version);
+          queue.push(version);
+          if (data.pageVariants?.get(version)?.variant === variant) out.add(version);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * The scope of one page's `list-resolve` call, or null when the page
  * shows nothing an overlay can change (see the file header).
  */
@@ -105,6 +164,9 @@ export function pageListOverlayScope(input: PageListOverlayInput): ListOverlaySc
 
   const pageIds = new Set<string>([pageId]);
   const variant = data.pageVariants?.get(pageId)?.variant;
+  if (variant !== undefined) {
+    for (const id of namedPagesOf(data, pageId, variant)) pageIds.add(id);
+  }
   if (variant !== undefined && modules.some((m) => generatesPages(m.fields, data))) {
     for (const p of data.pages.values()) {
       if (data.pageVariants?.get(p.id)?.variant !== variant) continue;

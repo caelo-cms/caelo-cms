@@ -32,6 +32,7 @@ export const LIST_FIELD_TYPES = [
   "icon",
   "module",
   "term",
+  "page",
 ] as const;
 export type ListFieldType = (typeof LIST_FIELD_TYPES)[number];
 
@@ -139,6 +140,24 @@ const termField = z
   })
   .strict();
 
+/**
+ * #1754 — pages this page names, in a fixed order (an article's authors,
+ * its reviewer, a product's manufacturer). A page-type property only: a
+ * list entry links a page with a `link` field.
+ */
+const pageRefField = z
+  .object({
+    ...base,
+    type: z.literal("page"),
+    /** Slug of the page type every referenced page must have; absent = any page. */
+    pageType: z
+      .string()
+      .regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/)
+      .optional(),
+    multiple: z.boolean().optional(),
+  })
+  .strict();
+
 /** One field declaration. See `docs/lists.md` §2 for the value shapes. */
 export const fieldDefSchema = z.discriminatedUnion("type", [
   textField,
@@ -152,6 +171,7 @@ export const fieldDefSchema = z.discriminatedUnion("type", [
   iconField,
   moduleField,
   termField,
+  pageRefField,
 ]);
 export type FieldDef = z.infer<typeof fieldDefSchema>;
 
@@ -172,6 +192,10 @@ export const embeddedModuleValueSchema = z
 const MEDIA_REF_RE = /^caelo:media\/[0-9a-f-]{36}(?:\/[a-z0-9-]+)?$/;
 /** `caelo:term/<listId>/<itemId>` */
 export const TERM_REF_RE = /^caelo:term\/([0-9a-f-]{36})\/([0-9a-f-]{36})$/;
+/** `caelo:page/<pageId>` with nothing after it: the value of a `page` field (#1754). */
+export const PAGE_REF_RE = /^caelo:page\/([0-9a-f-]{36})$/;
+/** Pages one `page` field may name. */
+export const PAGE_REF_MAX = 50;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const ICON_RE = /^[a-z0-9-]{1,64}$/;
 
@@ -265,6 +289,19 @@ export function validateFieldValue(field: FieldDef, value: unknown, path: string
       }
       if (!field.multiple && value.length > 1) return bad("at most one term (multiple is off)");
       if (field.required && value.length === 0) return bad("at least one term");
+      return [];
+    }
+    case "page": {
+      if (
+        !Array.isArray(value) ||
+        value.some((v) => typeof v !== "string" || !PAGE_REF_RE.test(v))
+      ) {
+        return bad('an array of pages, in order (paths like "/team/anna" or caelo:page/<id>)');
+      }
+      if (!field.multiple && value.length > 1) return bad("at most one page (multiple is off)");
+      if (value.length > PAGE_REF_MAX) return bad(`at most ${PAGE_REF_MAX} pages`);
+      if (new Set(value).size !== value.length) return bad("each page once");
+      if (field.required && value.length === 0) return bad("at least one page");
       return [];
     }
   }

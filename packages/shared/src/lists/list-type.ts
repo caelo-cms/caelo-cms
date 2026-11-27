@@ -34,6 +34,7 @@ export const QUERY_KNOBS = [
   "terms",
   "terms_mode",
   "parent",
+  "refers_to",
   "exclude_current",
   "order",
   "limit",
@@ -56,9 +57,18 @@ const queryOrderSchema = z.union([
   z.string().regex(/^prop_(?:desc|asc):[a-z][a-z0-9_]{0,63}$/),
 ]);
 
-/** A query over pages. Resolved at render time; nothing is stored. */
-export const pageQuerySchema = z
-  .object({
+/** A page as a query stores it: `caelo:page/<id>`. */
+const STORED_PAGE_REF = /^caelo:page\/[0-9a-f-]{36}$/;
+/**
+ * A page as a written query may name it: its reference, or its path as reads
+ * show it (#1754). Every write stores the reference (`canonicaliseQueryRefs`);
+ * a path that reached a render anyway fails `pageQuerySchema` loudly.
+ */
+const WRITTEN_PAGE_REF = /^(?:caelo:page\/[0-9a-f-]{36}|\/\S*)$/;
+
+/** The query's fields, with `pageRef` for the pages it names. */
+function pageQueryShape(pageRef: RegExp) {
+  return z.object({
     page_type: z
       .string()
       .regex(/^[a-z0-9-]+$/)
@@ -68,19 +78,37 @@ export const pageQuerySchema = z
       .max(20)
       .optional(),
     terms_mode: z.enum(["any", "all"]).optional(),
-    parent: z
-      .string()
-      .regex(/^caelo:page\/[0-9a-f-]{36}$/)
+    parent: z.string().regex(pageRef).optional(),
+    /**
+     * #1754 — only pages whose `page` property `property` names `page`:
+     * the rendering page itself (`"self"`: the articles of this author) or
+     * a fixed one. Another language's version of `page` counts too.
+     */
+    refers_to: z
+      .object({
+        property: listNameSchema,
+        page: z.union([z.literal("self"), z.string().regex(pageRef)]),
+      })
+      .strict()
       .optional(),
     exclude_current: z.boolean().optional(),
     order: queryOrderSchema,
     limit: z.number().int().min(1).max(LIST_QUERY_MAX_LIMIT),
-  })
-  .strict();
+  });
+}
+
+/**
+ * A query over pages, as it runs: every page named by reference. Resolved
+ * at render time; nothing is stored.
+ */
+export const pageQuerySchema = pageQueryShape(STORED_PAGE_REF).strict();
 export type PageQuery = z.infer<typeof pageQuerySchema>;
 
-/** Partial query: defaults on a node, or the knobs an entry overrides. */
-export const pageQueryPartialSchema = pageQuerySchema.partial();
+/**
+ * Partial query as written: defaults on a node or module field, or the
+ * knobs an entry or placement overrides. A page may be named by path.
+ */
+export const pageQueryPartialSchema = pageQueryShape(WRITTEN_PAGE_REF).partial().strict();
 
 /** A complete query source, as the AI-facing examples and refusals show it. */
 export const QUERY_SOURCE_EXAMPLE =
@@ -184,6 +212,14 @@ export const nodeDefSchema = z
 export type NodeDef = z.infer<typeof nodeDefSchema>;
 
 export const LIST_TYPE_ROLES = ["navigation", "vocabulary", "content"] as const;
+
+/**
+ * #1754 — the link field of every vocabulary entry that names the term's
+ * overview page (a topic page, a category page). Term entries render it
+ * as `{{link}}`, and a breadcrumbs source given the vocabulary leads
+ * through it. Every vocabulary type declares it (`checkListTypeDef`).
+ */
+export const TERM_OVERVIEW_FIELD = "landing_page";
 export type ListTypeRole = (typeof LIST_TYPE_ROLES)[number];
 
 export const listTypeDefSchema = z
@@ -239,6 +275,13 @@ export function checkListTypeDef(def: ListTypeDef): ListIssue[] {
       const fp = `${at}.fields[${i}]`;
       if (seen.has(f.name)) issues.push({ path: fp, message: `duplicate field name "${f.name}".` });
       seen.add(f.name);
+      if (f.type === "page") {
+        issues.push({
+          path: fp,
+          message:
+            'a "page" field is a page-type property (page_types.upsert_many) — a list entry points at a page with a link field.',
+        });
+      }
       issues.push(...checkFieldDef(f, fp));
     });
     if (node.children) {
@@ -294,12 +337,12 @@ export function checkListTypeDef(def: ListTypeDef): ListIssue[] {
     for (const k of rootKinds) {
       const node = def.nodes[k];
       if (!node) continue;
-      const hasText = (n: string): boolean =>
-        node.fields.some((f: FieldDef) => f.name === n && f.type === "text");
-      if (!hasText("name") || !hasText("slug")) {
+      const has = (n: string, type: FieldDef["type"]): boolean =>
+        node.fields.some((f: FieldDef) => f.name === n && f.type === type);
+      if (!has("name", "text") || !has("slug", "text") || !has(TERM_OVERVIEW_FIELD, "link")) {
         issues.push({
           path: `nodes.${k}`,
-          message: 'vocabulary entries need a text field "name" and a text field "slug".',
+          message: `vocabulary entries need a text field "name", a text field "slug" and a link field "${TERM_OVERVIEW_FIELD}" (the term's overview page) — add the missing ones, e.g. {name:"${TERM_OVERVIEW_FIELD}", label:"Overview page", type:"link"}.`,
         });
       }
       if (node.source) {

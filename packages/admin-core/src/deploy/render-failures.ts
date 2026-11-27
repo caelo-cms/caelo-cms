@@ -343,6 +343,9 @@ function pageValueAnswers(path: string, type: string): string {
   if (type === "term" || type === "list") {
     return `is a list of entries: iterate it with {{#page.${path}}}{{name}}{{/page.${path}}}`;
   }
+  if (type === "page") {
+    return `is a list of the pages it names: iterate it with {{#page.${path}}}<a href="{{link}}">{{title}}</a>{{/page.${path}}}`;
+  }
   const paths = [...new Set(type.split("|").flatMap((t) => PAGE_VALUE_PATHS[t] ?? []))];
   const select = type.split("|").includes("select")
     ? `, or the option flag {{#page.${path}_<option>}}`
@@ -399,6 +402,15 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
         tool: "set_content_instance_values_many",
         hint: `The link field ${path} in ${mod} holds no link: set it to a URL or { href, target? } (get_content_instance shows what is stored).`,
       };
+    case "list-missing":
+      // #1754 — a page property names a page that was deleted.
+      if (path.startsWith("page/")) {
+        return {
+          tool: "update_pages_many",
+          hint: `A page property shown by ${mod} names a deleted page (${path.slice("page/".length)}): give the page that holds it another page there, or remove the deleted one from the property (update_pages_many properties).`,
+        };
+      }
+      return { tool: "set_content_instance_values_many", hint: `${REFERENCE_REPAIR}.` };
     case PAGE_PROP_UNKNOWN:
       return {
         tool: "list_page_types",
