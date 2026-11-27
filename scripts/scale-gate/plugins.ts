@@ -16,6 +16,7 @@ import formsPlugin from "@caelo-cms/plugin-forms";
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import newsletterPlugin from "@caelo-cms/plugin-newsletter";
 import ratingsPlugin from "@caelo-cms/plugin-ratings";
+import seoPlugin from "@caelo-cms/plugin-seo";
 import siteAssistantPlugin from "@caelo-cms/plugin-site-assistant";
 import siteSearchPlugin from "@caelo-cms/plugin-site-search";
 
@@ -28,6 +29,7 @@ export const SHIPPED_PLUGINS = [
   formsPlugin,
   newsletterPlugin,
   ratingsPlugin,
+  seoPlugin,
   siteSearchPlugin,
   // Requires site-search: after it.
   siteAssistantPlugin,

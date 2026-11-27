@@ -26,6 +26,7 @@
     { "path": "./packages/plugins/auth" },
     { "path": "./packages/plugins/international-site" },
     { "path": "./packages/plugins/consent-manager" },
+    { "path": "./packages/plugins/seo" },
     { "path": "./packages/provisioning" },
     { "path": "./packages/platform-updater" },
     { "path": "./packages/migrations" },

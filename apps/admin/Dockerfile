@@ -96,6 +96,7 @@ COPY packages/plugins/international-site/package.json packages/plugins/internati
 COPY packages/plugins/consent-manager/package.json packages/plugins/consent-manager/
 COPY packages/plugins/site-search/package.json packages/plugins/site-search/
 COPY packages/plugins/site-assistant/package.json packages/plugins/site-assistant/
+COPY packages/plugins/seo/package.json packages/plugins/seo/
 
 RUN bun install
 
