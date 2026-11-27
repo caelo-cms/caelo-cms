@@ -674,6 +674,7 @@ import {
   siteDefaultsSetSeoOp,
 } from "./ops/seo.js";
 import { pagesSeoAutofillManyOp, pagesSeoSetManyOp } from "./ops/seo-bulk.js";
+import { pagesSeoOverviewOp } from "./ops/seo-overview.js";
 import { setPageTypeSeoManyOp } from "./ops/seo-templates.js";
 import { pagesSeoApplyTranslationOp } from "./ops/seo-translation.js";
 import { getSiteDefaultsOp, setSiteDefaultsOp, setSiteIdentityOp } from "./ops/site_defaults.js";
@@ -1643,6 +1644,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(reviewAltProposalOp);
   // P8 — SEO sidecar + site SEO defaults.
   registry.register(pagesSeoGetOp);
+  registry.register(pagesSeoOverviewOp);
   registry.register(pagesSeoGetManyOp);
   registry.register(pagesSeoShareImagesOp);
   registry.register(pagesSeoCheckShareImageOp);

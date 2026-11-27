@@ -17,6 +17,7 @@ import type { SeoWriteHintRule } from "./hints/index.js";
 import { SEO_WRITE_HINT_RULES } from "./hints/index.js";
 import { ALT_TEXT_HINT_RULE } from "./rules/alt-text-hints.js";
 import { CRAWLER_POLICY_AUDIT_RULE, CRAWLER_POLICY_HINT_RULE } from "./rules/crawler-operations.js";
+import { DUPLICATES_AUDIT_RULE } from "./rules/duplicates.js";
 import { PAGE_AUDIT_RULE } from "./rules/pages-check.js";
 import { SEO_TEXT_HINT_RULE } from "./rules/seo-text-hints.js";
 
@@ -24,6 +25,7 @@ import { SEO_TEXT_HINT_RULE } from "./rules/seo-text-hints.js";
 export const AUDIT_RULES: readonly SeoAuditRule[] = [
   ...SEO_AUDIT_RULES,
   CRAWLER_POLICY_AUDIT_RULE,
+  DUPLICATES_AUDIT_RULE,
   PAGE_AUDIT_RULE,
 ];
 

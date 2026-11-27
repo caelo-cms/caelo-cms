@@ -244,7 +244,10 @@ describe("noindex pages robots.txt hides", () => {
 describe("through the audit operation", () => {
   it("asks for facts and files the page findings of a batch", async () => {
     const ctx = {
-      cms: { call: async () => ({ robotsRules: [] }) },
+      cms: {
+        call: async (op: string) =>
+          op === "pages_seo.overview" ? { pages: [], nextCursor: null } : { robotsRules: [] },
+      },
     } as unknown as PluginContextTier1;
     const first = await seoAudit(ctx, { pages: [{ pageId: PAGE, path: "/guide" }] }, AUDIT_RULES);
     expect(first.factBatches).toEqual([[PAGE]]);

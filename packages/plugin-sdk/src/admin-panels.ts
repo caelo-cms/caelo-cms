@@ -283,22 +283,45 @@ export const panelToolbarAction = z.object(actionBase).strict();
 
 export type PanelToolbarAction = z.infer<typeof panelToolbarAction>;
 
+/** One option of a select filter. */
+export const panelFilterOption = z.object({ value: z.string().min(1).max(120), label }).strict();
+
+/** Most options a filter's `optionsOperation` may answer. */
+export const MAX_PANEL_FILTER_OPTIONS = 50;
+
+/**
+ * What a filter's `optionsOperation` answers: the options as the site has
+ * them now (the page types, say), validated by the admin like a table's
+ * rows. The values travel back as the filter's argument only when they are
+ * among these options.
+ */
+export const panelFilterOptions = z
+  .object({ options: z.array(panelFilterOption).max(MAX_PANEL_FILTER_OPTIONS) })
+  .strict();
+
 /**
  * A select filter over a table: the chosen option's value goes to `arg`.
  * With `allLabel`, an extra first option shows everything (the argument is
- * left out); without it the first option is the default.
+ * left out); without it the first option is the default. The options are
+ * declared (`options`), or (#1760) answered per view by an operation of the
+ * plugin taking `{}` (`optionsOperation`, {@link panelFilterOptions}) for
+ * options that are site data; such a filter needs `allLabel`.
  */
 export const panelFilter = z
   .object({
     arg: argName,
     label,
-    options: z
-      .array(z.object({ value: z.string().min(1).max(120), label }).strict())
-      .min(1)
-      .max(20),
+    options: z.array(panelFilterOption).min(1).max(20).optional(),
+    optionsOperation: operationName.optional(),
     allLabel: label.optional(),
   })
-  .strict();
+  .strict()
+  .refine((f) => (f.options === undefined) !== (f.optionsOperation === undefined), {
+    message: "set exactly one of options / optionsOperation",
+  })
+  .refine((f) => f.optionsOperation === undefined || f.allLabel !== undefined, {
+    message: "a filter with optionsOperation needs allLabel: its options may be empty",
+  });
 
 export type PanelFilter = z.infer<typeof panelFilter>;
 
@@ -545,6 +568,11 @@ export function adminPanelOperations(
         }
         if (section.download) {
           out.push({ operation: section.download.operation, path: at("download", "operation") });
+        }
+        for (const [i, f] of (section.filters ?? []).entries()) {
+          if (f.optionsOperation) {
+            out.push({ operation: f.optionsOperation, path: at("filters", i, "optionsOperation") });
+          }
         }
         break;
       }

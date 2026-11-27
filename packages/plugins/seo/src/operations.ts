@@ -15,6 +15,13 @@ import {
   PLAN_CRAWLER_POLICY_OPERATION,
   planCrawlerPolicyOperation,
 } from "./rules/crawler-operations.js";
+import {
+  OVERVIEW_PAGE_TYPES_OPERATION,
+  OVERVIEW_ROWS_OPERATION,
+  overviewPageTypes,
+  overviewRows,
+} from "./rules/overview.js";
+import { SEO_PREVIEW_OPERATION, seoPreview } from "./rules/previews.js";
 
 /** The operation core calls at every Stage audit (`auditFindingsOperation`). */
 export const AUDIT_OPERATION = "audit";
@@ -28,4 +35,7 @@ export const SEO_OPERATIONS: Readonly<Record<string, PluginOperation<PluginConte
   [WRITE_HINTS_OPERATION]: (ctx, args) => seoWriteHints(ctx, args, WRITE_HINT_RULES),
   [PLAN_CRAWLER_POLICY_OPERATION]: (ctx, args) => planCrawlerPolicyOperation(ctx, args),
   [AGENT_FILES_OPERATION]: (ctx) => agentFiles(ctx),
+  [OVERVIEW_ROWS_OPERATION]: (ctx, args) => overviewRows(ctx, args),
+  [OVERVIEW_PAGE_TYPES_OPERATION]: (ctx) => overviewPageTypes(ctx),
+  [SEO_PREVIEW_OPERATION]: (ctx, args) => seoPreview(ctx, args),
 };

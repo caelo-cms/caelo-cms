@@ -21,7 +21,12 @@
 
 import type { Permission } from "@caelo-cms/admin-core";
 import { isPluginDisabled, loadedPlugins, runPluginOperation } from "@caelo-cms/plugin-host";
-import type { PanelSection, PanelTableSection, PluginAdminPanel } from "@caelo-cms/plugin-sdk";
+import {
+  type PanelSection,
+  type PanelTableSection,
+  type PluginAdminPanel,
+  panelFilterOptions,
+} from "@caelo-cms/plugin-sdk";
 import { error } from "@sveltejs/kit";
 import { z } from "zod";
 import {
@@ -99,6 +104,37 @@ export function panelCaller(locals: App.Locals, pluginSlug: string) {
   };
 }
 
+/**
+ * #1760 — a table with the options of its `optionsOperation` filters filled
+ * in, as the plugin answers them now (site data such as the page types),
+ * validated like any plugin answer. Fails with the reason, never with a
+ * filter that quietly has no options.
+ */
+export async function withFilterOptions(
+  section: PanelTableSection,
+  call: ReturnType<typeof panelCaller>,
+): Promise<{ ok: true; section: PanelTableSection } | { ok: false; message: string }> {
+  if (!(section.filters ?? []).some((f) => f.optionsOperation)) return { ok: true, section };
+  const filters: NonNullable<PanelTableSection["filters"]> = [];
+  for (const f of section.filters ?? []) {
+    if (!f.optionsOperation) {
+      filters.push(f);
+      continue;
+    }
+    const r = await call(f.optionsOperation, {});
+    if (!r.ok) return { ok: false, message: r.message };
+    const parsed = panelFilterOptions.safeParse(r.value);
+    if (!parsed.success) {
+      return {
+        ok: false,
+        message: `The plugin's ${f.optionsOperation} answer is no list of filter options: ${parsed.error.issues[0]?.message ?? "invalid"}.`,
+      };
+    }
+    filters.push({ ...f, options: parsed.data.options });
+  }
+  return { ok: true, section: { ...section, filters } };
+}
+
 /** The URL parameter of a section's filter or cursor. */
 export function sectionParam(sectionId: string, name: string): string {
   return `${sectionId}.${name}`;
@@ -120,10 +156,13 @@ export function selectedFilters(
     const param = sectionParam(section.id, f.arg);
     const raw = url.searchParams.get(param);
     let selected: string | null = raw;
+    // An `optionsOperation` filter arrives here with its options filled in
+    // (withFilterOptions); one without any shows only "All".
+    const options = f.options ?? [];
     if (raw === null) {
       // Without "All" the first option is the default view.
-      selected = f.allLabel === undefined ? (f.options[0]?.value ?? null) : null;
-    } else if (!f.options.some((o) => o.value === raw)) {
+      selected = f.allLabel === undefined ? (options[0]?.value ?? null) : null;
+    } else if (!options.some((o) => o.value === raw)) {
       throw error(400, `"${raw}" is not an option of the ${f.label} filter.`);
     }
     if (selected !== null) args[f.arg] = selected;
@@ -132,7 +171,7 @@ export function selectedFilters(
       label: f.label,
       param,
       allLabel: f.allLabel ?? null,
-      options: f.options,
+      options,
       selected,
     };
   });
@@ -188,11 +227,25 @@ function downloadHref(
 }
 
 async function loadTable(
-  section: PanelTableSection,
+  declared: PanelTableSection,
   url: URL,
   call: ReturnType<typeof panelCaller>,
   downloadBase: string,
 ): Promise<TableState> {
+  const resolved = await withFilterOptions(declared, call);
+  if (!resolved.ok) {
+    return {
+      kind: "table",
+      section: declared,
+      error: resolved.message,
+      rows: [],
+      filters: [],
+      nextPageHref: null,
+      firstPageHref: null,
+      downloadHref: null,
+    };
+  }
+  const section = resolved.section;
   const { filters, filterArgs, cursor, args } = tableArgs(section, url);
   const base: TableState = {
     kind: "table",
