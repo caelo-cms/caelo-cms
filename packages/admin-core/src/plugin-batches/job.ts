@@ -271,7 +271,7 @@ async function runPieces(
     await reporter.call("piece-done", { piece: c.piece });
   }
   if (helper) {
-    await reporter.call("leave", {});
+    await reporter.call("leave", { worker });
     return null;
   }
   return count;

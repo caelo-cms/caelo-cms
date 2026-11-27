@@ -98,6 +98,16 @@ describe("jobLines", () => {
   });
 });
 
+describe("a line's identity", () => {
+  it("is its work, so two jobs started in one admission never share a key", () => {
+    const lines = jobLines([
+      booking({ kind: "plugin_batch", subjectId: "00000000-0000-4000-8000-00000000000a" }),
+      booking({ kind: "plugin_batch", subjectId: "00000000-0000-4000-8000-00000000000b" }),
+    ]);
+    expect(new Set(lines.map((l) => l.key)).size).toBe(2);
+  });
+});
+
 describe("loadCloudCapacity", () => {
   it("shows a failed quota read with its reason instead of hiding the card", async () => {
     const view = await loadCloudCapacity(

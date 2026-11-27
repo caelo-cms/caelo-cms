@@ -70,6 +70,9 @@ CREATE TABLE IF NOT EXISTS job_capacity_bookings (
   -- Why it waits, in operator words.
   waiting_reason text NULL CHECK (char_length(waiting_reason) <= 1000),
   token_hash     text NULL CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+  -- A helper's tasks that left (`<booking>:<index>`): a report sent again
+  -- after its answer was lost (a stop, a leave) gives a task back once.
+  left_workers   text[] NOT NULL DEFAULT '{}' CHECK (cardinality(left_workers) <= 64),
   execution      text NULL CHECK (char_length(execution) <= 400),
   created_at     timestamptz NOT NULL DEFAULT now(),
   started_at     timestamptz NULL,

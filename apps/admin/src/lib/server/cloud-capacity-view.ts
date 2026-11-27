@@ -27,6 +27,8 @@ import { RUN_CPU_QUOTA_METRIC } from "@caelo-cms/shared";
 
 /** One line of the card's "Now" list. */
 export interface CapacityJobLine {
+  /** Which work it is (kind and subject): the row's identity. */
+  readonly key: string;
   /** What it is, for people ("Search index", "Plugin job"). */
   readonly label: string;
   readonly state: "running" | "waiting";
@@ -79,6 +81,7 @@ export function jobLines(bookings: readonly CapacityBooking[]): CapacityJobLine[
       a.state === b.state ? a.since.localeCompare(b.since) : a.state === "running" ? -1 : 1,
     )
     .map((b) => ({
+      key: `${b.kind}/${b.subjectId}`,
       label: LABELS[b.kind] ?? b.kind,
       state: b.state,
       vcpu: b.vcpu + b.reserveVcpu,

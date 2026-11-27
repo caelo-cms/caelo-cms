@@ -459,10 +459,12 @@ export const leaveJobCapacityOp = defineOperation({
   // helper's start is.
   actorScope: ["system"],
   database: "cms_admin",
-  input: z.object({ bookingId: uuid }).strict(),
+  input: z
+    .object({ bookingId: uuid, worker: z.string().regex(/^[0-9a-f-]{36}:\d{1,2}$/) })
+    .strict(),
   output: z.object({ left: z.boolean() }),
   handler: async (_ctx, input, tx) => {
-    return ok({ left: await leaveHelperTask(tx, input.bookingId) });
+    return ok({ left: await leaveHelperTask(tx, input.bookingId, input.worker) });
   },
 });
 
@@ -487,18 +489,36 @@ export const cancelJobCapacityOp = defineOperation({
   },
 });
 
-/** One task of helper `bookingId` ends: its vCPU comes back; the last one ends the booking. */
-export async function leaveHelperTask(tx: Tx, bookingId: string): Promise<boolean> {
+/**
+ * Task `worker` of helper `bookingId` ends: its vCPU comes back; the last
+ * one ends the booking. Once per task: a report sent again after its
+ * answer was lost finds the task gone and gives nothing back twice.
+ */
+export async function leaveHelperTask(tx: Tx, bookingId: string, worker: string): Promise<boolean> {
   const rows = (await tx.execute(sql`
-    UPDATE job_capacity_bookings SET tasks = tasks - 1
+    UPDATE job_capacity_bookings
+       SET tasks = tasks - 1, left_workers = array_append(left_workers, ${worker}::text)
      WHERE id = ${bookingId}::uuid AND role = 'helper' AND tasks > 1
+       AND NOT (${worker}::text = ANY(left_workers))
     RETURNING id
   `)) as unknown as unknown[];
   if (rows.length > 0) return true;
   const gone = (await tx.execute(sql`
-    DELETE FROM job_capacity_bookings WHERE id = ${bookingId}::uuid AND role = 'helper' RETURNING id
+    DELETE FROM job_capacity_bookings
+     WHERE id = ${bookingId}::uuid AND role = 'helper' AND tasks <= 1
+       AND NOT (${worker}::text = ANY(left_workers))
+    RETURNING id
   `)) as unknown as unknown[];
   return gone.length > 0;
+}
+
+/** Whether task `worker` of helper `bookingId` left already (stopped or done). */
+export async function helperTaskLeft(tx: Tx, bookingId: string, worker: string): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    SELECT 1 FROM job_capacity_bookings
+     WHERE id = ${bookingId}::uuid AND ${worker}::text = ANY(left_workers)
+  `)) as unknown as unknown[];
+  return rows.length > 0;
 }
 
 /** A booking as people and the AI see it. */
@@ -512,6 +532,7 @@ export const capacityBookingSchema = z.object({
   tasks: z.number().int(),
   /** Elastic work: the tasks it would run (lead and helpers together). */
   wantedTasks: z.number().int().nullable(),
+  /** A quality check: the part of its Lighthouse share no batch uses now. */
   reserveVcpu: z.number().int(),
   reason: z.string().nullable(),
   /** Since when it runs or waits (ISO). */
@@ -571,6 +592,10 @@ export const listJobCapacityOp = defineOperation({
       const lead = group.find((r) => r.role === "lead");
       if (!lead) continue;
       const running = group.filter((r) => r.state === "running");
+      // A check's share counts once: what its batches use is in `vcpu`.
+      const inUse = running
+        .filter((r) => r.role === "lighthouse")
+        .reduce((n, r) => n + r.tasks * r.vcpu_per_task, 0);
       bookings.push({
         kind: lead.kind,
         subjectId: lead.subject_id,
@@ -580,7 +605,7 @@ export const listJobCapacityOp = defineOperation({
         vcpu: running.reduce((n, r) => n + r.tasks * r.vcpu_per_task, 0),
         tasks: running.filter((r) => r.role !== "lighthouse").reduce((n, r) => n + r.tasks, 0),
         wantedTasks: lead.elastic ? Math.min(lead.max_tasks, lead.wanted_tasks) : null,
-        reserveVcpu: lead.reserve_vcpu,
+        reserveVcpu: Math.max(0, lead.reserve_vcpu - inUse),
         reason: lead.waiting_reason,
         since: new Date(lead.started_ms ?? lead.created_ms).toISOString(),
       });

@@ -29,6 +29,7 @@ import { planAdmission, workKey } from "../job-capacity/plan.js";
 import { MAX_JOB_TASKS } from "../reporting-jobs/run-capacity.js";
 import { jsonbParam } from "../sql-helpers.js";
 import {
+  helperTaskLeft,
   LEDGER_LOCK,
   leaveHelperTask,
   readBookings,
@@ -44,6 +45,9 @@ export const workerName = z.string().regex(/^(lead|[0-9a-f-]{36}:\d{1,2})$/);
 
 /** The most pieces one scope may have. */
 export const MAX_PIECES = 100_000;
+
+/** The longest claim: an hour-long batch piece and its margin (plugin-batches/job.ts). */
+export const MAX_CLAIM_SECONDS = 2 * 3600;
 
 export const registerJobPiecesOp = defineOperation({
   name: "job_pieces.register",
@@ -154,7 +158,7 @@ export const claimJobPieceOp = defineOperation({
       /** The helper booking the report's token belongs to; null for the lead. */
       helperId: uuid.nullable(),
       /** How long the piece is the worker's; a claim that runs out is open again. */
-      claimSeconds: z.number().int().min(60).max(3600),
+      claimSeconds: z.number().int().min(60).max(MAX_CLAIM_SECONDS),
       /** How far ahead a helper's booking is kept. */
       leaseSeconds: z.number().int().min(60).max(3600),
     })
@@ -163,6 +167,10 @@ export const claimJobPieceOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     if (input.helperId !== null) {
       await tx.execute(LEDGER_LOCK);
+      // A claim sent again after its `stop` was lost: the same answer, and
+      // the task is not given back twice.
+      if (await helperTaskLeft(tx, input.helperId, input.worker))
+        return ok({ stop: true as const });
       const budget = await readBudget(tx);
       const bookings = (await readBookings(tx)).map(toPlanBooking);
       const key = workKey({ kind: input.kind, subjectId: input.subjectId });
@@ -175,7 +183,7 @@ export const claimJobPieceOp = defineOperation({
           ? (planAdmission(budget.budgetVcpu, bookings).grants.get(lead.id) ?? tasks)
           : tasks;
       if (!lead || tasks > grant) {
-        await leaveHelperTask(tx, input.helperId);
+        await leaveHelperTask(tx, input.helperId, input.worker);
         return ok({ stop: true as const });
       }
       await tx.execute(sql`

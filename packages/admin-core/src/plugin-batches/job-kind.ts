@@ -40,7 +40,7 @@ import {
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
-import { type PieceClaim, workerName } from "../ops/job_pieces.js";
+import { MAX_CLAIM_SECONDS, type PieceClaim, workerName } from "../ops/job_pieces.js";
 import {
   ActionRefusal,
   type AdminJobDeps,
@@ -271,7 +271,10 @@ export const pluginBatchJobKind: ReportingJobKindDef = {
     },
     claim: {
       input: z
-        .object({ worker: workerName, claimSeconds: z.number().int().min(60).max(3600) })
+        .object({
+          worker: workerName,
+          claimSeconds: z.number().int().min(60).max(MAX_CLAIM_SECONDS),
+        })
         .strict(),
       async handle(deps, runId, input, request) {
         const { run } = await liveRun(deps, runId, { claim: false });
@@ -309,11 +312,11 @@ export const pluginBatchJobKind: ReportingJobKindDef = {
       },
     },
     leave: {
-      input: z.object({}).strict(),
-      async handle(deps, _runId, _input, request) {
+      input: z.object({ worker: workerName }).strict(),
+      async handle(deps, _runId, input, request) {
         if (request.helperId === null)
           throw new ActionRefusal("only a helper's task leaves its run");
-        await op(deps, "job_capacity.leave", { bookingId: request.helperId });
+        await op(deps, "job_capacity.leave", { bookingId: request.helperId, worker: input.worker });
         return { value: {}, readmit: true };
       },
     },

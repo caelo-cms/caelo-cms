@@ -251,8 +251,10 @@ async function prepareAction(
       const d = deferSchema.safeParse(envelope.payload);
       if (!d.success) return answeredNow(refused(400, "bad-input", issuesOf(d.error)));
       if (helperId !== null) {
-        // #1776 — a helper gives back only its own task, never the attempt.
-        await op(deps, "job_capacity.leave", { bookingId: helperId });
+        // #1776 — a helper gives back only its own booking, never the
+        // attempt. Every task of it runs the same image, so all of them
+        // defer; releasing the booking once is the same answer each time.
+        await op(deps, "job_capacity.release", { bookingId: helperId, kind: def.kind, subjectId });
         return answeredNow(answered({}));
       }
       await op(deps, "reporting_jobs.release", {

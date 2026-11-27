@@ -369,15 +369,19 @@ export const finishReportingJobOp = defineOperation({
          ${input.attempt === null ? sql`` : sql`AND attempt = ${input.attempt}`}
       RETURNING attempt
     `)) as unknown as { attempt: number }[];
-    // #1776 — the work's vCPU comes back and its pieces go, also for work
-    // that never left the queue (given up while it waited for CPU).
-    await tx.execute(sql`
-      DELETE FROM job_capacity_bookings
-      WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid
-    `);
-    await tx.execute(sql`
-      DELETE FROM job_pieces WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid
-    `);
+    // #1776 — the work's vCPU comes back and its pieces go: when this
+    // finished it, and when the work is given up (no attempt), also work
+    // that never left the queue. A late finish of a replaced attempt
+    // leaves the current attempt's bookings and pieces alone.
+    if (rows.length > 0 || input.attempt === null) {
+      await tx.execute(sql`
+        DELETE FROM job_capacity_bookings
+        WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid
+      `);
+      await tx.execute(sql`
+        DELETE FROM job_pieces WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid
+      `);
+    }
     if (rows.length === 0) return ok({ finished: false });
     await tx.execute(sql`
       DELETE FROM reporting_job_uploads

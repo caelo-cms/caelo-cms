@@ -13,7 +13,7 @@ import { describeError } from "../ai/tools/_describe-error.js";
 import { indexTasksAlone, quotaForIndexTasks } from "../job-capacity/budget.js";
 import { INDEX_TASK_VCPU } from "../job-capacity/plan.js";
 import type { CapacityBooking } from "../ops/job_capacity.js";
-import { type PieceClaim, workerName } from "../ops/job_pieces.js";
+import { MAX_CLAIM_SECONDS, type PieceClaim, workerName } from "../ops/job_pieces.js";
 import {
   ActionRefusal,
   type AdminJobDeps,
@@ -213,7 +213,7 @@ export const collectionIndexJobKind: ReportingJobKindDef = {
         .object({
           ...reportTarget,
           worker: workerName,
-          claimSeconds: z.number().int().min(60).max(3600),
+          claimSeconds: z.number().int().min(60).max(MAX_CLAIM_SECONDS),
         })
         .strict(),
       async handle(deps, runId, input, request) {
@@ -249,11 +249,11 @@ export const collectionIndexJobKind: ReportingJobKindDef = {
     },
     // A helper's task found no shard left for it: its CPU comes back.
     leave: {
-      input: z.object({}).strict(),
-      async handle(deps, _runId, _input, request) {
+      input: z.object({ worker: workerName }).strict(),
+      async handle(deps, _runId, input, request) {
         if (request.helperId === null)
           throw new ActionRefusal("only a helper's task leaves its work");
-        await op(deps, "job_capacity.leave", { bookingId: request.helperId });
+        await op(deps, "job_capacity.leave", { bookingId: request.helperId, worker: input.worker });
         return { value: {}, readmit: true };
       },
     },

@@ -645,7 +645,7 @@ export async function indexTasks(
       if (e instanceof HelperStoppedError) return;
       if (helper && !(e instanceof JobStoppedError)) {
         // Its CPU comes back now rather than when its booking runs out.
-        await reporter.call("leave", {}).catch(() => undefined);
+        await reporter.call("leave", { worker: workerOf(slot) }).catch(() => undefined);
         throw e;
       }
       if (e instanceof ShardsMissingError || e instanceof JobStoppedError) throw e;
@@ -662,5 +662,5 @@ export async function indexTasks(
     }
   }
   // A helper's task that ran out of shards gives its CPU back now.
-  if (helper) await reporter.call("leave", {});
+  if (helper) await reporter.call("leave", { worker: workerOf(slot) });
 }

@@ -85,7 +85,7 @@
           <div data-testid="cloud-capacity-jobs">
             <p class="font-medium">Right now</p>
             <ul class="mt-2 space-y-2">
-              {#each view.jobs as job (job.label + job.since + job.state)}
+              {#each view.jobs as job (job.key)}
                 <li class="flex flex-wrap items-baseline gap-x-2" data-testid="cloud-capacity-job">
                   <Badge variant={job.state === "running" ? "default" : "outline"}>
                     {job.state === "running" ? "running" : "waiting"}

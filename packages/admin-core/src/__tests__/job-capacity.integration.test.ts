@@ -318,6 +318,46 @@ describe("a work's attempts and end", () => {
     expect((pieces as { n: number }[])[0]?.n).toBe(0);
   });
 
+  it("a late finish of a replaced attempt leaves the current attempt's bookings and pieces alone", async () => {
+    await budget(20);
+    const s = crypto.randomUUID();
+    await index(s);
+    await runningAttempt("collection_index", s);
+    await op("job_pieces.register", {
+      kind: "collection_index",
+      subjectId: s,
+      scope: "p/pages",
+      count: 4,
+      done: [],
+      wantedTasks: 4,
+      resetClaims: true,
+    });
+    await asSystem(
+      (tx) =>
+        tx`UPDATE reporting_jobs SET lease_until = now() - interval '1 second' WHERE subject_id = ${s}::uuid`,
+    );
+    await op("reporting_jobs.begin_attempt", {
+      kind: "collection_index",
+      subjectId: s,
+      tokenHash: hashJobToken(mintJobToken()),
+      leaseSeconds: 600,
+      maxAttempts: 8,
+    });
+    expect(
+      await op("reporting_jobs.finish", {
+        kind: "collection_index",
+        subjectId: s,
+        attempt: 1,
+        outcome: "completed",
+        note: null,
+      }),
+    ).toEqual({ finished: false });
+    expect((await bookings()).map((b) => b.subjectId)).toEqual([s]);
+    expect(await op("job_pieces.open_scopes", { kind: "collection_index", subjectId: s })).toEqual({
+      scopes: ["p/pages"],
+    });
+  });
+
   it("gives up waiting work that never started, and a stopped one leaves the queue", async () => {
     // 10 vCPU: 4 for the jobs.
     await budget(10);
@@ -360,8 +400,9 @@ describe("job_capacity.reserve_lighthouse", () => {
       leaseSeconds: 900,
     });
     expect(r.tasks).toBe(5);
-    // The share is in use now, not on top of it.
-    expect((await bookings()).find((b) => b.kind === "quality_audit")?.vcpu).toBe(11);
+    // The share is in use now, not on top of it: counted once.
+    const check = (await bookings()).find((b) => b.kind === "quality_audit");
+    expect([check?.vcpu, check?.reserveVcpu]).toEqual([11, 0]);
     expect(
       await op("job_capacity.release", {
         bookingId: r.bookingId,
@@ -470,6 +511,13 @@ describe("job_pieces", () => {
     });
     expect(await claim(s, `${helperId}:1`, helperId)).toEqual({ stop: true });
     expect((await bookings()).find((b) => b.subjectId === s)?.tasks).toBe(5);
+    // Its answer lost, the task asks again: the same stop, given back once.
+    expect(await claim(s, `${helperId}:1`, helperId)).toEqual({ stop: true });
+    expect((await bookings()).find((b) => b.subjectId === s)?.tasks).toBe(5);
+    // A leave sent twice gives its task back once.
+    for (let i = 0; i < 2; i++)
+      await op("job_capacity.leave", { bookingId: helperId, worker: `${helperId}:2` });
+    expect((await bookings()).find((b) => b.subjectId === s)?.tasks).toBe(4);
   });
 });
 
