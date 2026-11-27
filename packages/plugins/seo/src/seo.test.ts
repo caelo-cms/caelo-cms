@@ -107,6 +107,6 @@ describe("seo write hints runner", () => {
     expect(await seoWriteHints(ctx, { writes }, [a, b])).toEqual({
       hints: ["Link X?", "Shorter title?"],
     });
-    expect(await seoWriteHints(ctx, { writes })).toEqual({ hints: [] });
+    expect(await seoWriteHints(ctx, { writes }, [])).toEqual({ hints: [] });
   });
 });

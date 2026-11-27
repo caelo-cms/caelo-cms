@@ -17,6 +17,13 @@ import {
   sitemapEntries,
   structuredData,
 } from "./schema/operations.js";
+import {
+  listTopicTerms,
+  mergeTerms,
+  OBSERVE_OPERATION,
+  observePages,
+  suggestInternalLinks,
+} from "./topics/operations.js";
 
 /** The operation core calls at every Stage audit (`auditFindingsOperation`). */
 export const AUDIT_OPERATION = "audit";
@@ -33,4 +40,9 @@ export const SEO_OPERATIONS: Readonly<Record<string, PluginOperation<PluginConte
   [SITEMAP_ENTRIES_OPERATION]: (ctx, args) => sitemapEntries(ctx, args),
   get_schema_mapping: (ctx, args) => getSchemaMapping(ctx, args),
   set_schema_mappings_many: (ctx, args) => setSchemaMappings(ctx, args),
+  // #1759 — topic pages and internal links.
+  [OBSERVE_OPERATION]: (ctx, args) => observePages(ctx, args),
+  list_topic_terms: (ctx, args) => listTopicTerms(ctx, args),
+  merge_terms: (ctx, args) => mergeTerms(ctx, args),
+  suggest_internal_links: (ctx, args) => suggestInternalLinks(ctx, args),
 };

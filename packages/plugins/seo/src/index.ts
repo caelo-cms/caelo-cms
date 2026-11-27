@@ -28,6 +28,8 @@ import { MAPPINGS_TABLE } from "./schema/mapping.js";
 import { SITEMAP_ENTRIES_OPERATION, STRUCTURED_DATA_OPERATION } from "./schema/operations.js";
 import { SEO_SKILLS } from "./skills.js";
 import { SEO_TOOLS } from "./tools.js";
+import { OBSERVE_OPERATION } from "./topics/operations.js";
+import { PAGE_INDEX_TABLE } from "./topics/page-index.js";
 
 export default definePlugin<PluginContextTier1>({
   slug: "seo",
@@ -40,6 +42,7 @@ export default definePlugin<PluginContextTier1>({
     "companion_skills",
     "structured_data",
     "sitemap_entries",
+    "page_output",
   ],
   capabilityReasons: {
     cms_admin:
@@ -50,6 +53,8 @@ export default definePlugin<PluginContextTier1>({
     structured_data:
       "Describes articles, their authors and reviewers, author pages and overview pages in each page's structured data.",
     sitemap_entries: "Lists recent news articles and video pages in the news and video sitemaps.",
+    page_output:
+      "Reads each Stage's published pages (their terms and links) to count articles per topic and suggest internal links.",
   },
   // No visitor-facing surface: everything this plugin knows reaches a page
   // as data core serializes.
@@ -58,14 +63,25 @@ export default definePlugin<PluginContextTier1>({
   adminSchema: {
     /** #1756 — the schema mapping of each page type (schema/mapping.ts). */
     [MAPPINGS_TABLE]: { page_type: "string", schema_type: "string", roles: "jsonb" },
+    /** #1759 — the published site as each Stage delivers it (topics/page-index.ts). */
+    [PAGE_INDEX_TABLE]: {
+      page_id: "string",
+      path: "string",
+      title: "string",
+      page_type: "string",
+      terms: "jsonb",
+      links: "jsonb",
+      indexable: "bool",
+    },
   },
   indexes: {
-    adminSchema: { [MAPPINGS_TABLE]: [["page_type"]] },
+    adminSchema: { [MAPPINGS_TABLE]: [["page_type"]], [PAGE_INDEX_TABLE]: [["page_id"]] },
   },
   aiReadableTables: [MAPPINGS_TABLE],
   config: SEO_CONFIG,
   structuredDataOperation: STRUCTURED_DATA_OPERATION,
   sitemapEntriesOperation: SITEMAP_ENTRIES_OPERATION,
+  pageOutputObserver: { operation: OBSERVE_OPERATION },
   auditFindingsOperation: AUDIT_OPERATION,
   writeHintsOperation: WRITE_HINTS_OPERATION,
   tools: SEO_TOOLS,
