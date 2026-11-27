@@ -205,7 +205,7 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       name: "Quality checks (Cloud Run audit job)",
       monthlyUsd: 2,
       notes:
-        "Lighthouse runs of 2 vCPU in containers of their own (up to 5 pages x 3 runs, ~90 s each; a page whose runs disagree gets 2 more), as many at once as the project's Cloud Run CPU quota allows (all 15 from 40 vCPU; a new project's 20 vCPU run 5 at a time, the same cost in more time): ~$0.05 per audited Stage, at most ~$0.08, partly in the free tier; results bucket ~$0",
+        "Lighthouse runs of 2 vCPU in containers of their own (up to 5 pages x 3 runs, ~90 s each; a page whose runs disagree gets 2 more), as many at once as the project's Cloud Run CPU quota leaves beside the other jobs (all 15 from 40 vCPU; a new project's 20 vCPU run 5 at a time, the same cost in more time): ~$0.05 per audited Stage, at most ~$0.08, partly in the free tier; results bucket ~$0",
     },
     {
       // #1359 — the whole audit of a Stage runs in its own job, not on the
@@ -241,7 +241,16 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       name: "Search indexes (Cloud Run collection index job)",
       monthlyUsd: 0,
       notes:
-        "one container per Stage whose plugin collections changed (2 vCPU / 4 GiB): a delta of 1,000 pages ~30 s (~$0.002), a full 50,000-page rebuild a few minutes (~$0.01-0.02); nothing without such a plugin; mostly in the free tier",
+        "one container per Stage whose plugin collections changed (2 vCPU / 4 GiB), more tasks of it while CPU is free: a delta of 1,000 pages ~30 s (~$0.002); a first index with semantic search embeds ~800,000 passages for 50,000 pages, ~2-4 task-hours whatever the width (~$0.40-0.80 once); nothing without such a plugin; mostly in the free tier",
+    },
+    {
+      // #1646, #1776 — a plugin's batch operation runs in its own job, on
+      // the machine its batch declares (S, M or L); nothing runs without a
+      // plugin that declares one.
+      name: "Plugin batch runs (Cloud Run plugin batch jobs)",
+      monthlyUsd: 0,
+      notes:
+        "one container per run of a plugin's batch, on the machine it declares: S (1 vCPU / 2 GiB) ~$0.0013, M (2 vCPU / 4 GiB) ~$0.0026, L (4 vCPU / 16 GiB) ~$0.006 per minute; a batch in pieces runs on more tasks for less time, the same cost; nothing without such a plugin; mostly in the free tier",
     },
     {
       name: "Screenshots (Cloud Run capture job)",

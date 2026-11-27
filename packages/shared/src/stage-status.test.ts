@@ -129,13 +129,13 @@ describe("a succeeded Stage whose search index still embeds", () => {
         limit: {
           wantedTasks: 32,
           quotaVcpu: 20,
-          quotaNeededVcpu: 102,
+          quotaNeededVcpu: 72,
           projectId: "acme-site",
           region: "europe-west1",
         },
       }),
     ).toBe(
-      'semantic search 120,000 of 800,000 passages on 1 task (the Cloud Run CPU quota of project acme-site, 20 vCPU in europe-west1, allows no more; raised to 102 vCPU in the Google Cloud console\'s Quotas page, "run.googleapis.com/cpu_allocation", it runs on 32 from the next Stage on; Settings → Deployments → Cloud capacity has the steps), about 18 h 53 min left',
+      'semantic search 120,000 of 800,000 passages on 1 task (the Cloud Run CPU quota of project acme-site, 20 vCPU in europe-west1, keeps it below the 32 tasks it would run; raised to 72 vCPU in the Google Cloud console\'s Quotas page, "run.googleapis.com/cpu_allocation", it runs on 32 between quality checks from the next Stage on; Settings → Deployments → Job capacity has the steps), about 18 h 53 min left',
     );
   });
 

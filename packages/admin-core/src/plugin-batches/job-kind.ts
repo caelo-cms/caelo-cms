@@ -14,6 +14,11 @@
  *   done    the result; the run is completed
  *   failed  the error; the run failed
  *
+ * A batch in pieces (#1776) also reports `pieces` (the lead, its plan's
+ * keys), `claim` and `piece-done` (every task), and `leave` (a helper's
+ * task with nothing left): the capacity ledger runs its pieces on as many
+ * tasks as CPU is free.
+ *
  * Every report re-reads the run: a run stopped by the operator, a plugin
  * deactivated or updated meanwhile, ends the attempt at its next report.
  */
@@ -26,10 +31,16 @@ import {
   makeInvocationContext,
   sandboxMethod,
 } from "@caelo-cms/plugin-host";
-import type { PluginContextTier1, PluginInvocation } from "@caelo-cms/plugin-sdk";
+import {
+  BATCH_SIZES,
+  MAX_BATCH_PIECES,
+  type PluginContextTier1,
+  type PluginInvocation,
+} from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
+import { type PieceClaim, workerName } from "../ops/job_pieces.js";
 import {
   ActionRefusal,
   type AdminJobDeps,
@@ -41,6 +52,12 @@ import type { BatchRun } from "./ops.js";
 
 /** The admin env var naming the Cloud Run job a batch runs in. */
 export const PLUGIN_BATCH_JOB_ENV_VAR = "CAELO_PLUGIN_BATCH_JOB";
+
+/** #1776 — the admin env vars naming the batch jobs of the larger machines. */
+export const PLUGIN_BATCH_SIZED_JOB_ENV_VARS = {
+  M: "CAELO_PLUGIN_BATCH_JOB_M",
+  L: "CAELO_PLUGIN_BATCH_JOB_L",
+} as const;
 
 /** The admin env var naming the only service account a batch job's reports pass IAP as. */
 export const PLUGIN_BATCH_SERVICE_ACCOUNT_ENV_VAR = "CAELO_PLUGIN_BATCH_SERVICE_ACCOUNT";
@@ -66,7 +83,11 @@ export interface BatchOrder {
     readonly batchRunId: string;
     readonly stageRunId: string | null;
     readonly input: Readonly<Record<string, unknown>>;
+    /** The piece a call works on; null in the order (the job sets it per piece). */
+    readonly piece: string | null;
   };
+  /** #1776 — a batch in pieces: its plan operation; null for a batch on one task. */
+  readonly pieces: { readonly plan: string } | null;
   readonly invocation: PluginInvocation;
   readonly handles: BatchHandles;
   /** An installed plugin's artifact, verified against its approval. */
@@ -119,6 +140,7 @@ export const pluginBatchJobKind: ReportingJobKindDef = {
   gcp: {
     jobEnvVar: PLUGIN_BATCH_JOB_ENV_VAR,
     serviceAccountEnvVar: PLUGIN_BATCH_SERVICE_ACCOUNT_ENV_VAR,
+    sizedJobEnvVars: PLUGIN_BATCH_SIZED_JOB_ENV_VARS,
   },
   pendingIssue: {
     aws: "issue #749: an ECS task per plugin batch run",
@@ -128,11 +150,31 @@ export const pluginBatchJobKind: ReportingJobKindDef = {
   // take more than one share of the admin's CPU.
   inProcess: "in-line",
   unstarted: "start",
+  // #1776 — background work on the machine its batch declares; a batch in
+  // pieces is elastic. A run whose batch is gone books the smallest machine
+  // and stops at its `order`, before it runs anything.
+  async capacity(deps, runId) {
+    const { run } = await op<{ run: BatchRun | null }>(deps, "plugin_batches.get", { runId });
+    const declared = run ? declaredBatch(loadedPlugins.byId(run.pluginId), run.operation) : null;
+    const batch = declared?.ok ? declared.batch : null;
+    const size = batch?.size ?? "S";
+    return {
+      cls: "background",
+      vcpuPerTask: BATCH_SIZES[size].vcpu,
+      elastic: batch?.pieces !== undefined && batch?.pieces !== null,
+      maxTasks: batch?.pieces?.maxTasks ?? 1,
+      auditReserve: false,
+      size,
+    };
+  },
   actions: {
     order: {
       input: z.object({}).strict(),
-      async handle(deps, runId) {
-        const { run, plugin, batch } = await liveRun(deps, runId, { claim: true });
+      async handle(deps, runId, _input, request) {
+        // A helper reads the run its lead claimed.
+        const { run, plugin, batch } = await liveRun(deps, runId, {
+          claim: request.helperId === null,
+        });
         const invocation = invocationOf(runId);
         const ctx = (await makeInvocationContext(plugin.slug, invocation)) as PluginContextTier1;
         let artifact: BatchOrder["artifact"] = null;
@@ -165,7 +207,9 @@ export const pluginBatchJobKind: ReportingJobKindDef = {
             batchRunId: runId,
             stageRunId: run.stageRunId,
             input: run.input,
+            piece: null,
           },
+          pieces: batch.pieces ? { plan: batch.pieces.plan } : null,
           invocation,
           handles: {
             hasAdminQuery: Boolean(ctx.adminQuery),
@@ -203,9 +247,80 @@ export const pluginBatchJobKind: ReportingJobKindDef = {
         }
       },
     },
+    // #1776 — the lead names its plan's pieces; helpers may join for them.
+    pieces: {
+      input: z
+        .object({ keys: z.array(z.string().min(1).max(200)).min(1).max(MAX_BATCH_PIECES) })
+        .strict(),
+      async handle(deps, runId, input, request) {
+        if (request.helperId !== null)
+          throw new ActionRefusal("only the lead names a batch's pieces");
+        const { run, batch } = await liveRun(deps, runId, { claim: false });
+        const value = await op(deps, "job_pieces.register", {
+          kind: "plugin_batch",
+          subjectId: runId,
+          scope: run.operation,
+          count: input.keys.length,
+          done: [],
+          keys: input.keys,
+          wantedTasks: Math.min(batch.pieces?.maxTasks ?? 1, input.keys.length),
+          resetClaims: true,
+        });
+        return { value, readmit: true };
+      },
+    },
+    claim: {
+      input: z
+        .object({ worker: workerName, claimSeconds: z.number().int().min(60).max(3600) })
+        .strict(),
+      async handle(deps, runId, input, request) {
+        const { run } = await liveRun(deps, runId, { claim: false });
+        const value = await op<PieceClaim>(deps, "job_pieces.claim", {
+          kind: "plugin_batch",
+          subjectId: runId,
+          scope: run.operation,
+          worker: input.worker,
+          helperId: request.helperId,
+          claimSeconds: input.claimSeconds,
+          leaseSeconds: 10 * 60,
+        });
+        return "stop" in value ? { value, readmit: true } : { value };
+      },
+    },
+    "piece-done": {
+      input: z
+        .object({
+          piece: z
+            .number()
+            .int()
+            .min(0)
+            .max(MAX_BATCH_PIECES - 1),
+        })
+        .strict(),
+      async handle(deps, runId, input) {
+        const { run } = await liveRun(deps, runId, { claim: false });
+        const value = await op(deps, "job_pieces.done", {
+          kind: "plugin_batch",
+          subjectId: runId,
+          scope: run.operation,
+          piece: input.piece,
+        });
+        return { value };
+      },
+    },
+    leave: {
+      input: z.object({}).strict(),
+      async handle(deps, _runId, _input, request) {
+        if (request.helperId === null)
+          throw new ActionRefusal("only a helper's task leaves its run");
+        await op(deps, "job_capacity.leave", { bookingId: request.helperId });
+        return { value: {}, readmit: true };
+      },
+    },
     done: {
       input: z.object({ value: z.unknown() }).strict(),
-      async handle(deps, runId, input) {
+      async handle(deps, runId, input, request) {
+        if (request.helperId !== null) throw new ActionRefusal("only the lead ends a batch run");
         await op(deps, "plugin_batches.finish", {
           runId,
           state: "completed",

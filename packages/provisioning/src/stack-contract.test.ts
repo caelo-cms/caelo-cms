@@ -129,6 +129,10 @@ describe("adminEnvContract", () => {
       CAELO_COLLECTION_INDEX_SERVICE_ACCOUNT: "caelo-production-index@acme.iam.gserviceaccount.com",
       CAELO_PLUGIN_BATCH_JOB:
         "projects/acme/locations/europe-west1/jobs/caelo-production-plugin-batch",
+      CAELO_PLUGIN_BATCH_JOB_M:
+        "projects/acme/locations/europe-west1/jobs/caelo-production-plugin-batch-m",
+      CAELO_PLUGIN_BATCH_JOB_L:
+        "projects/acme/locations/europe-west1/jobs/caelo-production-plugin-batch-l",
       CAELO_PLUGIN_BATCH_SERVICE_ACCOUNT:
         "caelo-production-plugin-batch@acme.iam.gserviceaccount.com",
       CAELO_COLLECTIONS_STAGING_STORE: "gs://acme-caelo-production-coll-staging",
@@ -202,6 +206,10 @@ describe("adminEnvContract", () => {
       CAELO_COLLECTION_INDEX_SERVICE_ACCOUNT: "caelo-production-index@acme.iam.gserviceaccount.com",
       CAELO_PLUGIN_BATCH_JOB:
         "projects/acme/locations/europe-west1/jobs/caelo-production-plugin-batch",
+      CAELO_PLUGIN_BATCH_JOB_M:
+        "projects/acme/locations/europe-west1/jobs/caelo-production-plugin-batch-m",
+      CAELO_PLUGIN_BATCH_JOB_L:
+        "projects/acme/locations/europe-west1/jobs/caelo-production-plugin-batch-l",
       CAELO_PLUGIN_BATCH_SERVICE_ACCOUNT:
         "caelo-production-plugin-batch@acme.iam.gserviceaccount.com",
       CAELO_COLLECTIONS_STAGING_STORE: "gs://acme-caelo-production-coll-staging",

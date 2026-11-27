@@ -74,6 +74,11 @@ export const stageStatusRunSchema = z.object({
         state: z.enum(["pending", "ready", "failed"]),
         error: z.string().nullable(),
         /**
+         * #1776 — a pending index whose job waits for CPU (the capacity
+         * ledger's reason, "waits for 2 vCPU: …"). Absent once it runs.
+         */
+        waitingForCpu: z.string().optional(),
+        /**
          * A pending index that embeds passages (semantic search): how many
          * of how many, on how many tasks, and the time left from its pace
          * (null before it can be measured). Absent while it embeds nothing.
@@ -161,7 +166,7 @@ export function describeSearchIndexProgress(p: SearchIndexStatus["progress"]): s
         ? "time left not measured yet"
         : `about ${formatStageDuration(p.remainingMs)} left`;
   const limit = p.limit
-    ? ` (the Cloud Run CPU quota of project ${p.limit.projectId}, ${p.limit.quotaVcpu} vCPU in ${p.limit.region}, allows no more; raised to ${p.limit.quotaNeededVcpu} vCPU in the Google Cloud console's Quotas page, "${RUN_CPU_QUOTA_METRIC}", it runs on ${p.limit.wantedTasks} from the next Stage on; Settings → Deployments → Cloud capacity has the steps)`
+    ? ` (the Cloud Run CPU quota of project ${p.limit.projectId}, ${p.limit.quotaVcpu} vCPU in ${p.limit.region}, keeps it below the ${p.limit.wantedTasks} tasks it would run; raised to ${p.limit.quotaNeededVcpu} vCPU in the Google Cloud console's Quotas page, "${RUN_CPU_QUOTA_METRIC}", it runs on ${p.limit.wantedTasks} between quality checks from the next Stage on; Settings → Deployments → Job capacity has the steps)`
     : "";
   return `semantic search ${n(p.embedded)} of ${n(p.toEmbed)} passages${tasks}${limit}, ${left}`;
 }
@@ -169,6 +174,7 @@ export function describeSearchIndexProgress(p: SearchIndexStatus["progress"]): s
 /** One pending index: "site-search/pages: semantic search 2,400 of 5,152 passages …". */
 export function describePendingSearchIndex(i: SearchIndexStatus): string {
   const name = `${i.plugin}/${i.collection}`;
+  if (i.waitingForCpu) return `${name}: not started yet, its job ${i.waitingForCpu}`;
   const progress = describeSearchIndexProgress(i.progress);
   return progress ? `${name}: ${progress}` : name;
 }

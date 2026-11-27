@@ -18,6 +18,7 @@ import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
 import {
   type AdminJobDeps,
+  immediateCapacity,
   REPORTING_JOB_CTX,
   type ReportingJobKindDef,
 } from "../reporting-jobs/kind.js";
@@ -57,6 +58,8 @@ export const buildCarrierJobKind: ReportingJobKindDef = {
   // on each other (their publish leases order them, as before).
   inProcess: "at-once",
   unstarted: "give-up",
+  // A person waits for the build: it never waits for CPU (#1776).
+  capacity: async () => immediateCapacity(1),
   actions: {
     run: {
       long: true,

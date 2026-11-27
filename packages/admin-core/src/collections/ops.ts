@@ -13,7 +13,7 @@
  *   collections.index_done    the job reports a release file
  *   collections.index_failed  the job reports a failure
  *   collections.index_progress  how far a task's embedding is (progress.ts)
- *   collections.index_reset_progress  a wider attempt starts the count over
+ *   collections.index_reset_progress  a new attempt's lead starts the count over
  *   collections.run_state     every collection release of a run (Publish live's gate)
  *
  * A change keeps the run that wrote it and counts as applied once a ready

@@ -129,9 +129,18 @@ export const stageStatusOp = defineOperation({
             progress: unknown;
             now: string | Date;
           }[]);
+    // #1776 — a run whose index job still waits for CPU says why.
+    const waiting = indexes.some((i) => i.state === "pending")
+      ? ((await tx.execute(sql`
+            SELECT subject_id::text AS run_id, waiting_reason FROM job_capacity_bookings
+             WHERE kind = 'collection_index' AND subject_id = ANY(${uuidArray(succeeded)})
+               AND role = 'lead' AND state = 'waiting'
+          `)) as unknown as { run_id: string; waiting_reason: string | null }[])
+      : [];
     return ok({
       runs: rows.map((r) => {
         const own = indexes.filter((i) => i.run_id === r.id);
+        const waitsForCpu = waiting.find((w) => w.run_id === r.id)?.waiting_reason ?? null;
         const run = toStageStatus(r, history);
         return own.length === 0
           ? run
@@ -147,6 +156,7 @@ export const stageStatusOp = defineOperation({
                   collection: i.collection,
                   state: i.state,
                   error: i.error,
+                  ...(i.state === "pending" && waitsForCpu ? { waitingForCpu: waitsForCpu } : {}),
                   ...(progress ? { progress } : {}),
                 };
               }),

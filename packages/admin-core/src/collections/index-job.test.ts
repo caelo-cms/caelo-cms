@@ -25,12 +25,14 @@ import type { Embedder } from "@caelo-cms/models";
 import { encodeChangeFile } from "@caelo-cms/plugin-host";
 import type { SearchProfile } from "@caelo-cms/plugin-sdk";
 import { DEFAULT_EMBEDDING_MODEL_ID, type EmbeddingModel } from "@caelo-cms/shared";
-import { planRunCapacity } from "../reporting-jobs/run-capacity.js";
+import type { PieceClaim } from "../ops/job_pieces.js";
+import type { JobReporter, TaskSlot } from "../reporting-jobs/job-reporter.js";
 import {
   type EmbedderSource,
   type IndexOptions,
   indexCollection,
   indexTasks,
+  type ShardClaims,
 } from "./index-job.js";
 import type { IndexTask } from "./ops.js";
 
@@ -366,7 +368,7 @@ describe("the index job at scale", () => {
     expect(second.stats).toMatchObject({ rebuilt: false, passagesEmbedded: 1, passagesReused: 2 });
   });
 
-  /** A first build with more distinct passages than one task embeds. */
+  /** A first build with more distinct passages than one shard holds: 6,010 texts, 4 shards. */
   async function bigBuild(): Promise<IndexTask> {
     const docs = Array.from({ length: 601 }, (_, d) =>
       page(
@@ -382,111 +384,105 @@ describe("the index job at scale", () => {
     });
   }
 
-  it("asks for more tasks when one task has more to embed than its share", async () => {
-    const e = fakeEmbedders("granite@aaaaaaaaaaaa");
-    const out = await indexCollection(store, await bigBuild(), {
-      embedders: e.source,
-      slot: { index: 0, count: 1, max: 32 },
+  it("the lead names the shards, which exist, and how wide the build would run", async () => {
+    const admin = fakePieces();
+    const out = await build(await bigBuild(), fakeEmbedders("granite@aaaaaaaaaaaa").source, {
+      claims: () => admin.claims("lead"),
     });
-    expect(out).toMatchObject({ kind: "scale", tasks: 2 });
-    // It decided before embedding anything.
-    expect(e.embedded).toEqual([]);
+    // 6,010 texts: four shards of at most 2,000, two tasks' shares of 6,000.
+    expect(admin.registered).toEqual([{ count: 4, done: [], wantedTasks: 2 }]);
+    expect(out.stats).toMatchObject({ passagesEmbedded: 6_010 });
+    expect([...admin.state.values()]).toEqual(["done", "done", "done", "done"]);
   });
 
-  it("an attempt already wide widens further for a collection that needs more", async () => {
-    const docs = Array.from({ length: 1_201 }, (_, d) =>
-      page(
-        `q${d}`,
-        Array.from({ length: 10 }, (_, s) => `Grosse Seite ${d} Abschnitt ${s}`),
-      ),
-    );
-    const t = task({
-      maxDocuments: 2_000,
-      changeKeys: [
-        await change({ upserts: docs, deletes: [], replaceAll: false, profile: semantic }),
-      ],
-    });
-    const out = await indexCollection(store, t, {
-      embedders: fakeEmbedders("granite@aaaaaaaaaaaa").source,
-      slot: { index: 0, count: 2, max: 32 },
-    });
-    expect(out).toMatchObject({ kind: "scale", tasks: 3 });
-  });
-
-  it("builds alone where the launcher runs one task (inside the admin)", async () => {
-    const e = fakeEmbedders("granite@aaaaaaaaaaaa");
-    const out = await build(await bigBuild(), e.source, { slot: { index: 0, count: 1, max: 1 } });
-    expect(out.stats).toMatchObject({ passagesEmbedded: 6_010, tasks: 1 });
-  });
-
-  it("in a wide attempt every task embeds its share once and the first builds what one task would have", async () => {
+  it("a helper embeds what it claims, the lead the rest, and the release is the one task's", async () => {
     const t = await bigBuild();
-    const alone = fakeEmbedders("granite@aaaaaaaaaaaa");
-    const single = await build(t, alone.source, { slot: { index: 0, count: 1, max: 1 } });
-    // The single build left its shards; the wide one must embed on its own.
+    const single = await build(t, fakeEmbedders("granite@aaaaaaaaaaaa").source, {
+      claims: () => fakePieces().claims("lead"),
+    });
+    // The single build left its shards; the shared one must embed on its own.
     const shards = join(root, "t1650/pages/vectors");
     for (const f of await readdir(shards)) if (f.startsWith("v-")) await rm(join(shards, f));
 
-    const wide = fakeEmbedders("granite@aaaaaaaaaaaa");
-    for (const index of [1, 2]) {
-      const out = await indexCollection(store, t, {
-        embedders: wide.source,
-        slot: { index, count: 3, max: 32 },
-      });
-      expect(out.kind).toBe("shared");
-    }
-    const first = await build(t, wide.source, { slot: { index: 0, count: 3, max: 32 } });
-    expect(new Set(wide.embedded).size).toBe(6_010);
-    expect(wide.embedded.length).toBe(6_010);
-    expect(first.stats).toMatchObject({ passagesEmbedded: 6_010, tasks: 3 });
+    const admin = fakePieces({ helperClaims: 2 });
+    await admin.claims("lead").register(4, [], 2);
+    const e = fakeEmbedders("granite@aaaaaaaaaaaa");
+    // A helper takes two shards, then hears `stop`: it ends after its shard.
+    await expect(
+      indexCollection(store, t, {
+        embedders: e.source,
+        slot: HELPER,
+        claims: () => admin.claims(`${HELPER.helper}:0`),
+      }),
+    ).rejects.toThrow(/stopped this helper/);
+    const byHelper = e.embedded.length;
+    expect(byHelper).toBeGreaterThan(2_000);
+    const lead = await build(t, e.source, { claims: () => admin.claims("lead") });
+    expect(new Set(e.embedded).size).toBe(6_010);
+    expect(e.embedded.length).toBe(6_010);
+    expect(lead.stats).toMatchObject({ passagesEmbedded: 6_010 });
     // Content-addressed files: the same release name is the same index.
-    expect(first.applied.file).toBe(single.applied.file);
+    expect(lead.applied.file).toBe(single.applied.file);
+  });
+
+  it("the lead waits for a shard another task still embeds, and takes it over once its claim runs out", async () => {
+    const t = await bigBuild();
+    const admin = fakePieces();
+    await admin.claims("lead").register(4, [], 2);
+    // Somebody holds shard 0 and never reports it.
+    admin.state.set(0, "claimed");
+    let clock = 0;
+    const out = await build(t, fakeEmbedders("granite@aaaaaaaaaaaa").source, {
+      claims: () => ({ ...admin.claims("lead"), register: async () => {} }),
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+        // Its claim ran out meanwhile (ops/job_pieces.ts opens it again).
+        if (admin.state.get(0) === "claimed") admin.state.set(0, "open");
+      },
+    });
+    expect(out.stats).toMatchObject({ passagesEmbedded: 6_010 });
+    expect(clock).toBeGreaterThan(0);
+  });
+
+  it("a helper whose shards are all taken moves on instead of waiting", async () => {
+    const admin = fakePieces();
+    await admin.claims("lead").register(4, [], 2);
+    for (const i of [0, 1, 2, 3]) admin.state.set(i, "claimed");
+    const e = fakeEmbedders("granite@aaaaaaaaaaaa");
+    const out = await indexCollection(store, await bigBuild(), {
+      embedders: e.source,
+      slot: HELPER,
+      claims: () => admin.claims(`${HELPER.helper}:0`),
+    });
+    expect(out.kind).toBe("shared");
+    expect(e.embedded).toEqual([]);
   });
 
   it("a retry's first report already counts the shards an earlier attempt wrote", async () => {
     const t = await bigBuild();
     const e = fakeEmbedders("granite@aaaaaaaaaaaa");
-    await indexCollection(store, t, { embedders: e.source, slot: { index: 1, count: 2, max: 32 } });
+    const first = fakePieces({ helperClaims: 1 });
+    await first.claims("lead").register(4, [], 2);
+    await expect(
+      indexCollection(store, t, {
+        embedders: e.source,
+        slot: HELPER,
+        claims: () => first.claims(`${HELPER.helper}:0`),
+      }),
+    ).rejects.toThrow(/stopped this helper/);
     const reports: number[] = [];
-    await indexCollection(store, t, {
-      embedders: e.source,
-      slot: { index: 1, count: 2, max: 32 },
+    const retry = fakePieces();
+    await build(t, e.source, {
+      claims: () => retry.claims("lead"),
       onProgress: async (p) => {
         reports.push(p.embedded);
       },
     });
     // Not a 0 that reads as "starting over" for the next 20 seconds.
     expect(reports[0]).toBeGreaterThan(0);
-  });
-
-  it("the next attempt embeds only the shares a dead attempt left missing", async () => {
-    const t = await bigBuild();
-    const e = fakeEmbedders("granite@aaaaaaaaaaaa");
-    await indexCollection(store, t, { embedders: e.source, slot: { index: 1, count: 2, max: 32 } });
-    const written = e.embedded.length;
-    e.embedded.length = 0;
-    // Task 1 of the retry finds its shard and embeds nothing; task 0 only its own share.
-    await indexCollection(store, t, { embedders: e.source, slot: { index: 1, count: 2, max: 32 } });
-    expect(e.embedded).toEqual([]);
-    await build(t, e.source, { slot: { index: 0, count: 2, max: 32 } });
-    expect(e.embedded.length).toBe(6_010 - written);
-  });
-
-  it("the first task stops waiting at its deadline and names the missing tasks", async () => {
-    const t = await bigBuild();
-    let clock = 0;
-    await expect(
-      indexCollection(store, t, {
-        embedders: fakeEmbedders("granite@aaaaaaaaaaaa").source,
-        slot: { index: 0, count: 3, max: 32 },
-        // Time for its own shards (none starts in the last ten minutes), then a wait.
-        shardDeadline: 20 * 60_000,
-        now: () => clock,
-        sleep: async (ms) => {
-          clock += ms;
-        },
-      }),
-    ).rejects.toThrow(/2 of 4 pieces of the search index, of task\(s\) 1, 2 of 3, did not arrive/);
+    // The retry's lead named the written shard as done.
+    expect(retry.registered[0]?.done).toHaveLength(1);
   });
 
   it("a later Stage with one text more keeps the shards an unfinished index wrote", async () => {
@@ -508,7 +504,7 @@ describe("the index job at scale", () => {
     await expect(
       indexCollection(store, await bigBuild(), {
         embedders: slow,
-        slot: { index: 0, count: 1, max: 1 },
+        claims: () => fakePieces().claims("lead"),
         shardDeadline: 70 * 60_000,
         now: () => clock,
         sleep: async (ms) => {
@@ -533,36 +529,40 @@ describe("the index job at scale", () => {
         await change({ upserts: docs, deletes: [], replaceAll: false, profile: semantic }),
       ],
     });
-    const out = await build(next, e.source, { slot: { index: 0, count: 1, max: 1 } });
+    const out = await build(next, e.source, { claims: () => fakePieces().claims("lead") });
     expect(out.stats).toMatchObject({ passagesEmbedded: 6_011 });
     // At least one of the two written shards was kept: a shard is ~1,500.
     expect(6_011 - e.embedded.length).toBeGreaterThan(1_000);
     expect(6_011 - e.embedded.length).toBeLessThanOrEqual(written);
   });
 
-  it("on one task a build too large for one attempt goes on where the last attempt stopped", async () => {
-    // The quota leaves one task (max 1): every attempt embeds shards until
-    // its time is up, and the next one only the rest, so a narrow width
-    // takes longer but finishes.
+  it("on its lead alone a build too large for one attempt goes on where the last attempt stopped", async () => {
+    // No helper ever joins (a small quota, or self-hosted): every attempt
+    // embeds shards until its time is up, and the next one only the rest,
+    // so a narrow width takes longer but finishes.
     const t = await bigBuild();
     const e = fakeEmbedders("granite@aaaaaaaaaaaa");
     let clock = 0;
-    const timed = async (texts: readonly string[]) => {
-      // Each model call takes a minute of the attempt's clock.
-      clock += 60_000;
-      return texts;
-    };
     const slow: EmbedderSource = async (model) => {
       const inner = await e.source(model);
-      return { ...inner, embed: async (texts, kind) => inner.embed(await timed(texts), kind) };
+      return {
+        ...inner,
+        embed: async (texts, kind) => {
+          // Each model call takes a minute of the attempt's clock.
+          clock += 60_000;
+          return inner.embed(texts, kind);
+        },
+      };
     };
+    // The pieces outlive the attempts (they are the run's), as in the database.
+    const admin = fakePieces();
     const attempt = () => {
       const start = clock;
       return indexCollection(store, t, {
         embedders: slow,
-        slot: { index: 0, count: 1, max: 1 },
+        claims: () => admin.claims("lead"),
         // 6,010 texts are 4 shards of about 1,500 (47 calls of 32): a shard
-        // takes about 47 minutes here, and none starts after minute 60.
+        // takes about 47 minutes here, and none is claimed after minute 60.
         shardDeadline: start + 70 * 60_000,
         now: () => clock,
         sleep: async (ms) => {
@@ -592,18 +592,69 @@ describe("the index job at scale", () => {
   });
 });
 
+/** A helper's first task (#1776). */
+const HELPER: TaskSlot = { index: 0, count: 2, helper: "00000000-0000-4000-8000-000000001776" };
+
+/**
+ * A stand-in admin for one build's shards, claiming as `job_pieces` does
+ * (ops/job_pieces.ts): the first open shard, `wait` while others hold the
+ * rest, `none` when all are done. A helper hears `stop` after
+ * `helperClaims` shards.
+ */
+function fakePieces(opts: { helperClaims?: number } = {}) {
+  const state = new Map<number, "open" | "claimed" | "done">();
+  const registered: { count: number; done: number[]; wantedTasks: number }[] = [];
+  const claimed = new Map<string, number>();
+  return {
+    state,
+    registered,
+    claims(worker: string): ShardClaims {
+      return {
+        register: async (count, done, wantedTasks) => {
+          registered.push({ count, done: [...done], wantedTasks });
+          for (let i = 0; i < count; i++) if (!state.has(i)) state.set(i, "open");
+          // A new lead: the claims of the attempt before are open again.
+          for (const [i, s] of state) if (s === "claimed") state.set(i, "open");
+          for (const i of done) state.set(i, "done");
+        },
+        claim: async (): Promise<PieceClaim> => {
+          const mine = claimed.get(worker) ?? 0;
+          if (worker !== "lead" && opts.helperClaims !== undefined && mine >= opts.helperClaims)
+            return { stop: true };
+          for (const [i, s] of [...state].sort((a, b) => a[0] - b[0])) {
+            if (s !== "open") continue;
+            state.set(i, "claimed");
+            claimed.set(worker, mine + 1);
+            return { piece: i, key: null };
+          }
+          return [...state.values()].some((s) => s === "claimed") ? { wait: true } : { none: true };
+        },
+        done: async (shard) => {
+          state.set(shard, "done");
+        },
+      };
+    },
+  };
+}
+
 describe("what the index job reports", () => {
-  /** A stand-in admin that records every report. */
-  function recordingReporter(slot: { index: number; count: number; max: number }) {
+  /** A stand-in admin that records every report and answers the claims from `admin`. */
+  function recordingReporter(slot: TaskSlot, admin = fakePieces()) {
     const calls: { action: string; payload: unknown }[] = [];
-    const reporter = {
-      kind: "collection_index" as const,
+    const worker = slot.helper === null ? "lead" : `${slot.helper}:${slot.index}`;
+    const claims = admin.claims(worker);
+    const reporter: JobReporter = {
+      kind: "collection_index",
       subjectId: "00000000-0000-4000-8000-000000000001",
       attempt: 1,
       slot,
       stopped: false,
       call: async <T>(action: string, payload: unknown = {}): Promise<T> => {
         calls.push({ action, payload });
+        const p = payload as { count: number; done: number[]; wantedTasks: number; piece: number };
+        if (action === "pieces") await claims.register(p.count, p.done, p.wantedTasks);
+        if (action === "claim") return (await claims.claim()) as T;
+        if (action === "piece-done") await claims.done(p.piece);
         return {} as T;
       },
     };
@@ -636,149 +687,54 @@ describe("what the index job reports", () => {
     });
   }
 
-  it("asks for more tasks and stops, reporting nothing else for the collection", async () => {
-    const { reporter, calls } = recordingReporter({ index: 0, count: 1, max: 32 });
-    await indexTasks(reporter, store, [await big()], {
-      embedders: fakeEmbedders("granite@aaaaaaaaaaaa").source,
-      slot: reporter.slot,
-    });
-    expect(calls.map((c) => c.action)).toEqual(["scale"]);
-    expect(calls[0]?.payload).toMatchObject({ tasks: 2 });
-  });
-
-  it("a task that is not the first reports its progress and never the release", async () => {
-    const { reporter, calls } = recordingReporter({ index: 1, count: 2, max: 32 });
+  it("the lead names its shards, claims them, and reports the release", async () => {
+    const { reporter, calls } = recordingReporter({ index: 0, count: 1, helper: null });
     await indexTasks(reporter, store, [await big()], {
       embedders: fakeEmbedders("granite@aaaaaaaaaaaa").source,
       slot: reporter.slot,
     });
     const actions = calls.map((c) => c.action);
-    expect(actions).not.toContain("done");
-    expect(actions).not.toContain("failed");
-    // Its share is shards 1 and 3 of 4 (about half of 6,010). It reports at
-    // once, so its share counts before its first batch, and with the plan's total.
-    const firstReport = calls[0]?.payload as { toEmbed: number };
-    expect(calls[0]).toMatchObject({
-      action: "progress",
-      payload: { task: 1, tasks: 2, embedded: 0, planned: 6_010 },
+    expect(actions[0]).toBe("pieces");
+    expect(calls[0]?.payload).toMatchObject({ count: 4, done: [], wantedTasks: 2 });
+    expect(actions.filter((a) => a === "piece-done")).toHaveLength(4);
+    expect(actions.at(-1)).toBe("done");
+    expect(actions).not.toContain("leave");
+    expect(calls.find((c) => c.action === "progress")?.payload).toMatchObject({
+      worker: "lead",
+      planned: 6_010,
+      wantedTasks: 2,
     });
-    expect(firstReport.toEmbed).toBeGreaterThan(2_500);
-    expect(firstReport.toEmbed).toBeLessThan(3_500);
-    expect(calls.at(-1)).toMatchObject({
-      action: "progress",
-      payload: { task: 1, embedded: firstReport.toEmbed, toEmbed: firstReport.toEmbed },
-    });
-    // Without a quota limit (no capacity: inside the admin) no limit is reported.
-    expect(calls.some((c) => (c.payload as { limit?: unknown }).limit)).toBe(false);
   });
 
-  it("names the CPU quota when it keeps the build narrower than it would run", async () => {
-    const { reporter, calls } = recordingReporter({ index: 0, count: 1, max: 1 });
-    await indexTasks(
-      { ...reporter, capacity: planRunCapacity("acme-site", "europe-west1", 20) },
-      store,
-      [await big()],
-      { embedders: fakeEmbedders("granite@aaaaaaaaaaaa").source, slot: reporter.slot },
-    );
-    const progress = calls.find((c) => c.action === "progress");
-    expect(progress?.payload).toMatchObject({
-      tasks: 1,
-      limit: {
-        wantedTasks: 2,
-        quotaVcpu: 20,
-        quotaNeededVcpu: 8 + 30 + 4,
-        projectId: "acme-site",
-        region: "europe-west1",
-      },
-    });
-    expect(calls.map((c) => c.action)).toContain("done");
-  });
-
-  it("sizes the run's other collections before widening, so it widens once", async () => {
-    const pagesOf = (prefix: string, n: number) =>
-      Array.from({ length: n }, (_, d) => ({
-        id: `${prefix}${d}`,
-        lang: "de",
-        values: {
-          title: `${prefix}${d}`,
-          sections: Array.from({ length: 10 }, (_, s) => ({
-            anchor: `a${s}`,
-            heading: "",
-            text: `${prefix} Seite ${d} Abschnitt ${s}`,
-          })),
-        },
-      }));
-    const semantic = profile({ weight: 1, minSimilarity: 0.2 });
-    // 6,010 texts want 2 tasks; the next collection's 18,010 want 4.
-    const small = task({
-      maxDocuments: 3_000,
-      changeKeys: [
-        await change({
-          upserts: pagesOf("k", 601),
-          deletes: [],
-          replaceAll: false,
-          profile: semantic,
-        }),
-      ],
-    });
-    const large = task({
-      collection: "pages2",
-      maxDocuments: 3_000,
-      changeKeys: [
-        await change({
-          upserts: pagesOf("g", 1_801),
-          deletes: [],
-          replaceAll: false,
-          profile: semantic,
-        }),
-      ],
-    });
-    const { reporter, calls } = recordingReporter({ index: 0, count: 1, max: 32 });
-    await indexTasks(reporter, store, [small, large], {
+  it("a helper reports its progress, never the shards or the release, and leaves when none is left", async () => {
+    const admin = fakePieces();
+    await admin.claims("lead").register(4, [], 2);
+    const { reporter, calls } = recordingReporter(HELPER, admin);
+    await indexTasks(reporter, store, [await big()], {
       embedders: fakeEmbedders("granite@aaaaaaaaaaaa").source,
       slot: reporter.slot,
     });
-    expect(calls.map((c) => c.action)).toEqual(["scale"]);
-    expect(calls[0]?.payload).toMatchObject({ tasks: 4 });
-    const payload = calls[0]?.payload as { reason?: string } | undefined;
-    expect(payload?.reason).toContain("t1650/pages2");
+    const actions = calls.map((c) => c.action);
+    for (const a of ["pieces", "done", "failed"]) expect(actions).not.toContain(a);
+    expect(actions.filter((a) => a === "piece-done")).toHaveLength(4);
+    expect(actions.at(-1)).toBe("leave");
+    expect(calls.find((c) => c.action === "progress")?.payload).toMatchObject({
+      worker: `${HELPER.helper}:0`,
+      embedded: 0,
+      planned: 6_010,
+    });
   });
 
-  it("in a wide attempt that has to widen, only the first task asks", async () => {
-    const docs = Array.from({ length: 1_201 }, (_, d) => ({
-      id: `w${d}`,
-      lang: "de",
-      values: {
-        title: `w${d}`,
-        sections: Array.from({ length: 10 }, (_, s) => ({
-          anchor: `a${s}`,
-          heading: "",
-          text: `Weite Seite ${d} Abschnitt ${s}`,
-        })),
-      },
-    }));
-    const t = task({
-      maxDocuments: 2_000,
-      changeKeys: [
-        await change({
-          upserts: docs,
-          deletes: [],
-          replaceAll: false,
-          profile: profile({ weight: 1, minSimilarity: 0.2 }),
-        }),
-      ],
-    });
-    const other = recordingReporter({ index: 1, count: 2, max: 32 });
-    await indexTasks(other.reporter, store, [t], {
+  it("a helper the ledger stopped ends without leaving again: the claim gave its task back", async () => {
+    const admin = fakePieces({ helperClaims: 1 });
+    await admin.claims("lead").register(4, [], 2);
+    const { reporter, calls } = recordingReporter(HELPER, admin);
+    await indexTasks(reporter, store, [await big()], {
       embedders: fakeEmbedders("granite@aaaaaaaaaaaa").source,
-      slot: other.reporter.slot,
+      slot: reporter.slot,
     });
-    expect(other.calls).toEqual([]);
-    const first = recordingReporter({ index: 0, count: 2, max: 32 });
-    await indexTasks(first.reporter, store, [t], {
-      embedders: fakeEmbedders("granite@aaaaaaaaaaaa").source,
-      slot: first.reporter.slot,
-    });
-    expect(first.calls.map((c) => c.action)).toEqual(["scale"]);
+    const actions = calls.map((c) => c.action);
+    expect(actions.filter((a) => a === "piece-done")).toHaveLength(1);
+    expect(actions).not.toContain("leave");
   });
 });

@@ -9,6 +9,9 @@ import { lighthouseRunnerFromEnv } from "../lighthouse-runner-select.js";
 
 const JOB = "projects/acme/locations/europe-west1/jobs/caelo-production-audit";
 
+/** A ledger that grants every batch what it asks for (the runner's report, audit-job.ts). */
+const grantAll = async (wanted: number) => ({ tasks: wanted, release: async () => {} });
+
 function fakeGoogle(answer: (url: string, body: unknown) => unknown) {
   const calls: { url: string; method: string; body: unknown }[] = [];
   const deps: GoogleDeps = {
@@ -45,10 +48,13 @@ describe("gcpAuditLauncher", () => {
     const launcher = gcpAuditLauncher(
       JOB,
       { read: async () => null, write: async () => {} },
-      15,
+      grantAll,
       deps,
     );
-    const handle = await launcher.start({ ...batch, orders: [...batch.orders, ...batch.orders] });
+    const handle = await launcher.start(
+      { ...batch, orders: [...batch.orders, ...batch.orders] },
+      15,
+    );
     expect(handle).toBe(`${JOB}/executions/caelo-production-audit-x1`);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe(`https://run.googleapis.com/v2/${JOB}:run`);
@@ -67,39 +73,42 @@ describe("gcpAuditLauncher", () => {
     ]);
   });
 
-  it("runs only as many tasks as the quota allows at once, each with time for its rounds", async () => {
+  it("runs only as many tasks as the ledger granted the batch, each with time for its rounds", async () => {
     const { deps, calls } = fakeGoogle(() => ({
       metadata: { name: `${JOB}/executions/caelo-production-audit-x2` },
     }));
     const launcher = gcpAuditLauncher(
       JOB,
       { read: async () => null, write: async () => {} },
-      6,
+      grantAll,
       deps,
     );
-    expect(launcher.tasksAtOnce).toBe(6);
+    expect(launcher.reserve).toBe(grantAll);
     const fifteen = Array.from(
       { length: 15 },
       () => batch.orders[0] as AuditTaskBatch["orders"][0],
     );
-    await launcher.start({ ...batch, orders: fifteen });
+    await launcher.start({ ...batch, orders: fifteen }, 6);
     const overrides = (calls[0] as { body: { overrides: Record<string, unknown> } }).body.overrides;
     // 15 runs on 6 tasks: the busiest task runs 3 one after another.
     expect(overrides.taskCount).toBe(6);
     expect(overrides.timeout).toBe("600s");
   });
 
-  it("refuses a value that is not a Cloud Run job name, or no width", () => {
+  it("refuses a value that is not a Cloud Run job name, or no width", async () => {
     expect(() =>
       gcpAuditLauncher(
         "caelo-production-audit",
         { read: async () => null, write: async () => {} },
-        15,
+        grantAll,
       ),
     ).toThrow(/not a Cloud Run job name/);
-    expect(() =>
-      gcpAuditLauncher(JOB, { read: async () => null, write: async () => {} }, 0),
-    ).toThrow(/positive whole number/);
+    const launcher = gcpAuditLauncher(
+      JOB,
+      { read: async () => null, write: async () => {} },
+      grantAll,
+    );
+    await expect(launcher.start(batch, 0)).rejects.toThrow(/positive whole number/);
   });
 });
 
@@ -143,7 +152,7 @@ describe("lighthouseRunnerFromEnv", () => {
     expect(result.failure.message).toContain("cms-provision upgrade");
   });
 
-  it("refuses a GCP audit whose order carries no capacity instead of guessing a width", async () => {
+  it("refuses a GCP audit that cannot book its runs instead of guessing a width", async () => {
     const run = lighthouseRunnerFromEnv({
       CAELO_PROVIDER: "gcp",
       CAELO_AUDIT_JOB: JOB,
@@ -152,7 +161,7 @@ describe("lighthouseRunnerFromEnv", () => {
     const result = await run({ pages: [], performanceRuns: 3 } as never);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.failure.message).toContain("carries no CPU capacity");
+    expect(result.failure.message).toContain("cannot book CPU for its Lighthouse runs");
   });
 
   it("names a provider that has no parallel audit job yet", async () => {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { describeError, executeBuild } from "@caelo-cms/admin-core";
+import { type CapacityBooking, describeError, executeBuild } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
 import { loadCloudCapacity } from "#lib/server/cloud-capacity-view.js";
@@ -23,7 +23,12 @@ export const load: PageServerLoad = async ({ locals }) => {
   ]);
   return {
     // #1764 — streamed: the quota read is a call to Google, the rest is not.
-    cloudCapacity: loadCloudCapacity(),
+    // #1776 — with what runs and waits in the capacity ledger now.
+    cloudCapacity: loadCloudCapacity(async () => {
+      const r = await execute(registry, adapter, locals.ctx, "job_capacity.list", {});
+      if (!r.ok) throw new Error(describeError(r.error));
+      return (r.value as { bookings: CapacityBooking[] }).bookings;
+    }),
     ...stageStatusOf(stage),
     // #553 — a production build publishes what is staged, so it shows (and
     // obeys) the staged build's quality gate.

@@ -10,13 +10,19 @@
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
+import { indexTasksAlone, quotaForIndexTasks } from "../job-capacity/budget.js";
+import { INDEX_TASK_VCPU } from "../job-capacity/plan.js";
+import type { CapacityBooking } from "../ops/job_capacity.js";
+import { type PieceClaim, workerName } from "../ops/job_pieces.js";
 import {
+  ActionRefusal,
   type AdminJobDeps,
   REPORTING_JOB_CTX,
   type ReportingJobKindDef,
 } from "../reporting-jobs/kind.js";
 import { MAX_JOB_TASKS } from "../reporting-jobs/protocol.js";
-import { indexLimitSchema } from "./progress.js";
+import { shardScope } from "./index-job.js";
+import type { IndexLimit } from "./progress.js";
 
 /** The admin env var naming the index job's Cloud Run job (Google Cloud). */
 export const COLLECTION_INDEX_JOB_ENV_VAR = "CAELO_COLLECTION_INDEX_JOB";
@@ -37,10 +43,65 @@ async function pendingLeft(deps: AdminJobDeps, runId: string): Promise<number> {
   return s.collections.filter((c) => c.state === "pending").length;
 }
 
+/** How far ahead a helper's booking is kept by its claims (its heartbeats keep it too). */
+const JOB_LEASE_SECONDS = 10 * 60;
+
 const reportTarget = {
   pluginId: z.string().uuid(),
   collection: z.string().regex(/^[a-z][a-z0-9_]{0,39}$/),
 };
+
+/** Only the lead reports a collection's release or failure; a helper only embeds. */
+function leadOnly(helperId: string | null, action: string): void {
+  if (helperId !== null)
+    throw new ActionRefusal(`a helper of the search index does not report "${action}"`);
+}
+
+/** The pieces' key of a work: the run's index job. */
+const work = (runId: string) => ({ kind: "collection_index", subjectId: runId });
+
+/**
+ * How many tasks the run's index holds now, and the quota limit when the
+ * budget keeps it narrower than it would run with nothing else beside it.
+ */
+async function widthOf(
+  deps: AdminJobDeps,
+  runId: string,
+  wantedTasks: number,
+): Promise<{ tasks: number; limit: IndexLimit | null }> {
+  const list = await op<{
+    budget: {
+      source: "quota" | "machine";
+      budgetVcpu: number | null;
+      quotaVcpu: number | null;
+      projectId: string | null;
+      region: string | null;
+    } | null;
+    bookings: CapacityBooking[];
+  }>(deps, "job_capacity.list", {});
+  const own = list.bookings.find((b) => b.kind === "collection_index" && b.subjectId === runId);
+  const tasks = Math.max(1, own?.tasks ?? 1);
+  const b = list.budget;
+  const limited =
+    b !== null &&
+    b.source === "quota" &&
+    b.quotaVcpu !== null &&
+    b.projectId !== null &&
+    b.region !== null &&
+    indexTasksAlone(b.budgetVcpu) < wantedTasks;
+  return {
+    tasks,
+    limit: limited
+      ? {
+          wantedTasks,
+          quotaVcpu: b.quotaVcpu as number,
+          quotaNeededVcpu: quotaForIndexTasks(wantedTasks),
+          projectId: b.projectId as string,
+          region: b.region as string,
+        }
+      : null,
+  };
+}
 
 export const collectionIndexJobKind: ReportingJobKindDef = {
   kind: "collection_index",
@@ -57,6 +118,15 @@ export const collectionIndexJobKind: ReportingJobKindDef = {
   // One index at a time in-process: two would compete for the same store files.
   inProcess: "in-line",
   unstarted: "start",
+  // Publish live waits for it; its tasks claim shards, and helpers join
+  // while CPU is free (#1776).
+  capacity: async () => ({
+    cls: "stage",
+    vcpuPerTask: INDEX_TASK_VCPU,
+    elastic: true,
+    maxTasks: MAX_JOB_TASKS,
+    auditReserve: false,
+  }),
   actions: {
     tasks: {
       input: z.object({}).strict(),
@@ -75,7 +145,8 @@ export const collectionIndexJobKind: ReportingJobKindDef = {
           stats: z.record(z.string(), z.unknown()),
         })
         .strict(),
-      async handle(deps, runId, input) {
+      async handle(deps, runId, input, request) {
+        leadOnly(request.helperId, "done");
         await op(deps, "collections.index_done", { runId, ...input });
         if ((await pendingLeft(deps, runId)) > 0) return { value: {} };
         return {
@@ -89,40 +160,107 @@ export const collectionIndexJobKind: ReportingJobKindDef = {
       input: z
         .object({
           ...reportTarget,
-          task: z
-            .number()
-            .int()
-            .min(0)
-            .max(MAX_JOB_TASKS - 1),
-          tasks: z.number().int().min(1).max(MAX_JOB_TASKS),
+          worker: workerName,
           embedded: z.number().int().min(0),
-          toEmbed: z.number().int().min(0),
           planned: z.number().int().min(0),
-          limit: indexLimitSchema.optional(),
+          wantedTasks: z.number().int().min(1).max(MAX_JOB_TASKS),
         })
         .strict(),
       async handle(deps, runId, input) {
-        await op(deps, "collections.index_progress", { runId, ...input });
+        // The width and the quota's limit are the ledger's, not the job's word.
+        const { tasks, limit } = await widthOf(deps, runId, input.wantedTasks);
+        await op(deps, "collections.index_progress", {
+          runId,
+          pluginId: input.pluginId,
+          collection: input.collection,
+          worker: input.worker,
+          tasks,
+          embedded: input.embedded,
+          toEmbed: input.embedded,
+          planned: input.planned,
+          ...(limit ? { limit } : {}),
+        });
         return { value: {} };
       },
     },
-    // The build has more passages to embed than one task embeds in a few
-    // minutes: the next attempt runs this many tasks (index-shards.ts).
-    scale: {
+    // #1776 — the lead names a build's shards; helpers may join for them.
+    pieces: {
       input: z
         .object({
-          tasks: z.number().int().min(2).max(MAX_JOB_TASKS),
-          reason: z.string().min(1).max(500),
+          ...reportTarget,
+          count: z.number().int().min(1).max(100_000),
+          done: z.array(z.number().int().min(0).max(99_999)).max(100_000),
+          wantedTasks: z.number().int().min(1).max(MAX_JOB_TASKS),
         })
         .strict(),
-      async handle(deps, runId, input) {
+      async handle(deps, runId, input, request) {
+        leadOnly(request.helperId, "pieces");
         await op(deps, "collections.index_reset_progress", { runId });
-        return { value: {}, scaleOut: { tasks: input.tasks, reason: input.reason } };
+        const value = await op(deps, "job_pieces.register", {
+          ...work(runId),
+          scope: shardScope(input),
+          count: input.count,
+          done: input.done,
+          wantedTasks: input.wantedTasks,
+          resetClaims: true,
+        });
+        return { value, readmit: true };
+      },
+    },
+    // A task takes the next shard; a helper may hear `stop` instead.
+    claim: {
+      input: z
+        .object({
+          ...reportTarget,
+          worker: workerName,
+          claimSeconds: z.number().int().min(60).max(3600),
+        })
+        .strict(),
+      async handle(deps, runId, input, request) {
+        const value = await op<PieceClaim>(deps, "job_pieces.claim", {
+          ...work(runId),
+          scope: shardScope(input),
+          worker: input.worker,
+          helperId: request.helperId,
+          claimSeconds: input.claimSeconds,
+          leaseSeconds: JOB_LEASE_SECONDS,
+        });
+        // A helper that stopped freed its CPU for the job that waited for it.
+        return "stop" in value ? { value, readmit: true } : { value };
+      },
+    },
+    "piece-done": {
+      input: z.object({ ...reportTarget, piece: z.number().int().min(0).max(99_999) }).strict(),
+      async handle(deps, runId, input) {
+        const value = await op(deps, "job_pieces.done", {
+          ...work(runId),
+          scope: shardScope(input),
+          piece: input.piece,
+        });
+        return { value };
+      },
+    },
+    // Where a new helper can help: the collections with shards left.
+    "open-scopes": {
+      input: z.object({}).strict(),
+      async handle(deps, runId) {
+        return { value: await op(deps, "job_pieces.open_scopes", work(runId)) };
+      },
+    },
+    // A helper's task found no shard left for it: its CPU comes back.
+    leave: {
+      input: z.object({}).strict(),
+      async handle(deps, _runId, _input, request) {
+        if (request.helperId === null)
+          throw new ActionRefusal("only a helper's task leaves its work");
+        await op(deps, "job_capacity.leave", { bookingId: request.helperId });
+        return { value: {}, readmit: true };
       },
     },
     failed: {
       input: z.object({ ...reportTarget, error: z.string().min(1).max(4000) }).strict(),
-      async handle(deps, runId, input) {
+      async handle(deps, runId, input, request) {
+        leadOnly(request.helperId, "failed");
         await op(deps, "collections.index_failed", { runId, ...input });
         if ((await pendingLeft(deps, runId)) > 0) return { value: {} };
         return {

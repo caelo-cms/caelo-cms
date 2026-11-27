@@ -17,6 +17,12 @@
  * Either way the operation reaches only what the admin answers for it on
  * the plugin's grants; the job's network access gives a sandboxed plugin
  * nothing (Deno denies it), and a shipped plugin is reviewed code.
+ *
+ * A batch in pieces (#1776): the lead runs the plan operation, names its
+ * pieces to the admin, then every task (the lead and the helpers the
+ * capacity ledger adds) claims piece after piece and runs the operation on
+ * each. A helper ends when no piece is left for it, or after its piece when
+ * the ledger needs its CPU; the lead ends the run once every piece is done.
  */
 
 import { readFileSync } from "node:fs";
@@ -28,13 +34,15 @@ import {
   verifyDiskPlugin,
 } from "@caelo-cms/plugin-host";
 import {
+  batchPlanResult,
   type PluginContext,
   type PluginContextTier1,
   type PluginDefinition,
   type PluginManifest,
   pluginManifest,
 } from "@caelo-cms/plugin-sdk";
-import type { JobReporter } from "../reporting-jobs/job-reporter.js";
+import type { PieceClaim } from "../ops/job_pieces.js";
+import { type JobReporter, SINGLE_TASK, workerOf } from "../reporting-jobs/job-reporter.js";
 import type { BatchOrder } from "./job-kind.js";
 
 /** Bytes one report's `call` arguments may take (an upsert is split below it). */
@@ -214,8 +222,64 @@ export async function runOrderedBatch(
   );
 }
 
-/** The job's main: one run of one batch operation. */
+/** How long a task holds a claimed piece beyond the piece's own limit. */
+const PIECE_CLAIM_MARGIN_SECONDS = 300;
+
+/** Between two claims while every open piece is taken. */
+const PIECE_POLL_MS = 10_000;
+
+/**
+ * The pieces of a batch in pieces, as this task's part: the lead plans and
+ * names them, then every task runs piece after piece.
+ *
+ * @returns the pieces the plan named (the lead), or null (a helper, or the
+ *   ledger stopped it).
+ */
+async function runPieces(
+  reporter: JobReporter,
+  order: BatchOrder,
+  plan: string,
+  ctx: PluginContextTier1,
+): Promise<number | null> {
+  const slot = reporter.slot ?? SINGLE_TASK;
+  const helper = slot.helper !== null;
+  let count = 0;
+  if (!helper) {
+    const planned = batchPlanResult.parse(
+      await runOrderedBatch({ ...order, operation: plan }, ctx),
+    );
+    count = planned.pieces.length;
+    if (count === 0) return 0;
+    await reporter.call("pieces", { keys: planned.pieces });
+  }
+  const worker = workerOf(slot);
+  for (;;) {
+    const c = await reporter.call<PieceClaim>("claim", {
+      worker,
+      claimSeconds: order.maxRunSeconds + PIECE_CLAIM_MARGIN_SECONDS,
+    });
+    if ("stop" in c) return null;
+    if ("none" in c) break;
+    if ("wait" in c) {
+      // Others still run theirs: a helper is done, the lead waits and takes
+      // over a piece whose claim runs out.
+      if (helper) break;
+      await new Promise((r) => setTimeout(r, PIECE_POLL_MS));
+      continue;
+    }
+    await runOrderedBatch({ ...order, args: { ...order.args, piece: c.key } }, ctx);
+    await reporter.call("piece-done", { piece: c.piece });
+  }
+  if (helper) {
+    await reporter.call("leave", {});
+    return null;
+  }
+  return count;
+}
+
+/** The job's main: one run of one batch operation (or this task's pieces of it). */
 export async function runPluginBatchJob(reporter: JobReporter): Promise<void> {
+  const helper = (reporter.slot ?? SINGLE_TASK).helper !== null;
   const order = await reporter.call<BatchOrder>("order", {});
   const call: Call = async (method, args) => {
     const r = await reporter.call<{ ok: boolean; value?: unknown; message?: string }>("call", {
@@ -227,7 +291,15 @@ export async function runPluginBatchJob(reporter: JobReporter): Promise<void> {
   };
   let value: unknown;
   try {
-    value = await runOrderedBatch(order, remoteBatchContext(order, call));
+    const ctx = remoteBatchContext(order, call);
+    if (order.pieces) {
+      const count = await runPieces(reporter, order, order.pieces.plan, ctx);
+      if (count === null) return;
+      value = { pieces: count };
+    } else {
+      if (helper) throw new Error("a batch without pieces runs no helper");
+      value = await runOrderedBatch(order, ctx);
+    }
   } catch (e) {
     // The admin ended the attempt (the run was stopped): nothing to report.
     if (reporter.stopped) return;

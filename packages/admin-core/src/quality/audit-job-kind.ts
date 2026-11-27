@@ -17,10 +17,12 @@ import { auditFindingContributors, pluginAuditFindingsCall } from "@caelo-cms/pl
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
+import { AUDIT_RUNNER_VCPU } from "../job-capacity/plan.js";
 import { auditOutcomeSchema } from "../ops/quality/record-result.js";
 import {
   ActionRefusal,
   type AdminJobDeps,
+  immediateCapacity,
   REPORTING_JOB_CTX,
   type ReportingJobKindDef,
 } from "../reporting-jobs/kind.js";
@@ -122,7 +124,38 @@ export const qualityAuditJobKind: ReportingJobKindDef = {
   // One audit at a time in-process: two would share the CPU their Lighthouse runs measure.
   inProcess: "in-line",
   unstarted: "start",
+  // The editor waits for the check: its runner never waits for CPU, and its
+  // Lighthouse share stays free from its start to its end (#1776).
+  capacity: async () => immediateCapacity(AUDIT_RUNNER_VCPU, true),
   actions: {
+    // #1776 — a Lighthouse batch books its width out of the check's share.
+    "lighthouse-reserve": {
+      input: z
+        .object({
+          wanted: z.number().int().min(1).max(64),
+          leaseSeconds: z.number().int().min(60).max(7200),
+        })
+        .strict(),
+      async handle(deps, subjectId, input, request) {
+        const value = await op<{ bookingId: string; tasks: number }>(
+          deps,
+          "job_capacity.reserve_lighthouse",
+          { subjectId, attempt: request.attempt, ...input },
+        );
+        return { value };
+      },
+    },
+    "lighthouse-release": {
+      input: z.object({ bookingId: z.string().uuid() }).strict(),
+      async handle(deps, subjectId, input) {
+        await op(deps, "job_capacity.release", {
+          bookingId: input.bookingId,
+          kind: "quality_audit",
+          subjectId,
+        });
+        return { value: {} };
+      },
+    },
     start: {
       input: z.object({}).strict(),
       async handle(deps, subjectId) {

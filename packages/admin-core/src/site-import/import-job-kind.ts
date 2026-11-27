@@ -29,6 +29,7 @@ import { renderBudget } from "../ops/imports-crawl.js";
 import {
   ActionRefusal,
   type AdminJobDeps,
+  immediateCapacity,
   REPORTING_JOB_CTX,
   type ReportingJobKindDef,
 } from "../reporting-jobs/kind.js";
@@ -178,6 +179,8 @@ export const siteImportJobKind: ReportingJobKindDef = {
   // One crawl at a time in-process: crawls take turns at the one shared browser.
   inProcess: "in-line",
   unstarted: "start",
+  // An Owner started the crawl and watches it: it never waits for CPU (#1776).
+  capacity: async () => immediateCapacity(1),
   actions: {
     start: {
       input: z.object({}).strict(),

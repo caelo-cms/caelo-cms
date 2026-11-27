@@ -3,9 +3,9 @@
 /**
  * Issue #875 — parallel audit tasks on GCP installs (`gcp`, `gcp-firebase`):
  * ONE Cloud Run job execution per batch, with `taskCount` = as many runs as
- * the project's CPU quota lets run at once (`RunCapacity.lighthouseTasks`,
- * reporting-jobs/run-capacity.ts) or fewer; every task runs the batch's
- * orders of its `CLOUD_RUN_TASK_INDEX`, one after another (audit-task.ts).
+ * the capacity ledger granted the batch (#1776, job-capacity/plan.ts
+ * `lighthouseGrant`); every task runs the batch's orders of its
+ * `CLOUD_RUN_TASK_INDEX`, one after another (audit-task.ts).
  * The job definition sets no `parallelism`: with one, Cloud Run refuses to
  * create the job on a project whose quota is smaller than its width.
  *
@@ -33,8 +33,12 @@ import { AUDIT_TASK_ENV_VAR } from "./audit-task-protocol.js";
 import {
   type AuditBatchProgress,
   type AuditTaskLauncher,
+  type LighthouseSlot,
   parallelAuditTimeoutMs,
 } from "./parallel-runner.js";
+
+/** Books a batch's width (the runner's report to the admin, audit-job.ts). */
+export type LighthouseReserve = (wanted: number, leaseSeconds: number) => Promise<LighthouseSlot>;
 
 /** The admin env var naming the audit job (`projects/<p>/locations/<r>/jobs/<j>`). */
 export const AUDIT_JOB_ENV_VAR = "CAELO_AUDIT_JOB";
@@ -64,22 +68,24 @@ export function executionProgress(e: Execution): AuditBatchProgress {
  *
  * @param job - the job's full resource name.
  * @param results - the audit results store the tasks write into.
- * @param tasksAtOnce - Lighthouse runs at once (`RunCapacity.lighthouseTasks`).
+ * @param reserve - books each batch's width in the capacity ledger.
  */
 export function gcpAuditLauncher(
   job: string,
   results: AuditResultStore,
-  tasksAtOnce: number,
+  reserve: LighthouseReserve,
   deps: GoogleDeps = defaultGoogleDeps(),
 ): AuditTaskLauncher {
   if (!JOB_NAME.test(job))
     throw new Error(`${AUDIT_JOB_ENV_VAR} is not a Cloud Run job name: ${job}`);
-  if (!Number.isInteger(tasksAtOnce) || tasksAtOnce < 1)
-    throw new Error(`Lighthouse runs at once must be a positive whole number, got ${tasksAtOnce}`);
   return {
     label: `Cloud Run job ${job.split("/").pop()}`,
-    tasksAtOnce,
-    async start(batch) {
+    reserve,
+    async start(batch, tasksAtOnce) {
+      if (!Number.isInteger(tasksAtOnce) || tasksAtOnce < 1)
+        throw new Error(
+          `Lighthouse runs at once must be a positive whole number, got ${tasksAtOnce}`,
+        );
       const taskCount = Math.min(batch.orders.length, tasksAtOnce);
       const rounds = Math.ceil(batch.orders.length / taskCount);
       const op = (await googleCall(deps, `https://run.googleapis.com/v2/${job}:run`, "POST", {
@@ -108,12 +114,12 @@ export function gcpAuditLauncher(
 /**
  * The GCP launcher from the audit runner's env, or null on other providers.
  *
- * @param tasksAtOnce - from the runner's order (`JobOrder.capacity`); a
- *   GCP order without it is refused rather than guessed.
+ * @param reserve - books each batch's width; a runner without it (not a
+ *   reporting job) is refused rather than guessed.
  */
 export function gcpAuditLauncherFromEnv(
   env: NodeJS.ProcessEnv,
-  tasksAtOnce: number | undefined,
+  reserve: LighthouseReserve | undefined,
 ): AuditTaskLauncher | null {
   if (env.CAELO_PROVIDER !== "gcp" && env.CAELO_PROVIDER !== "gcp-firebase") return null;
   const job = env[AUDIT_JOB_ENV_VAR]?.trim();
@@ -123,10 +129,10 @@ export function gcpAuditLauncherFromEnv(
       `${AUDIT_JOB_ENV_VAR} / CAELO_AUDIT_RESULTS_BUCKET are not set on the admin, so it cannot run the parallel audit — run \`cms-provision upgrade\``,
     );
   }
-  if (tasksAtOnce === undefined) {
+  if (reserve === undefined) {
     throw new Error(
-      "the audit runner's order carries no CPU capacity, so it cannot tell how many Lighthouse runs the project's quota allows at once — the admin that started it is older than its job; run `cms-provision upgrade`",
+      "this audit runner cannot book CPU for its Lighthouse runs: on Google Cloud the quality check runs as the audit-run reporting job, which books each batch with the admin",
     );
   }
-  return gcpAuditLauncher(job, gcsAuditResultStore(bucket), tasksAtOnce);
+  return gcpAuditLauncher(job, gcsAuditResultStore(bucket), reserve);
 }

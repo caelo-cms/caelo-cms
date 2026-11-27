@@ -50,6 +50,7 @@ import {
 } from "./checks/registry.js";
 import type { RenderSources } from "./checks/render.js";
 import type { StructureSources } from "./checks/structure.js";
+import type { LighthouseReserve } from "./gcp-audit-launcher.js";
 import { lighthouseRunnerFromEnv } from "./lighthouse-runner-select.js";
 
 /** What a test hands the audit instead of its defaults. */
@@ -141,6 +142,25 @@ export function claimedRenderSources(run: ClaimedAuditRun): RenderSources {
   };
 }
 
+/**
+ * #1776 — each Lighthouse batch books its width with the admin, which
+ * weighs it against every other job, and gives it back at its end.
+ */
+export function reportedLighthouseReserve(reporter: JobReporter): LighthouseReserve {
+  return async (wanted, leaseSeconds) => {
+    const { bookingId, tasks } = await reporter.call<{ bookingId: string; tasks: number }>(
+      "lighthouse-reserve",
+      { wanted, leaseSeconds },
+    );
+    return {
+      tasks,
+      release: async () => {
+        await reporter.call("lighthouse-release", { bookingId });
+      },
+    };
+  };
+}
+
 /** Core's checks over reported sources, plus one check per contributing plugin. */
 function auditChecks(
   reporter: JobReporter,
@@ -149,7 +169,7 @@ function auditChecks(
 ): CheckRegistry {
   const sources = reportedCheckSources(reporter);
   const core = createCoreCheckRegistry({
-    lighthouse: lighthouseRunnerFromEnv(process.env, reporter.capacity),
+    lighthouse: lighthouseRunnerFromEnv(process.env, reportedLighthouseReserve(reporter)),
     structure: sources.structure,
     links: sources.links,
     references: sources.references,

@@ -16,11 +16,13 @@
  *                      tracking issue (#749, #750), never run in the admin
  *                      instead.
  *
- * A start mints a fresh token, records the attempt with the token's hash
- * and a first lease (`reporting_jobs.begin_attempt`), then launches. A
- * launch that fails releases the lease at once, so the next tick's backstop
- * tries again; the backstop gives the work up after the kind's last
- * attempt (backstop.ts).
+ * A start books the work in the capacity ledger first (#1776,
+ * job-capacity/): a job that does not fit waits there, and the admission
+ * starts it once CPU is free. A start that may go ahead mints a fresh
+ * token, records the attempt with the token's hash and a first lease
+ * (`reporting_jobs.begin_attempt`), then launches. A launch that fails
+ * releases the lease at once, so the next tick's backstop tries again; the
+ * backstop gives the work up after the kind's last attempt (backstop.ts).
  */
 
 import { hasGrantedCapability, isPluginDisabled, loadedPlugins } from "@caelo-cms/plugin-host";
@@ -28,6 +30,8 @@ import type { PluginCapability } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import { CAELO_VERSION } from "@caelo-cms/shared";
 import { describeError } from "../ai/tools/_describe-error.js";
+import { type CapacityReading, quotaBudget } from "../job-capacity/budget.js";
+import { admitAndLaunch, bookLead } from "../job-capacity/ledger.js";
 import {
   defaultGoogleDeps,
   type GoogleDeps,
@@ -44,37 +48,26 @@ import {
   type ReportingJobKind,
   reportOrigin,
 } from "./protocol.js";
-import { type RunCapacity, readRunCapacity } from "./run-capacity.js";
+import { MAX_JOB_TASKS, readRunQuota } from "./run-capacity.js";
 
-/**
- * The kinds whose work the CPU quota sizes: the quality check's Lighthouse
- * runs and a large search index's tasks. Every other kind runs one task and
- * starts without the read, so a Service Usage hiccup never fails a build,
- * an import or a plugin batch.
- */
-const CAPACITY_KINDS: ReadonlySet<ReportingJobKind> = new Set([
-  "quality_audit",
-  "collection_index",
-]);
-
-/** Whether a start of `kind` reads the CPU quota ({@link CAPACITY_KINDS}). */
-export function kindUsesCapacity(kind: ReportingJobKind): boolean {
-  return CAPACITY_KINDS.has(kind);
-}
-
-/** Starts one attempt's execution. */
+/** Starts one attempt's execution, or a helper's. */
 export interface JobLauncher {
   /** Names where it runs in messages (`Cloud Run job caelo-production-audit-run`). */
   readonly label: string;
-  /** The most tasks it runs one attempt with (`JobOrder.tasks`); absent: one. */
+  /**
+   * The most tasks one piece of work runs here, its lead and its helpers
+   * together (#1776); absent: one, so elastic work runs on its lead alone
+   * (inside the admin).
+   */
   readonly maxTasks?: number;
   /**
-   * What the project's CPU quota allows now (run-capacity.ts), read at
-   * every start so a raised quota counts from the next one; its
-   * `indexTasks` replaces `maxTasks`. Absent where there is no such quota.
+   * The vCPU the jobs may use now (job-capacity/budget.ts): the project's
+   * Cloud Run quota minus the services, or the machine's cores. Read at
+   * every start of a job that may wait, so a raised quota counts from the
+   * next one.
    */
-  capacity?(): Promise<RunCapacity>;
-  /** Start the attempt; resolves with where it runs (an execution name). */
+  capacity(): Promise<CapacityReading>;
+  /** Start the execution the order describes; resolves with where it runs. */
   launch(order: JobOrder): Promise<string>;
 }
 
@@ -96,7 +89,8 @@ export function gcpReportingJobLauncher(
   const origin = reportOrigin(adminUrl);
   return {
     label: `Cloud Run job ${job.split("/").pop()}`,
-    capacity: () => readRunCapacity(job, deps),
+    maxTasks: MAX_JOB_TASKS,
+    capacity: async () => quotaBudget(await readRunQuota(job, deps)),
     async launch(order) {
       const op = (await googleCall(deps, `https://run.googleapis.com/v2/${job}:run`, "POST", {
         overrides: {
@@ -139,22 +133,33 @@ export type LauncherChoice =
   /** Nothing in this process runs them (in-process not registered). */
   | { readonly kind: "none" };
 
-/** The launcher of `def`'s jobs for an admin with this environment. */
+/**
+ * The launcher of `def`'s jobs for an admin with this environment.
+ *
+ * @param size - the machine, for a kind with several (a plugin batch's
+ *   declared size, kind.ts `KindCapacity.size`); absent: the kind's job.
+ */
 export function launcherFor(
   def: ReportingJobKindDef,
   env: Record<string, string | undefined> = process.env,
+  size?: "S" | "M" | "L",
 ): LauncherChoice {
   const provider = env.CAELO_PROVIDER ?? "";
   if (provider === "" || provider === "self-hosted") {
     return inProcess ? { kind: "launcher", launcher: inProcess(def.kind) } : { kind: "none" };
   }
   if (provider === "gcp" || provider === "gcp-firebase") {
-    const job = env[def.gcp.jobEnvVar]?.trim();
+    const sized = size && size !== "S" ? def.gcp.sizedJobEnvVars?.[size] : undefined;
+    if (size && size !== "S" && !sized) {
+      return { kind: "unavailable", message: `the ${def.label} has no ${size} machine` };
+    }
+    const jobEnvVar = sized ?? def.gcp.jobEnvVar;
+    const job = env[jobEnvVar]?.trim();
     const adminUrl = env.CAELO_ADMIN_URL?.trim();
     if (!job || !adminUrl) {
       return {
         kind: "unavailable",
-        message: `the ${def.label} has no job on this install (${def.gcp.jobEnvVar} / CAELO_ADMIN_URL missing on the admin) — the operator runs \`cms-provision upgrade\`, then retries`,
+        message: `the ${def.label} has no job on this install (${jobEnvVar} / CAELO_ADMIN_URL missing on the admin) — the operator runs \`cms-provision upgrade\`, then retries`,
       };
     }
     try {
@@ -175,8 +180,13 @@ export function launcherFor(
 /** How a start went. */
 export type StartOutcome =
   | { readonly outcome: "started"; readonly attempt: number; readonly execution: string }
-  /** The launch failed; the lease is released and the backstop retries. */
-  | { readonly outcome: "launch-failed"; readonly attempt: number; readonly message: string }
+  /**
+   * The launch failed, or the CPU budget could not be read before it; the
+   * lease is released and the backstop retries.
+   */
+  | { readonly outcome: "launch-failed"; readonly attempt?: number; readonly message: string }
+  /** It waits in the capacity ledger; the admission starts it once CPU is free. */
+  | { readonly outcome: "waiting"; readonly message: string }
   /** Another attempt holds the lease, or the work is over: nothing to start. */
   | { readonly outcome: "running" | "finished" }
   /** The last attempt died, or the install cannot run it: recorded as failed. */
@@ -261,18 +271,40 @@ export async function startReportingJob(
     await giveUpReportingJob(deps, def, subjectId, message);
     return { outcome: "given-up", message };
   }
+  const capacity = await def.capacity(deps, subjectId);
   const choice: LauncherChoice = opts.launcher
     ? { kind: "launcher", launcher: opts.launcher }
-    : launcherFor(def, opts.env);
+    : launcherFor(def, opts.env, capacity.size);
   if (choice.kind === "none") return { outcome: "no-launcher" };
   if (choice.kind === "unavailable") {
     await giveUpReportingJob(deps, def, subjectId, choice.message);
     return { outcome: "given-up", message: choice.message };
   }
+  const { launcher } = choice;
+  // #1776 — book first: a job that does not fit waits, and the admission
+  // starts it once CPU is free. A budget Google does not answer for is a
+  // failed start the backstop retries, never a guessed width.
+  try {
+    const booked = await withinLaunchTimeout(
+      bookLead(
+        deps,
+        kind,
+        subjectId,
+        { ...capacity, maxTasks: Math.min(capacity.maxTasks, launcher.maxTasks ?? 1) },
+        () => launcher.capacity(),
+      ),
+    );
+    if (booked.state === "waiting") return { outcome: "waiting", message: booked.reason };
+  } catch (e) {
+    return {
+      outcome: "launch-failed",
+      message: `could not book CPU on ${launcher.label}: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
   const timing = JOB_TIMING[kind];
   const token = mintJobToken();
   const begun = await op<
-    | { started: true; attempt: number; tasks: number }
+    | { started: true; attempt: number }
     | {
         started: false;
         reason: "running" | "finished" | "exhausted";
@@ -296,28 +328,15 @@ export async function startReportingJob(
     await giveUpReportingJob(deps, def, subjectId, message);
     return { outcome: "given-up", message };
   }
-  const { launcher } = choice;
+  const order: JobOrder = {
+    version: CAELO_VERSION,
+    kind,
+    subjectId,
+    attempt: begun.attempt,
+    token,
+  };
   try {
-    // Inside the try: a quota Google does not answer for is a failed
-    // launch the backstop retries, not a lost start.
-    const execution = await withinLaunchTimeout(
-      (async () => {
-        const capacity = kindUsesCapacity(kind) ? await launcher.capacity?.() : undefined;
-        const maxTasks = capacity ? capacity.indexTasks : (launcher.maxTasks ?? 1);
-        const tasks = Math.min(begun.tasks, maxTasks);
-        const order: JobOrder = {
-          version: CAELO_VERSION,
-          kind,
-          subjectId,
-          attempt: begun.attempt,
-          token,
-          ...(tasks > 1 ? { tasks } : {}),
-          ...(maxTasks > 1 ? { maxTasks } : {}),
-          ...(capacity ? { capacity } : {}),
-        };
-        return launcher.launch(order);
-      })(),
-    );
+    const execution = await withinLaunchTimeout(launcher.launch(order));
     await op(deps, "reporting_jobs.record_launch", {
       kind,
       subjectId,
@@ -335,4 +354,33 @@ export async function startReportingJob(
     });
     return { outcome: "launch-failed", attempt: begun.attempt, message };
   }
+}
+
+/**
+ * #1776 — run the capacity ledger's admission once: start the jobs that
+ * waited and now fit, and launch the helpers elastic work was granted.
+ * Runs inside the request that freed or wanted CPU, and on every tick.
+ *
+ * @returns a one-line summary, or undefined when nothing changed.
+ */
+export async function admitWaitingJobs(
+  deps: AdminJobDeps,
+  opts: { readonly launcher?: JobLauncher; readonly env?: Record<string, string | undefined> } = {},
+): Promise<string | undefined> {
+  return admitAndLaunch(
+    deps,
+    (kind, subjectId) => startReportingJob(deps, kind, subjectId, opts),
+    async (kind, order) => {
+      const def = reportingJobKind(kind);
+      let launcher = opts.launcher;
+      if (!launcher) {
+        const capacity = await def.capacity(deps, order.subjectId);
+        const choice = launcherFor(def, opts.env, capacity.size);
+        if (choice.kind !== "launcher")
+          throw new Error(`no launcher runs ${def.label} helpers here`);
+        launcher = choice.launcher;
+      }
+      return withinLaunchTimeout(launcher.launch(order));
+    },
+  );
 }

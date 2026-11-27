@@ -127,7 +127,9 @@ describe("get_stage_status", () => {
       ],
     });
     const text = formatStageStatus({ runs: [indexing(true)] }, { deployRunId: runId });
-    expect(text).toContain("20 vCPU in europe-west1, allows no more; raised to 102 vCPU");
+    expect(text).toContain(
+      "20 vCPU in europe-west1, keeps it below the 32 tasks it would run; raised to 102 vCPU",
+    );
     expect(text).toContain("the project's Cloud Run CPU quota keeps it narrow");
     expect(text).toContain("only the Owner of the Google Cloud project can ask Google for it");
     expect(formatStageStatus({ runs: [indexing(false)] }, { deployRunId: runId })).not.toContain(

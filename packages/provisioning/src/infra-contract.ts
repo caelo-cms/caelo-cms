@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 31;
+export const INFRA_CONTRACT_VERSION = 32;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -286,6 +286,14 @@ export const INFRA_CONTRACT_VERSION = 31;
 //       audit job loses its fixed parallelism of 15 (`--parallelism=0`) and
 //       the collection index job's task timeout grows to 6 hours. IAM and
 //       job writes the in-cloud upgrader may not make.
+//  32 — #1776: the job capacity ledger. A plugin's batch names the machine
+//       one task needs (plugin-sdk BATCH_SIZES), so the plugin batch job gets
+//       two siblings, `caelo-<env>-plugin-batch-m` (2 vCPU, 4 GiB) and
+//       `-l` (4 vCPU, 16 GiB): the same account, env and grants, the
+//       admin's start-only rights on each, and their names in the admin's
+//       env (CAELO_PLUGIN_BATCH_JOB_M / _L). Job creation the in-cloud
+//       upgrader may not do; without them a batch of size M or L is given
+//       up with the step.
 //
 // #1029 is deliberately NOT a bump. The upgrader job's stage 1 moves the job
 // onto the target's ops image with rights it has held on itself since
@@ -331,6 +339,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   29: "plugin collections such as a site search: two private storage buckets for the staging and the live index, a job of its own that builds a Stage's index, each gateway's read access to its own index only and more memory for it, search answers cached at the edge, and visitors' search queries kept out of the logs (#1644)",
   30: "the visitor AI's own keys: one secret for the live site and one for staging, which the admin can store a key in but never read, each mounted only in its own gateway (#1654)",
   31: "the admin's read of the project's Cloud Run CPU quota, which sizes the quality check and search index jobs, and those jobs without a fixed width (#1764)",
+  32: "two larger machines for plugin batch jobs (2 vCPU and 4 vCPU), which a plugin's batch may name, under the same account and grants as the plugin batch job (#1776)",
 };
 
 /**

@@ -54,6 +54,15 @@ export async function drainAuditQueue(
     const started = await startReportingJob(deps, "quality_audit", auditRunId, {
       launcher: {
         label: "the test",
+        // A test has no quota: nothing waits for CPU.
+        capacity: async () => ({
+          source: "machine",
+          budgetVcpu: null,
+          quotaVcpu: null,
+          reserveVcpu: 0,
+          projectId: null,
+          region: null,
+        }),
         launch: async (order) => {
           orders.push(order);
           return "in-process:test";

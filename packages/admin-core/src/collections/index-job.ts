@@ -58,21 +58,23 @@ import {
 } from "@caelo-cms/plugin-host";
 import type { SearchProfile } from "@caelo-cms/plugin-sdk";
 import { type EmbeddingModel, embeddingModel } from "@caelo-cms/shared";
+import type { PieceClaim } from "../ops/job_pieces.js";
 import {
   type JobReporter,
   JobStoppedError,
   SINGLE_TASK,
   type TaskSlot,
+  workerOf,
 } from "../reporting-jobs/job-reporter.js";
 import { JOB_TIMING, MAX_JOB_TASKS } from "../reporting-jobs/protocol.js";
-import { quotaForIndexTasks } from "../reporting-jobs/run-capacity.js";
 import {
   collectShards,
-  embedShards,
+  embedShard,
   missingTexts,
   planShards,
   SHARD_PASSAGES,
   ShardsMissingError,
+  writtenShards,
 } from "./index-shards.js";
 import type { IndexTask } from "./ops.js";
 import { PROGRESS_EVERY_MS } from "./progress.js";
@@ -252,82 +254,93 @@ function vectorModelOf(
 }
 
 /**
- * Passages one task embeds before the build asks for more tasks. A 2-vCPU
- * Cloud Run task embedded searchviu.com's passages (648 characters on
- * average) at 6 to 19 a second (2026-11-26: the host decides), so a share
- * takes 5 to 17 minutes.
+ * Passages one task embeds before the build wants another. A 2-vCPU Cloud
+ * Run task embedded searchviu.com's passages (648 characters on average) at
+ * 6 to 19 a second (2026-11-26: the host decides), so a share takes 5 to 17
+ * minutes; a helper that joins for less would spend more on planning the
+ * build than it saves.
  */
 export const PASSAGES_PER_TASK = 6_000;
 
-/** What one task of an attempt did with one collection. */
+/** How long a claimed shard is a task's: a shard takes up to about six minutes. */
+const SHARD_CLAIM_SECONDS = 15 * 60;
+
+/** What one task did with one collection. */
 export type CollectionOutcome =
   | {
       readonly kind: "built";
       readonly applied: AppliedRelease;
       readonly stats: Record<string, unknown>;
     }
-  /** A task other than the first embedded its share; the first builds. */
-  | { readonly kind: "shared" }
-  /** Its embedding fits this attempt's tasks (`planOnly`). */
-  | { readonly kind: "fits" }
-  /** Too much to embed for one task: the next attempt should run this many. */
-  | { readonly kind: "scale"; readonly tasks: number; readonly reason: string };
+  /** A helper embedded shards; the lead builds. */
+  | { readonly kind: "shared" };
 
-/** How {@link indexCollection} runs: alone or as one task of a wide attempt. */
+/** A helper heard `stop`: a job of a higher class needs its CPU (#1776). */
+export class HelperStoppedError extends Error {
+  constructor() {
+    super(
+      "the capacity ledger stopped this helper after its shard: a job of a higher class needs the CPU",
+    );
+    this.name = "HelperStoppedError";
+  }
+}
+
+/** How a task takes shards of one collection: the admin's claims (#1776, ops/job_pieces.ts). */
+export interface ShardClaims {
+  /** The lead names the build's shards, which of them exist, and how wide it would run. */
+  register(count: number, done: readonly number[], wantedTasks: number): Promise<void>;
+  claim(): Promise<PieceClaim>;
+  done(shard: number): Promise<void>;
+}
+
+/** How {@link indexCollection} runs: as the attempt's lead or as a helper's task. */
 export interface IndexOptions {
   readonly embedders?: EmbedderSource;
   readonly slot?: TaskSlot;
   /**
    * This task's embedding progress: once when it starts, at most every
-   * {@link PROGRESS_EVERY_MS} after, and once at the end. `planned` is what
-   * the whole attempt embeds for the collection, so tasks that have not
-   * reported yet still count.
+   * {@link PROGRESS_EVERY_MS} after, and once at the end. `embedded` is
+   * this task's (the lead's includes the shards earlier attempts wrote);
+   * `planned` is what the whole build embeds.
    */
   readonly onProgress?: (p: {
     readonly embedded: number;
-    readonly toEmbed: number;
     readonly planned: number;
-    /** The tasks the build would run on without the CPU quota's limit. */
+    /** The tasks the build would run on, the lead included. */
     readonly wantedTasks: number;
   }) => Promise<void>;
+  /** The claims of a collection's shards; required for a build in shards. */
+  readonly claims?: (task: IndexTask) => ShardClaims;
   /**
-   * The end of this attempt's time for shards (epoch ms): no task starts a
-   * shard in its last ten minutes, and the first stops waiting for the
-   * others at it.
+   * The end of this task's time for shards (epoch ms): no shard is claimed
+   * in its last ten minutes.
    */
   readonly shardDeadline?: number;
-  /** Between looks for the other tasks' vectors (tests shorten it). */
+  /** Between two claims while every open shard is taken (tests shorten it). */
   readonly pollMs?: number;
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
-  /**
-   * Only decide whether the collection fits this attempt's tasks, building
-   * nothing: once one collection widens the attempt, the rest of the run
-   * are sized too, so the run widens once.
-   */
-  readonly planOnly?: boolean;
 }
 
 /** Calls `report` for the first count, then at most every {@link PROGRESS_EVERY_MS}, and always for the last. */
 function throttled(
   report: IndexOptions["onProgress"],
-  toEmbed: number,
   planned: number,
   wantedTasks: number,
   now: () => number,
-): (embedded: number) => Promise<void> {
-  let last = Number.NEGATIVE_INFINITY;
-  return async (embedded) => {
+): (embedded: number, last?: boolean) => Promise<void> {
+  let at = Number.NEGATIVE_INFINITY;
+  return async (embedded, last = false) => {
     if (!report) return;
-    if (embedded < toEmbed && now() - last < PROGRESS_EVERY_MS) return;
-    last = now();
-    await report({ embedded, toEmbed, planned, wantedTasks });
+    if (!last && now() - at < PROGRESS_EVERY_MS) return;
+    at = now();
+    await report({ embedded, planned, wantedTasks });
   };
 }
 
 /**
- * Builds one collection's next release in `store`, or, as a task of a wide
- * attempt, embeds this task's share of it (index-shards.ts).
+ * Builds one collection's next release in `store` (the lead), or embeds
+ * shards of it (a helper's task, index-shards.ts).
  */
 export async function indexCollection(
   store: CollectionStore,
@@ -335,7 +348,9 @@ export async function indexCollection(
   opts: IndexOptions = {},
 ): Promise<CollectionOutcome> {
   const slot = opts.slot ?? SINGLE_TASK;
+  const helper = slot.helper !== null;
   const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const embedders = opts.embedders ?? nativeEmbedders().source;
   const scoped = scopedStore(store, `${task.slug}/${task.collection}`);
   const cache = new FileCache({ read: (f) => scoped.read(f) }, 512 * 1024 * 1024);
@@ -351,8 +366,8 @@ export async function indexCollection(
   const schema: CollectionSchema = { fields: task.fields as CollectionSchema["fields"] };
   const model = vectorModelOf(task, schema, profile);
   const field = vectorFieldOf(schema);
-  // A wide attempt's other tasks only embed; a collection without vectors is the first task's.
-  if (slot.index > 0 && (!model || !field)) return { kind: "shared" };
+  // A helper only embeds; a collection without vectors is the lead's alone.
+  if (helper && (!model || !field)) return { kind: "shared" };
   const embedder = model ? await embedders(model) : null;
   const rebuild =
     previous === null ||
@@ -400,52 +415,69 @@ export async function indexCollection(
     embedder && field ? await missingTexts(docs(), field, pool) : new Map<string, string>();
   const toEmbed = missing.size;
 
-  // More than one shard: embedded in shard files, which survive a retry.
+  // More than one shard: embedded in shard files, which survive a retry,
+  // by as many tasks as the capacity ledger grants.
   const plan =
     embedder && toEmbed > SHARD_PASSAGES ? planShards(embedder.fingerprint, missing) : null;
-  // The width the build would use, and what the quota leaves of it.
   const wanted = Math.min(
     MAX_JOB_TASKS,
     Math.ceil(toEmbed / PASSAGES_PER_TASK),
     plan?.names.length ?? 1,
   );
-  const needed = Math.min(slot.max, wanted);
-  const reason = `${toEmbed.toLocaleString("en-US")} passages of ${task.slug}/${task.collection} to embed`;
-  if (opts.planOnly) {
-    return embedder && needed > slot.count
-      ? { kind: "scale", tasks: needed, reason }
-      : { kind: "fits" };
-  }
-  // Too much for this attempt's tasks, alone or already wide (a later
-  // collection of the run can need more than the one that widened it).
-  if (embedder && needed > slot.count) return { kind: "scale", tasks: needed, reason };
+  if (helper && !plan) return { kind: "shared" };
   if (plan && embedder) {
-    const own = plan.shardsOf(slot.index, slot.count);
-    const ownTexts = own.reduce((n, i) => n + plan.texts(i).length, 0);
-    const progress = throttled(opts.onProgress, ownTexts, toEmbed, wanted, now);
+    if (!opts.claims) throw new Error("a build in shards needs the admin's claims");
+    const claims = opts.claims(task);
+    let base = 0;
+    if (!helper) {
+      const done = await writtenShards(scoped, plan);
+      base = done.reduce((n, i) => n + plan.texts(i).length, 0);
+      await claims.register(plan.names.length, done, wanted);
+    }
+    const progress = throttled(opts.onProgress, toEmbed, wanted, now);
+    await progress(base);
+    // A shard takes a few minutes: none is claimed in the task's last ten.
     const deadline = opts.shardDeadline ?? now() + 50 * 60_000;
-    await embedShards(scoped, plan, own, embedder, {
-      onEmbedded: progress,
-      // A shard takes a few minutes: none starts in the attempt's last ten.
-      timeUp: () => now() >= deadline - 10 * 60_000,
-    });
-    if (slot.index > 0) return { kind: "shared" };
-    await collectShards(scoped, plan, embedder.model.dims, pool, slot.count, {
-      deadline,
-      pollMs: opts.pollMs ?? 10_000,
-      now,
-      sleep: opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
-    });
+    let embedded = base;
+    for (;;) {
+      if (now() >= deadline - 10 * 60_000) {
+        await progress(embedded, true);
+        if (helper) return { kind: "shared" };
+        const written = await writtenShards(scoped, plan);
+        throw new ShardsMissingError(plan.names.length - written.length, plan.names.length);
+      }
+      const c = await claims.claim();
+      if ("stop" in c) {
+        await progress(embedded, true);
+        throw new HelperStoppedError();
+      }
+      if ("none" in c) break;
+      if ("wait" in c) {
+        // Others still embed their shards. A helper moves on; the lead
+        // waits, and takes over a shard whose claim runs out.
+        if (helper) break;
+        await sleep(opts.pollMs ?? 10_000);
+        continue;
+      }
+      const before = embedded;
+      embedded += await embedShard(scoped, plan, c.piece, embedder, (inShard) =>
+        progress(before + inShard),
+      );
+      await claims.done(c.piece);
+    }
+    await progress(embedded, true);
+    if (helper) return { kind: "shared" };
+    await collectShards(scoped, plan, embedder.model.dims, pool);
   }
 
-  // Only the first task builds and reports, also when nothing was left to embed.
-  if (slot.index > 0) return { kind: "shared" };
+  // Only the lead builds and reports, also when nothing was left to embed.
+  if (helper) return { kind: "shared" };
 
   const uploader = new Uploader(scoped);
   const sink = (name: string, data: Uint8Array): void => uploader.put(name, data);
   // A small build embeds what is missing as it goes; a sharded one has it all in the pool.
   const inline = plan ? 0 : toEmbed;
-  const progress = throttled(opts.onProgress, inline, inline, wanted, now);
+  const progress = throttled(opts.onProgress, inline, wanted, now);
   if (inline > 0) await progress(0);
   let embedded = 0;
   let embedMs = 0;
@@ -457,7 +489,7 @@ export async function indexCollection(
           const out = await embedder.embed(texts, "passage");
           embedMs += performance.now() - t;
           embedded += texts.length;
-          await progress(embedded);
+          await progress(embedded, embedded >= inline);
           return out;
         },
       }
@@ -514,7 +546,6 @@ export async function indexCollection(
     passagesEmbedded: plan ? toEmbed : embedded,
     passagesReused: applied.passages.reused - (plan ? toEmbed : 0),
     embedSeconds: Math.round(embedMs / 100) / 10,
-    tasks: slot.count,
   };
   return { kind: "built", applied, stats };
 }
@@ -522,15 +553,22 @@ export async function indexCollection(
 /** The job's main: every pending collection of the run, one after the other. */
 export async function runCollectionIndexJob(reporter: JobReporter): Promise<void> {
   const startedAt = Date.now();
+  const slot = reporter.slot ?? SINGLE_TASK;
   const { tasks } = (await reporter.call("tasks", {})) as { tasks: IndexTask[] };
   if (tasks.length === 0) return;
+  // A helper works only where shards are open; it plans nothing else.
+  let mine = tasks;
+  if (slot.helper !== null) {
+    const { scopes } = (await reporter.call("open-scopes", {})) as { scopes: string[] };
+    mine = tasks.filter((t) => scopes.includes(shardScope(t)));
+  }
   const store = collectionStoreFromEnv(STAGING_COLLECTION_STORE_ENV);
   const embedders = nativeEmbedders();
   try {
-    await indexTasks(reporter, store, tasks, {
+    await indexTasks(reporter, store, mine, {
       embedders: embedders.source,
-      slot: reporter.slot ?? SINGLE_TASK,
-      // The first task stops waiting five minutes before the attempt's limit.
+      slot,
+      // No shard is claimed in the last ten minutes before the execution's limit.
       shardDeadline: startedAt + (JOB_TIMING.collection_index.maxRunSeconds - 300) * 1000,
     });
   } finally {
@@ -539,36 +577,32 @@ export async function runCollectionIndexJob(reporter: JobReporter): Promise<void
   }
 }
 
-/**
- * The widest of `first` and what the collections in `rest` need: planned,
- * never built. A collection that cannot be planned now is left to the next
- * attempt, which sizes it again.
- */
-async function widestOf(
-  store: CollectionStore,
-  rest: readonly IndexTask[],
-  opts: IndexOptions,
-  first: { readonly tasks: number; readonly reason: string },
-): Promise<{ tasks: number; reason: string }> {
-  let widest = { tasks: first.tasks, reason: first.reason };
-  const reasons = [first.reason];
-  for (const task of rest) {
-    try {
-      const plan = await indexCollection(store, task, { ...opts, planOnly: true });
-      if (plan.kind !== "scale") continue;
-      reasons.push(plan.reason);
-      if (plan.tasks > widest.tasks) widest = { tasks: plan.tasks, reason: plan.reason };
-    } catch {
-      // Its own attempt reports why.
-    }
-  }
+/** The pieces scope of a collection's shards (index-job-kind.ts reads it back). */
+export function shardScope(task: Pick<IndexTask, "pluginId" | "collection">): string {
+  return `${task.pluginId}/${task.collection}`;
+}
+
+/** The admin's claims of one collection's shards, through `reporter`. */
+export function reporterClaims(reporter: JobReporter, task: IndexTask): ShardClaims {
+  const target = { pluginId: task.pluginId, collection: task.collection };
+  const worker = workerOf(reporter.slot ?? SINGLE_TASK);
   return {
-    tasks: widest.tasks,
-    reason: `${reasons.join("; ")}: ${widest.tasks} tasks`.slice(0, 500),
+    register: async (count, done, wantedTasks) => {
+      await reporter.call("pieces", { ...target, count, done: [...done], wantedTasks });
+    },
+    claim: () =>
+      reporter.call<PieceClaim>("claim", { ...target, worker, claimSeconds: SHARD_CLAIM_SECONDS }),
+    done: async (shard) => {
+      await reporter.call("piece-done", { ...target, piece: shard });
+    },
   };
 }
 
-/** Every pending collection, reported as the slot's part: the first task reports, the others embed. */
+/**
+ * Every collection of `tasks`, as the slot's part: the lead builds and
+ * reports each, a helper's task embeds shards and leaves when none is left
+ * for it.
+ */
 export async function indexTasks(
   reporter: JobReporter,
   store: CollectionStore,
@@ -576,35 +610,23 @@ export async function indexTasks(
   opts: IndexOptions,
 ): Promise<void> {
   const slot = opts.slot ?? SINGLE_TASK;
+  const helper = slot.helper !== null;
   for (const task of tasks) {
     const target = { pluginId: task.pluginId, collection: task.collection };
     let outcome: CollectionOutcome;
     try {
       outcome = await indexCollection(store, task, {
         ...opts,
+        claims: opts.claims ?? ((t) => reporterClaims(reporter, t)),
         // A count the admin missed is no reason to stop indexing.
-        onProgress: async ({ embedded, toEmbed, planned, wantedTasks }) => {
-          const c = reporter.capacity;
+        onProgress: async ({ embedded, planned, wantedTasks }) => {
           try {
             await reporter.call("progress", {
               ...target,
-              task: slot.index,
-              tasks: slot.count,
+              worker: workerOf(slot),
               embedded,
-              toEmbed,
               planned,
-              // The quota keeps the build narrower than it would run.
-              ...(c && c.quotaVcpu !== null && wantedTasks > slot.count
-                ? {
-                    limit: {
-                      wantedTasks,
-                      quotaVcpu: c.quotaVcpu,
-                      quotaNeededVcpu: quotaForIndexTasks(wantedTasks),
-                      projectId: c.projectId,
-                      region: c.region,
-                    },
-                  }
-                : {}),
+              wantedTasks,
             });
           } catch (e) {
             if (e instanceof JobStoppedError) throw e;
@@ -616,25 +638,20 @@ export async function indexTasks(
         },
       });
     } catch (e) {
-      // Only the first task reports for the attempt. A task that is not, or
-      // missing shards, end the attempt: the next one starts over and keeps
-      // every shard that was written.
-      if (slot.index > 0 || e instanceof ShardsMissingError || e instanceof JobStoppedError)
+      // A helper that was stopped gave its task back with the claim; any
+      // other failure of a helper ends only it (its shard's claim runs
+      // out). Only the lead reports for the attempt, and missing shards
+      // end the attempt: the next one keeps every shard that was written.
+      if (e instanceof HelperStoppedError) return;
+      if (helper && !(e instanceof JobStoppedError)) {
+        // Its CPU comes back now rather than when its booking runs out.
+        await reporter.call("leave", {}).catch(() => undefined);
         throw e;
+      }
+      if (e instanceof ShardsMissingError || e instanceof JobStoppedError) throw e;
       const error = e instanceof Error ? e.message : String(e);
       await reporter.call("failed", { ...target, error: error.slice(0, 4000) });
       continue;
-    }
-    if (outcome.kind === "scale") {
-      // The admin ends this attempt and starts one that runs this many
-      // tasks. Every task of a wide attempt planned the same; the first asks.
-      // The collections after this one are sized now too, so the run widens
-      // once and every attempt after it is left for retries.
-      if (slot.index === 0) {
-        const widest = await widestOf(store, tasks.slice(tasks.indexOf(task) + 1), opts, outcome);
-        await reporter.call("scale", { tasks: widest.tasks, reason: widest.reason });
-      }
-      return;
     }
     if (outcome.kind === "built") {
       await reporter.call("done", {
@@ -644,4 +661,6 @@ export async function indexTasks(
       });
     }
   }
+  // A helper's task that ran out of shards gives its CPU back now.
+  if (helper) await reporter.call("leave", {});
 }

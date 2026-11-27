@@ -49,17 +49,28 @@ export interface AuditBatchProgress {
   readonly finished: boolean;
 }
 
+/** The width a batch booked, and how it gives it back. */
+export interface LighthouseSlot {
+  /** Runs at once; the rest wait their round. */
+  readonly tasks: number;
+  release(): Promise<void>;
+}
+
 /** The provider part of a parallel audit: start, observe, read back. */
 export interface AuditTaskLauncher {
   /** Human-readable target for messages, e.g. "Cloud Run job caelo-production-audit". */
   readonly label: string;
   /**
-   * How many orders run at once; the rest wait their round (on Cloud Run a
-   * task runs its share one after another). Absent: all at once.
+   * #1776 — book a batch's width in the capacity ledger: how many of its
+   * `wanted` runs may run at once, until `leaseSeconds` at the latest.
+   * Absent: all at once.
    */
-  readonly tasksAtOnce?: number;
-  /** Start `batch`'s orders, `tasksAtOnce` at a time; returns a handle for `progress`. */
-  start(batch: AuditTaskBatch): Promise<string>;
+  reserve?(wanted: number, leaseSeconds: number): Promise<LighthouseSlot>;
+  /**
+   * Start `batch`'s orders, `tasksAtOnce` at a time (on Cloud Run a task
+   * runs its share one after another); returns a handle for `progress`.
+   */
+  start(batch: AuditTaskBatch, tasksAtOnce: number): Promise<string>;
   progress(handle: string): Promise<AuditBatchProgress>;
   /** A task's result object as text, or null while it is not written. */
   readResult(key: string): Promise<string | null>;
@@ -208,9 +219,44 @@ export function createParallelAuditRunner(
   ): Promise<
     { ok: true; results: Map<number, AuditTaskResult> } | { ok: false; result: AuditJobResult }
   > {
+    let slot: LighthouseSlot;
+    try {
+      // The longest the batch can take is every run in its own round.
+      const lease = Math.ceil(parallelAuditTimeoutMs(tasks.length) / 1000) + 120;
+      slot = launcher.reserve
+        ? await launcher.reserve(tasks.length, lease)
+        : { tasks: tasks.length, release: async () => {} };
+    } catch (e) {
+      return {
+        ok: false,
+        result: failure(
+          "child-failed",
+          `could not book CPU for the audit tasks on ${launcher.label}: ${errorMessage(e)}`,
+        ),
+      };
+    }
+    try {
+      return await runBooked(tasks, Math.max(1, Math.min(tasks.length, slot.tasks)));
+    } finally {
+      // The vCPU comes back as the batch ends; a lost release is the lease's.
+      await slot
+        .release()
+        .catch((e: unknown) =>
+          console.error(`[quality] the audit batch's CPU was not given back: ${errorMessage(e)}`),
+        );
+    }
+  }
+
+  /** Start `tasks` `atOnce` at a time and read every result, or fail. */
+  async function runBooked(
+    tasks: readonly PlannedTask[],
+    atOnce: number,
+  ): Promise<
+    { ok: true; results: Map<number, AuditTaskResult> } | { ok: false; result: AuditJobResult }
+  > {
     let handle: string;
     try {
-      handle = await launcher.start({ version, orders: tasks.map((t) => t.order) });
+      handle = await launcher.start({ version, orders: tasks.map((t) => t.order) }, atOnce);
     } catch (e) {
       return {
         ok: false,
@@ -222,9 +268,7 @@ export function createParallelAuditRunner(
     }
 
     const results = new Map<number, AuditTaskResult>();
-    const atOnce = Math.min(tasks.length, launcher.tasksAtOnce ?? tasks.length);
-    const timeoutMs =
-      options.timeoutMs ?? parallelAuditTimeoutMs(Math.ceil(tasks.length / Math.max(1, atOnce)));
+    const timeoutMs = options.timeoutMs ?? parallelAuditTimeoutMs(Math.ceil(tasks.length / atOnce));
     const deadline = now() + timeoutMs;
     for (;;) {
       const read = await readPending(launcher, tasks, results);

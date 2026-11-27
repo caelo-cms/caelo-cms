@@ -8,8 +8,9 @@
  * (promote.ts). Most Stages index in about a minute, but a build that
  * embeds many passages (a first index with semantic search, a model
  * change) takes minutes, on a large site tens of them. The index job
- * reports, per task, how many passages it embedded of how many it has
- * (`collections.index_progress`, at most every {@link PROGRESS_EVERY_MS});
+ * reports, per task (the lead and each helper task, #1776), how many
+ * passages it embedded (`collections.index_progress`, at most every
+ * {@link PROGRESS_EVERY_MS});
  * the Stage status, the Publish live gate and get_stage_status say it with
  * an estimate from the pace so far.
  */
@@ -28,8 +29,9 @@ const count = z.number().int().min(0).max(50_000_000);
 
 /**
  * The project's Cloud Run CPU quota keeps a build on fewer tasks than it
- * would run (reporting-jobs run-capacity.ts): how many it wants, the quota,
- * and the quota that would give it them. Shown as text, never acted on.
+ * would run even with nothing beside it (job-capacity/budget.ts): how many
+ * it wants, the quota, and the quota that would give it them. Shown as
+ * text, never acted on.
  */
 export const indexLimitSchema = z
   .object({
@@ -47,9 +49,10 @@ export type IndexLimit = z.infer<typeof indexLimitSchema>;
 export const indexProgressSchema = z.object({
   startedAt: z.string(),
   at: z.string(),
-  /** What the attempt embeds in all, and on how many tasks: tasks yet to report count too. */
+  /** What the build embeds in all, and on how many tasks it runs now (the capacity ledger's count). */
   planned: count.optional(),
   taskCount: z.number().int().min(1).max(64).optional(),
+  /** Per task (`lead`, or `<helper>:<index>`): what it embedded. */
   tasks: z.record(z.string(), z.object({ embedded: count, toEmbed: count })),
   /** The last report's quota limit; absent while the quota does not narrow the build. */
   limit: indexLimitSchema.optional(),
@@ -111,8 +114,9 @@ export const collectionIndexProgressOp = defineOperation({
       runId: uuid,
       pluginId: uuid,
       collection: z.string().regex(/^[a-z][a-z0-9_]{0,39}$/),
-      task: z.number().int().min(0).max(63),
-      /** How many tasks the attempt runs. */
+      /** The task that reports: `lead`, or `<helper booking>:<index>`. */
+      worker: z.string().regex(/^(lead|[0-9a-f-]{36}:\d{1,2})$/),
+      /** How many tasks the build runs now. */
       tasks: z.number().int().min(1).max(64),
       embedded: count,
       toEmbed: count,
@@ -133,7 +137,7 @@ export const collectionIndexProgressOp = defineOperation({
                'planned', ${input.planned}::int,
                'taskCount', ${input.tasks}::int,
                'tasks', COALESCE(progress->'tasks', '{}'::jsonb)
-                          || jsonb_build_object(${String(input.task)}::text, ${part}))
+                          || jsonb_build_object(${input.worker}::text, ${part}))
              -- No key while the quota does not narrow the build.
              || jsonb_strip_nulls(jsonb_build_object('limit', ${limit}))
        WHERE run_id = ${input.runId}::uuid AND plugin_id = ${input.pluginId}::uuid
@@ -147,8 +151,9 @@ export const collectionIndexProgressOp = defineOperation({
 export const collectionIndexResetProgressOp = defineOperation({
   name: "collections.index_reset_progress",
   readScope: "request",
-  // Why system-only: see collections.index_progress. A wider attempt starts
-  // over, so the narrower one's counts must not add to its own.
+  // Why system-only: see collections.index_progress. A new attempt's lead
+  // counts every shard written so far as its own, so the counts of the
+  // attempt before (its helpers') must not add to it.
   actorScope: ["system"],
   database: "cms_admin",
   input: z.object({ runId: uuid }).strict(),
