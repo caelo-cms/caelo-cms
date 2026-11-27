@@ -356,6 +356,12 @@ export function validateManifest(
         hint: "the plugin answers the `structured-data` point but does not request the `structured_data` capability. Add it to `requestedCapabilities` (or drop structuredDataOperation).",
       });
     }
+    if (m.hasSitemapEntries && !caps.has("sitemap_entries")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "the plugin answers the `sitemap-entries` point but does not request the `sitemap_entries` capability. Add it to `requestedCapabilities` (or drop sitemapEntriesOperation).",
+      });
+    }
   }
 
   // A runtime-authored plugin submitted without capabilities

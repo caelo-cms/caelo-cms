@@ -47,6 +47,7 @@ const AREAS: Readonly<Record<Exclude<keyof PluginManifest, NotCompared>, string>
   linkResolveReads: "What its internal link handling reads",
   hasShareImages: "Default social-share images",
   hasStructuredData: "Structured data of your pages",
+  hasSitemapEntries: "Entries of the news and video sitemaps",
   auditFindingsOperation: "Stage audit findings",
   writeHintsOperation: "Hints to the AI",
   changeConsumer: "Followed site changes",

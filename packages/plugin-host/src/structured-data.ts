@@ -104,8 +104,11 @@ function namedPages(page: StructuredDataPage): string[] {
   return [...out];
 }
 
-/** The arguments of one call: its pages, the pages they name, their page types. */
-function chunkArgs(
+/**
+ * The arguments of one call: its pages, the pages they name, their page
+ * types (the sitemap-entries point asks with the same records).
+ */
+export function chunkArgs(
   input: StructuredDataInput,
   chunk: readonly StructuredDataPage[],
 ): StructuredDataArgs {

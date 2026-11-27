@@ -1597,6 +1597,19 @@ function preflightRegistration(
       );
     }
   }
+  // #1761 — entries of the news and video sitemaps core writes.
+  if (def.sitemapEntriesOperation !== undefined) {
+    if (!grantedCaps.has("sitemap_entries")) {
+      throw new Error(
+        `plugin "${def.slug}" contributes sitemap entries without the sitemap_entries capability — registration refused`,
+      );
+    }
+    if (!def.operations[def.sitemapEntriesOperation]) {
+      throw new Error(
+        `plugin "${def.slug}" names sitemapEntriesOperation "${def.sitemapEntriesOperation}", which is not one of its operations`,
+      );
+    }
+  }
   if ((def.listTypes?.length ?? 0) > 0 && !grantedCaps.has("list_types")) {
     throw new Error(
       `plugin "${def.slug}" declares listTypes without the list_types capability — registration refused`,

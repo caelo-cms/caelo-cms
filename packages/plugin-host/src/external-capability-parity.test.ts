@@ -152,6 +152,7 @@ async function fixtureManifest(): Promise<PluginManifest> {
     contributes: international.contributes,
     hasShareImages: international.hasShareImages,
     hasStructuredData: seo.hasStructuredData,
+    hasSitemapEntries: seo.hasSitemapEntries,
     urlTables: URL_TABLES,
     urlContributions: [{ slot: "host" }, { slot: "path-prefix" }],
     tier: 2,
@@ -171,6 +172,7 @@ const DEFINITION_KEY: Partial<Record<keyof PluginManifest, string>> = {
   hasListResolve: "listResolveOperation",
   hasContentVariants: "contentVariantsOperation",
   hasStructuredData: "structuredDataOperation",
+  hasSitemapEntries: "sitemapEntriesOperation",
   // #1729 (Q7 A) — the slot claims of an installed plugin are its tables:
   // the host builds the encoders from them (url-tables.ts).
   urlContributions: "urlTables",
@@ -423,6 +425,25 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
         [ID]: { nodes: [{ type: "Thing", id: { fragment: "x" }, properties: { name: "render" } }] },
       },
     });
+  },
+  // #1761 — the same records, through its own reserved entry.
+  sitemap_entries: async () => {
+    const { hasSitemapEntries } = await fixtureManifest();
+    expect(hasSitemapEntries).toBe(true);
+    const manifest = { ...probe, hasSitemapEntries } as PluginManifest;
+    expect(renderPointDefinition(manifest, () => null).keys).toEqual({
+      sitemapEntriesOperation: "$sitemapEntries",
+    });
+    const source = `export default {slug:"parity-probe",version:"1.0.0",tier:2,sitemapEntriesOperation:"entries",
+      operations:{entries:async(ctx,args)=>({pages:{[args.pages[0].pageId]:{news:{title:ctx.invocation.origin}}}})}};`;
+    expect(
+      await renderPoint(source, manifest, "$sitemapEntries", {
+        pages: [{ pageId: ID, pageType: "news" }],
+        related: [],
+        pageTypes: {},
+        site: { organization: false, name: null },
+      }),
+    ).toEqual({ pages: { [ID]: { news: { title: "render" } } } });
   },
   link_resolve: async () => {
     const linkResolveReads = (await fixtureManifest()).linkResolveReads;

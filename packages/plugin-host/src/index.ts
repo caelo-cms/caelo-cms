@@ -414,6 +414,12 @@ export {
   SHARE_IMAGES_PAGES_PER_CALL,
 } from "./share-images.js";
 export {
+  type CollectedSitemapEntries,
+  collectSitemapEntries,
+  hasSitemapEntriesContributors,
+  type ResolvedVideoEntry,
+} from "./sitemap-entries.js";
+export {
   parseListFilter,
   publicListSql,
   registerPluginStorageOps,

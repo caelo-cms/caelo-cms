@@ -279,4 +279,25 @@ describe("the seo plugin's answer on a blog passes the vocabulary (#1756)", () =
       expect(checked.pages.has(page.pageId)).toBe(true);
     }
   });
+
+  it("has no refusal for any special template's fixture page (#1761)", async () => {
+    const { structuredDataAnswer } = await import("../../plugins/seo/src/schema/nodes.js");
+    const { TEMPLATE_FIXTURES } = await import("../../plugins/seo/test/fixture-templates.js");
+    for (const f of TEMPLATE_FIXTURES) {
+      const answer = structuredDataAnswer({
+        args: {
+          pages: [f.page],
+          related: [],
+          pageTypes: { [f.page.pageType]: { properties: f.properties } },
+          site: { organization: true, name: "Beispiel GmbH" },
+        },
+        mappings: new Map([[f.page.pageType, f.mapping]]),
+      });
+      const checked = checkStructuredDataAnswer(answer, new Set([f.page.pageId]));
+      expect({ type: f.schemaType, refusals: checked.refusals }).toEqual({
+        type: f.schemaType,
+        refusals: [],
+      });
+    }
+  });
 });

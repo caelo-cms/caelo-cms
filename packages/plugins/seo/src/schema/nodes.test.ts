@@ -12,7 +12,8 @@ import {
   topic,
 } from "../../test/fixture-blog.js";
 import { mappingProblems } from "./mapping.js";
-import { plainText, structuredDataAnswer } from "./nodes.js";
+import { structuredDataAnswer } from "./nodes.js";
+import { plainText } from "./values.js";
 
 describe("seo structured data on a blog (#1756)", () => {
   it("writes a BlogPosting with both authors in order, each a Person of the graph", () => {

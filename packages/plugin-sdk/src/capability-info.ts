@@ -121,6 +121,11 @@ export const PLUGIN_CAPABILITY_INFO: Readonly<Record<PluginCapability, PluginCap
     allows:
       "Run its own tasks in a separate cloud job, with the permissions it already has and nothing more, for example to index every page at once.",
   },
+  sitemap_entries: {
+    label: "News and video sitemaps",
+    allows:
+      "Name which of your pages are news articles and which show videos, for the news and video sitemaps Caelo writes. Caelo checks every entry; the plugin writes no file.",
+  },
   structured_data: {
     label: "Structured data",
     allows:

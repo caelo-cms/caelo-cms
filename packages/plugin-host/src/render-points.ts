@@ -70,6 +70,11 @@ export const RENDER_POINT_ENTRIES = Object.freeze({
     definitionKey: "structuredDataOperation",
     announcedBy: "hasStructuredData",
   },
+  /** #1761 — `sitemapEntriesOperation`, announced by `hasSitemapEntries`. */
+  $sitemapEntries: {
+    definitionKey: "sitemapEntriesOperation",
+    announcedBy: "hasSitemapEntries",
+  },
 } satisfies Record<string, RenderPointEntry>);
 
 /** The name of a reserved entry. */

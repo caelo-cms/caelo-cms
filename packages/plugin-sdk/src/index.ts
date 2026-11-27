@@ -130,6 +130,7 @@ export * from "./indexes.js";
 export * from "./mail-templates.js";
 export * from "./public-run.js";
 export * from "./public-surface.js";
+export * from "./sitemap-entries.js";
 export * from "./structured-data.js";
 export * from "./url-tables.js";
 export * from "./visitor-auth.js";
@@ -219,6 +220,7 @@ export const pluginCapability = z.enum([
   "batch_jobs",
   "visitor_ai",
   "structured_data",
+  "sitemap_entries",
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
@@ -1546,6 +1548,12 @@ export const pluginManifest = z
      * approved) stay as they were.
      */
     hasStructuredData: z.literal(true).optional(),
+    /**
+     * #1761 — see `PluginDefinition.sitemapEntriesOperation`. Requires the
+     * `sitemap_entries` capability. Optional and set only when true, like
+     * `hasStructuredData`.
+     */
+    hasSitemapEntries: z.literal(true).optional(),
     /** See `PluginDefinition.auditFindingsOperation` (epic #1107). Must
      *  name one of `operations`. Needs no capability: it reads like a
      *  render and only adds findings to the Stage audit. */
@@ -3274,6 +3282,18 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly structuredDataOperation?: string;
   /**
+   * #1761 — the sitemap-entries composition point: entries of the news and
+   * video sitemaps core writes next to `sitemap.xml`. An operation in
+   * `operations` taking {@link StructuredDataArgs} (the same page records as
+   * the structured-data point) and returning {@link SitemapEntriesAnswer}
+   * (`{pages: Record<pageId, {news?: {title}, videos?: […]}>}`), at most
+   * `SITEMAP_ANSWER_MAX_BYTES`. Core writes `sitemap-news.xml` and
+   * `sitemap-video.xml` from the entries of indexable pages and lists them
+   * in robots.txt (`./sitemap-entries.ts`). Requires the `sitemap_entries`
+   * capability.
+   */
+  readonly sitemapEntriesOperation?: string;
+  /**
    * #1269 — what the `linkResolveOperation` answer is computed from: the
    * plugin's own private tables (`adminSchema`) and, optionally, the
    * columns of them that matter. When declared, core keeps the answer per
@@ -3586,6 +3606,7 @@ export function manifestFromDefinition(def: {
   };
   readonly shareImagesOperation?: string;
   readonly structuredDataOperation?: string;
+  readonly sitemapEntriesOperation?: string;
   readonly auditFindingsOperation?: string;
   readonly writeHintsOperation?: string;
   readonly changeConsumer?: PluginChangeConsumerSpec;
@@ -3675,6 +3696,7 @@ export function manifestFromDefinition(def: {
       : {}),
     hasShareImages: Boolean(def.shareImagesOperation),
     ...(def.structuredDataOperation ? { hasStructuredData: true as const } : {}),
+    ...(def.sitemapEntriesOperation ? { hasSitemapEntries: true as const } : {}),
     hasListResolve: Boolean(def.listResolveOperation),
     ...(def.auditFindingsOperation ? { auditFindingsOperation: def.auditFindingsOperation } : {}),
     ...(def.writeHintsOperation ? { writeHintsOperation: def.writeHintsOperation } : {}),

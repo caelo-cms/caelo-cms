@@ -23,6 +23,7 @@ import {
   sourcesOf,
 } from "./mapping.js";
 import { structuredDataAnswer } from "./nodes.js";
+import { sitemapEntriesAnswer } from "./sitemaps.js";
 import { SCHEMA_TYPE_NAMES, SCHEMA_TYPES } from "./types.js";
 
 type Ctx = PluginContextTier1;
@@ -72,6 +73,16 @@ export async function structuredData(ctx: Ctx, raw: unknown) {
   const args = structuredDataArgs.parse(raw) as unknown as StructuredDataArgs;
   const mappings = await readMappings(ctx);
   return structuredDataAnswer({ args, mappings });
+}
+
+/** The sitemap-entries point's operation (`sitemapEntriesOperation`). */
+export const SITEMAP_ENTRIES_OPERATION = "sitemap_entries";
+
+/** The news and video sitemap entries for one call (#1761). */
+export async function sitemapEntries(ctx: Ctx, raw: unknown) {
+  const args = structuredDataArgs.parse(raw) as unknown as StructuredDataArgs;
+  const mappings = await readMappings(ctx);
+  return sitemapEntriesAnswer({ args, mappings }, new Date());
 }
 
 interface PageTypeRow {

@@ -25,7 +25,7 @@ import { definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 import { SEO_CONFIG } from "./config.js";
 import { AUDIT_OPERATION, SEO_OPERATIONS, WRITE_HINTS_OPERATION } from "./operations.js";
 import { MAPPINGS_TABLE } from "./schema/mapping.js";
-import { STRUCTURED_DATA_OPERATION } from "./schema/operations.js";
+import { SITEMAP_ENTRIES_OPERATION, STRUCTURED_DATA_OPERATION } from "./schema/operations.js";
 import { SEO_SKILLS } from "./skills.js";
 import { SEO_TOOLS } from "./tools.js";
 
@@ -39,6 +39,7 @@ export default definePlugin<PluginContextTier1>({
     "chat_runner_tools",
     "companion_skills",
     "structured_data",
+    "sitemap_entries",
   ],
   capabilityReasons: {
     cms_admin:
@@ -48,6 +49,7 @@ export default definePlugin<PluginContextTier1>({
     companion_skills: "Teaches the AI how to set up structured data, author and topic pages.",
     structured_data:
       "Describes articles, their authors and reviewers, author pages and overview pages in each page's structured data.",
+    sitemap_entries: "Lists recent news articles and video pages in the news and video sitemaps.",
   },
   // No visitor-facing surface: everything this plugin knows reaches a page
   // as data core serializes.
@@ -63,6 +65,7 @@ export default definePlugin<PluginContextTier1>({
   aiReadableTables: [MAPPINGS_TABLE],
   config: SEO_CONFIG,
   structuredDataOperation: STRUCTURED_DATA_OPERATION,
+  sitemapEntriesOperation: SITEMAP_ENTRIES_OPERATION,
   auditFindingsOperation: AUDIT_OPERATION,
   writeHintsOperation: WRITE_HINTS_OPERATION,
   tools: SEO_TOOLS,

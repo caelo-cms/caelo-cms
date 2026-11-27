@@ -29,6 +29,7 @@ const base = {
   description: "",
   shareImage: null,
   live: true,
+  publishedAt: "2026-11-01T09:00:00.000Z",
   terms: [],
   listed: [],
 } as const;

@@ -219,6 +219,11 @@ export interface StructuredDataPage {
   /** Whether the page has the live dates `{live: …}` names in this render. */
   readonly live: boolean;
   /**
+   * When the page went live first (ISO 8601, the live page record), or null
+   * when it never has: what a news sitemap's two-day window is measured on.
+   */
+  readonly publishedAt: string | null;
+  /**
    * The page's properties as stored: a `page` property as
    * `caelo:page/<id>` references, a `media` one as `caelo:media/<id>`, a
    * `link` as `{href}`, a `date` as `YYYY-MM-DD`.

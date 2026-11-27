@@ -81,6 +81,11 @@ import { type PublicUrlContext, type PublicUrlPage, resolvePublicPageUrls } from
 import { recordPluginError } from "./runtime-health.js";
 import { type ResolvedShareImages, resolveShareImages } from "./share-images.js";
 import {
+  type CollectedSitemapEntries,
+  collectSitemapEntries,
+  hasSitemapEntriesContributors,
+} from "./sitemap-entries.js";
+import {
   type CollectedStructuredData,
   collectStructuredData,
   hasStructuredDataContributors,
@@ -148,6 +153,13 @@ export interface BuildPluginServices {
     input: StructuredDataInput,
     urlContext: PublicUrlContext,
   ): Promise<CollectedStructuredData>;
+  /** #1761 — whether any running plugin adds news or video sitemap entries. */
+  hasSitemapEntriesContributors(): Promise<boolean>;
+  /** #1761 — the plugins' checked news and video sitemap entries of these pages. */
+  collectSitemapEntries(
+    input: StructuredDataInput,
+    urlContext: PublicUrlContext,
+  ): Promise<CollectedSitemapEntries>;
   resolvePublicPageUrls(
     pages: PublicUrlPage[],
     urlContext: PublicUrlContext,
@@ -211,6 +223,9 @@ export const localBuildPluginServices: BuildPluginServices = {
   hasStructuredDataContributors: async () => hasStructuredDataContributors(),
   collectStructuredData: (input, urlContext) =>
     collectStructuredData(input, { ...MAIN_RENDER, ...urlContext }),
+  hasSitemapEntriesContributors: async () => hasSitemapEntriesContributors(),
+  collectSitemapEntries: (input, urlContext) =>
+    collectSitemapEntries(input, { ...MAIN_RENDER, ...urlContext }),
   resolvePublicPageUrls: (pages, urlContext) =>
     resolvePublicPageUrls(pages, urlContext, MAIN_RENDER),
   collectBuildAssets: () => collectBuildAssets(MAIN_RENDER),
@@ -312,6 +327,8 @@ export const BUILD_PLUGIN_METHODS = [
   "resolveShareImages",
   "hasStructuredDataContributors",
   "collectStructuredData",
+  "hasSitemapEntriesContributors",
+  "collectSitemapEntries",
   "resolvePublicPageUrls",
   "collectBuildAssets",
   "staticRenderPlugins",

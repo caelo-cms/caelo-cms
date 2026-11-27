@@ -11,8 +11,10 @@ import { seoAudit } from "./checks/index.js";
 import { seoWriteHints } from "./hints/index.js";
 import {
   getSchemaMapping,
+  SITEMAP_ENTRIES_OPERATION,
   STRUCTURED_DATA_OPERATION,
   setSchemaMappings,
+  sitemapEntries,
   structuredData,
 } from "./schema/operations.js";
 
@@ -28,6 +30,7 @@ export const SEO_OPERATIONS: Readonly<Record<string, PluginOperation<PluginConte
   [WRITE_HINTS_OPERATION]: (ctx, args) => seoWriteHints(ctx, args),
   // #1756 — the schema mapping per page type.
   [STRUCTURED_DATA_OPERATION]: (ctx, args) => structuredData(ctx, args),
+  [SITEMAP_ENTRIES_OPERATION]: (ctx, args) => sitemapEntries(ctx, args),
   get_schema_mapping: (ctx, args) => getSchemaMapping(ctx, args),
   set_schema_mappings_many: (ctx, args) => setSchemaMappings(ctx, args),
 };

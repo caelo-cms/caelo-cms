@@ -69,6 +69,7 @@ export const EXTERNAL_CAPABILITY_STATUS: Readonly<
   batch_jobs: BROKERED,
   visitor_ai: BROKERED,
   structured_data: BROKERED,
+  sitemap_entries: BROKERED,
 });
 
 /**
@@ -106,6 +107,7 @@ export const CAPABILITY_MANIFEST_FIELDS: Readonly<
   batch_jobs: ["batchOperations"],
   visitor_ai: ["aiChatOperations"],
   structured_data: ["hasStructuredData"],
+  sitemap_entries: ["hasSitemapEntries"],
 });
 
 /**
