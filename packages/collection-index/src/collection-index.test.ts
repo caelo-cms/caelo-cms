@@ -10,6 +10,7 @@ import {
   type CollectionDoc,
   type CollectionSchema,
   compareTerms,
+  DEFAULT_MERGE_POLICY,
   editDistance,
   FileCache,
   fuse,
@@ -18,11 +19,13 @@ import {
   keywordTerm,
   layoutOf,
   lookupDocs,
+  type MergePolicy,
   openRelease,
   prefetchRelease,
   queryVariants,
   type ReleaseManifest,
   releaseFiles,
+  type SegmentTuning,
   searchText,
   searchVectors,
   snippet,
@@ -127,6 +130,9 @@ function memoryStore() {
   return { files, sink: (n: string, d: Uint8Array) => void files.set(n, d), cache };
 }
 
+/** Deltas as a large collection writes them: no merge floor. */
+const NO_FLOOR: MergePolicy = { ...DEFAULT_MERGE_POLICY, floorDocs: 0 };
+
 async function build(
   docs: readonly CollectionDoc[],
   schema = WORDS_ONLY,
@@ -134,6 +140,7 @@ async function build(
   store = memoryStore(),
   deletes: string[] = [],
   forceMerge = false,
+  extra: { mergePolicy?: MergePolicy; tuning?: SegmentTuning; columns?: string[] } = {},
 ) {
   const vector = layoutOf(schema).vectorFields.length > 0;
   const applied = await applyChanges(
@@ -144,6 +151,7 @@ async function build(
       sink: store.sink,
       cache: store.cache(),
       forceMerge,
+      ...extra,
       ...(vector ? { embed: fakeEmbed, vectorModel: { id: "fake-32", dims: 32 } } : {}),
     },
   );
@@ -392,7 +400,17 @@ describe("releases", () => {
     const changed = page("blog", "de", "Blog", "Jetzt geht es um Versand.", {
       page_type: "article",
     });
-    const second = await build([changed], WORDS_ONLY, first.applied.manifest, first.store);
+    const second = await build(
+      [changed],
+      WORDS_ONLY,
+      first.applied.manifest,
+      first.store,
+      [],
+      false,
+      {
+        mergePolicy: NO_FLOOR,
+      },
+    );
     expect(second.applied.manifest.segments.length).toBe(2);
     expect(await ids(second.release, q("Rabatte"))).toEqual([]);
     expect(await ids(second.release, q("Versand"))).toEqual(["blog"]);
@@ -418,8 +436,46 @@ describe("releases", () => {
       WORDS_ONLY,
       first.applied.manifest,
       first.store,
+      [],
+      false,
+      { mergePolicy: NO_FLOOR },
     );
     expect(second.applied.bytesWritten).toBeLessThan(first.applied.bytesWritten / 20);
+  });
+
+  // #1781 — every segment costs a cold query another round of reads.
+  it("keeps a collection up to the floor in one segment", async () => {
+    const first = await build(DOCS);
+    const changed = page("blog", "de", "Blog", "Jetzt geht es um Versand.");
+    const second = await build([changed], WORDS_ONLY, first.applied.manifest, first.store);
+    expect(second.applied.merged).toBe(true);
+    expect(second.applied.manifest.segments.length).toBe(1);
+    expect(await ids(second.release, q("Versand"))).toEqual(["blog"]);
+  });
+
+  it("rewrites the newer segments into one while they stay under the floor", async () => {
+    const many = Array.from({ length: 60 }, (_v, i) =>
+      page(`p${i}`, "de", `Seite ${i}`, `Text ${i} über Thema ${i % 7}.`),
+    );
+    const policy: MergePolicy = { ...DEFAULT_MERGE_POLICY, floorDocs: 10 };
+    let state = await build(many, WORDS_ONLY, null, memoryStore(), [], false, {
+      mergePolicy: policy,
+    });
+    for (const n of [3, 4, 5]) {
+      state = await build(
+        [page(`p${n}`, "de", `Seite ${n}`, `Neu ${n} Versand.`)],
+        WORDS_ONLY,
+        state.applied.manifest,
+        state.store,
+        [],
+        false,
+        { mergePolicy: policy },
+      );
+    }
+    // The first segment stays; the three changes are one segment, not three.
+    expect(state.applied.manifest.segments.length).toBe(2);
+    expect(state.applied.manifest.docCount).toBe(60);
+    expect(await ids(state.release, q("Versand"))).toEqual(["p3", "p4", "p5"]);
   });
 
   it("maintained equals rebuilt: a release after updates and deletes searches like one built from scratch", async () => {
@@ -456,8 +512,8 @@ describe("releases", () => {
   });
 
   // The gateway's first search on searchVIU read about 130 files one by
-  // one from object storage (#1745): opening a release now loads them.
-  it("prefetches every file of a release, so a query after it reads nothing from the store", async () => {
+  // one from object storage (#1745); a small segment is one pack (#1781).
+  it("prefetches a small release as one pack per segment, so a query after it reads nothing", async () => {
     const store = memoryStore();
     let state = await build(DOCS, SCHEMA, null, store);
     state = await build(
@@ -465,6 +521,9 @@ describe("releases", () => {
       SCHEMA,
       state.applied.manifest,
       store,
+      [],
+      false,
+      { mergePolicy: NO_FLOOR },
     );
     expect(state.applied.manifest.segments.length).toBe(2);
     let reads = 0;
@@ -478,19 +537,9 @@ describe("releases", () => {
       1 << 26,
     );
     const release = await openRelease(state.applied.manifest, cache);
+    for (const s of release.segments) expect(s.reader.manifest.pack).not.toBeNull();
     const report = await prefetchRelease(release, { parallel: 3 });
-    // Every file but the segment manifests and removed sets (openRelease
-    // read those) and the profile (none here).
-    const all = await releaseFiles(state.applied.manifest, cache);
-    const opened = state.applied.manifest.segments.flatMap((s) =>
-      s.removed ? [s.manifest, s.removed] : [s.manifest],
-    );
-    expect(report).toEqual({
-      files: all.size - opened.length,
-      skipped: 0,
-      failed: 0,
-      firstError: null,
-    });
+    expect(report).toEqual({ files: 2, skipped: 0, failed: 0, firstError: null });
     const before = reads;
     await ids(release, q("Logfile Kosten"));
     await ids(release, q("Preis", { typos: true }));
@@ -499,9 +548,20 @@ describe("releases", () => {
     expect(reads).toBe(before);
   });
 
-  it("stops prefetching when told to, documents and term shards first", async () => {
+  it("lists a packed segment as its pack, and its parts nowhere", async () => {
+    const first = await build(DOCS, SCHEMA);
+    const m = first.release.segments[0]?.reader.manifest;
+    const files = await releaseFiles(first.applied.manifest, first.store.cache());
+    expect(files.has(m?.pack?.file as string)).toBe(true);
+    expect(files.has(m?.docsFile as string)).toBe(false);
+    expect(first.store.files.has(m?.docsFile as string)).toBe(false);
+  });
+
+  it("prefetches what every query reads of a large segment: documents, codes, vocabulary", async () => {
     const store = memoryStore();
-    const { applied } = await build(DOCS, SCHEMA, null, store);
+    const { applied } = await build(DOCS, SCHEMA, null, store, [], false, {
+      tuning: { packMaxBytes: 0 },
+    });
     const order: string[] = [];
     const cache = new FileCache(
       {
@@ -515,24 +575,29 @@ describe("releases", () => {
     const release = await openRelease(applied.manifest, cache);
     order.length = 0;
     const seg = release.segments[0]?.reader.manifest;
-    const firstTwo = 1 + (seg?.shards.length ?? 0);
+    expect(seg?.pack).toBeNull();
+    const firstTwo = 1 + (seg?.vectors?.codes.length ?? 0);
     const report = await prefetchRelease(release, {
       parallel: 1,
       mayLoad: () => order.length < firstTwo,
     });
-    expect(order).toEqual([seg?.docsFile, ...(seg?.shards ?? []).map((s) => s.file)]);
+    expect(order).toEqual([seg?.docsFile, ...(seg?.vectors?.codes ?? [])]);
     expect(report.files).toBe(firstTwo);
-    expect(report.skipped).toBeGreaterThan(0);
+    expect(report.skipped).toBe(new Set(Object.values(seg?.vocabulary ?? {})).size);
+    // Shards, stores and int8 blocks wait for the query that needs them.
+    for (const f of order) expect(f.startsWith("t-") || f.startsWith("s-")).toBe(false);
   });
 
   it("counts a file that cannot be read and loads the rest", async () => {
     const store = memoryStore();
-    const { applied } = await build(DOCS, SCHEMA, null, store);
+    const { applied } = await build(DOCS, SCHEMA, null, store, [], false, {
+      tuning: { packMaxBytes: 0 },
+    });
     const cache = new FileCache(
       {
         read: async (f) => {
           const d = store.files.get(f);
-          if (!d || f.startsWith("s-")) throw new Error("store unavailable");
+          if (!d || f.startsWith("w-")) throw new Error("store unavailable");
           return d;
         },
       },
@@ -540,8 +605,11 @@ describe("releases", () => {
     );
     const release = await openRelease(applied.manifest, cache);
     const report = await prefetchRelease(release);
-    expect(report.failed).toBe(release.segments[0]?.reader.manifest.stores.length);
-    expect(report.firstError).toMatch(/^s-.*: store unavailable$/);
+    const vocabulary = new Set(
+      Object.values(release.segments[0]?.reader.manifest.vocabulary ?? {}),
+    );
+    expect(report.failed).toBe(vocabulary.size);
+    expect(report.firstError).toMatch(/^w-.*: store unavailable$/);
     expect(report.files).toBeGreaterThan(0);
   });
 

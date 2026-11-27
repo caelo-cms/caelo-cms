@@ -26,11 +26,9 @@
  */
 
 import { createHash } from "node:crypto";
-import type { SegmentReader } from "./reader.js";
 import type { OpenRelease } from "./release.js";
 import type { CollectionDoc, KeyedDoc, Passage } from "./schema.js";
-import { VECTORS_PER_BLOCK } from "./segment.js";
-import { type EncodedVector, encodeVector, storedVector } from "./vectors.js";
+import { type EncodedVector, encodeVector } from "./vectors.js";
 
 /** A vector the segment writer takes: freshly embedded, or as a release stores it. */
 export type PassageVector = Float32Array | EncodedVector;
@@ -140,33 +138,6 @@ export async function vectorsFor(
 }
 
 /**
- * The encoded vectors of a segment by document key and passage, for every
- * document or only `keys`. A document's passages are adjacent in code
- * order, so only the int8 blocks holding wanted documents are read.
- */
-export async function segmentVectors(
-  reader: SegmentReader,
-  keys: ReadonlySet<number> | null = null,
-): Promise<Map<number, (EncodedVector | null)[]>> {
-  const out = new Map<number, (EncodedVector | null)[]>();
-  const v = reader.manifest.vectors;
-  if (!v) return out;
-  const files = await reader.codeFiles();
-  let ordinal = 0;
-  for (const f of files) {
-    for (let i = 0; i < f.count; i++, ordinal++) {
-      const key = f.keys[i] as number;
-      if (keys && !keys.has(key)) continue;
-      const block = await reader.vectorBlock(Math.floor(ordinal / VECTORS_PER_BLOCK));
-      const encoded = storedVector(f, i, block, ordinal % VECTORS_PER_BLOCK, v.dims);
-      const list = out.get(key) ?? out.set(key, []).get(key);
-      if (list) list[f.passages[i] as number] = encoded;
-    }
-  }
-  return out;
-}
-
-/**
  * Adds the vectors of `opened`'s live documents to `pool`: every document,
  * or with `keys` (per segment index) only those, as a Stage that changes
  * them needs. Adds nothing from a release without vectors or with another
@@ -184,7 +155,7 @@ export async function addReleaseVectors(
     if (seg.reader.manifest.vectors?.field !== field) continue;
     const wanted = keys ? keys.get(si) : null;
     if (keys && (!wanted || wanted.size === 0)) continue;
-    const vectors = await segmentVectors(seg.reader, wanted ?? null);
+    const vectors = await seg.reader.vectorsOf(wanted ?? null);
     const add = (doc: KeyedDoc): void => {
       const list = vectors.get(doc.key);
       if (!list) return;

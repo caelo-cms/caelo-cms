@@ -47,6 +47,7 @@ import {
   openRelease,
   parseRelease,
   readProfile,
+  releaseNeedsRebuild,
   scopedStore,
   VectorPool,
 } from "@caelo-cms/collection-index";
@@ -359,7 +360,9 @@ export async function indexCollection(
     folded.reset ||
     task.previousSchemaDigest !== task.schemaDigest ||
     !sameSet(protectedTermsOf(previousProfile), protectedTerms) ||
-    (previous.vectorModel?.id ?? null) !== (embedder?.fingerprint ?? null);
+    (previous.vectorModel?.id ?? null) !== (embedder?.fingerprint ?? null) ||
+    // #1780 — an older engine format or other keyword columns: never extended.
+    releaseNeedsRebuild(previous, task.columns);
 
   // The vectors this build may keep: the previous release's, under the same model.
   const pool = new VectorPool();
@@ -470,6 +473,7 @@ export async function indexCollection(
       protectedTerms,
       profile,
       reuse: pool,
+      columns: task.columns,
       ...vectors,
     });
   } else {
@@ -490,6 +494,7 @@ export async function indexCollection(
         cache,
         protectedTerms,
         reuse: pool,
+        columns: task.columns,
         ...vectors,
         ...(folded.profile ? { profile: folded.profile } : {}),
       },

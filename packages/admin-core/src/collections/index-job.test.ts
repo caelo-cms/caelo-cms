@@ -99,6 +99,7 @@ function task(over: Partial<IndexTask>): IndexTask {
     previousReleaseKey: null,
     previousSchemaDigest: null,
     vectorModel: DEFAULT_EMBEDDING_MODEL_ID,
+    columns: [],
     changeKeys: [],
     ...over,
   };

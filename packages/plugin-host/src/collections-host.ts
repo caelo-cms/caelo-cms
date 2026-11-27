@@ -292,7 +292,16 @@ export function makeCollectionOps(
         if (!parsed.success)
           for (const issue of parsed.error.issues.slice(0, 5))
             problems.push(`profile.${issue.path.join(".")}: ${issue.message}`);
-        else profile = parsed.data;
+        else {
+          profile = parsed.data;
+          // #1779 — a boost multiplies by a keyword value, read from the
+          // value's postings at search time, never from stored documents.
+          for (const [i, b] of profile.boosts.entries())
+            if (decl.fields[b.field]?.kind !== "keyword")
+              problems.push(
+                `profile.boosts.${i}.field: "${b.field}" is not a keyword field of collection "${input.collection}"`,
+              );
+        }
       }
       for (const [i, w] of input.deleteWhere.entries()) {
         if (decl.fields[w.field]?.kind !== "keyword")

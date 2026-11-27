@@ -26,7 +26,13 @@
  */
 
 import { ByteReader, ByteWriter } from "./bytes.js";
-import { type FileCacheLike, type FileLoad, SegmentReader } from "./reader.js";
+import {
+  type FileCacheLike,
+  type FileFormat,
+  type FileLoad,
+  jsonFormat,
+  SegmentReader,
+} from "./reader.js";
 import {
   type CollectionDoc,
   type CollectionSchema,
@@ -42,12 +48,11 @@ import {
   type PassageVector,
   passageCounts,
   passagesOf,
-  segmentVectors,
   VectorPool,
   vectorsFor,
 } from "./vector-pool.js";
 import type { EncodedVector } from "./vectors.js";
-import { contentName, type FileSink, SegmentWriter } from "./writer.js";
+import { contentName, type FileSink, type SegmentTuning, SegmentWriter } from "./writer.js";
 
 export { passageEmbeddingText } from "./vector-pool.js";
 
@@ -60,9 +65,16 @@ export interface ReleaseSegment {
   readonly removedCount: number;
 }
 
+/**
+ * The release format this engine writes. 2: every segment is format 3
+ * (segment.ts). A release of format 1 is read, never extended: the index
+ * job rebuilds it (`releaseNeedsRebuild`).
+ */
+export const RELEASE_FORMAT = 2;
+
 /** The release file. */
 export interface ReleaseManifest {
-  readonly format: 1;
+  readonly format: 1 | 2;
   readonly schemaDigest: string;
   readonly segments: readonly ReleaseSegment[];
   readonly nextKey: number;
@@ -70,6 +82,21 @@ export interface ReleaseManifest {
   readonly vectorModel: { readonly id: string; readonly dims: number } | null;
   /** The search profile's file (JSON), or null when the plugin set none. */
   readonly profile: string | null;
+  /** Keyword fields stored per document in every segment's docs file (format 2). */
+  readonly columns?: readonly string[];
+}
+
+/**
+ * Whether the next release must be built from the documents instead of as
+ * a delta on `previous`: an older format, or other keyword columns.
+ */
+export function releaseNeedsRebuild(
+  previous: ReleaseManifest,
+  columns: readonly string[] = [],
+): boolean {
+  if (previous.format !== RELEASE_FORMAT) return true;
+  const had = [...(previous.columns ?? [])].sort().join("\n");
+  return had !== [...columns].sort().join("\n");
 }
 
 /** A release opened for reading. */
@@ -121,20 +148,28 @@ function parseJson<T>(data: Uint8Array): T {
   return JSON.parse(utf8Decoder.decode(data)) as T;
 }
 
+const SEGMENT_MANIFEST_FORMAT = jsonFormat<SegmentManifest>();
+const PROFILE_FORMAT = jsonFormat<unknown>();
+/** A removed set: about 48 bytes per key in a Set. */
+const REMOVED_FORMAT: FileFormat<Set<number>> = {
+  parse: decodeKeys,
+  bytes: (v) => 64 + v.size * 48,
+};
+
 /** Opens a release: its segment manifests and removed sets load now, everything else on demand. */
 export async function openRelease(
   manifest: ReleaseManifest,
   cache: FileCacheLike,
 ): Promise<OpenRelease> {
-  if (manifest.format !== 1)
+  if (manifest.format !== 1 && manifest.format !== 2)
     throw new RangeError(
       `release format ${String(manifest.format)} is not supported by this engine`,
     );
   const segments = await Promise.all(
     manifest.segments.map(async (s) => {
       const [m, removed] = await Promise.all([
-        cache.get(s.manifest, (d) => parseJson<SegmentManifest>(d)),
-        s.removed ? cache.get(s.removed, decodeKeys) : Promise.resolve(new Set<number>()),
+        cache.get(s.manifest, SEGMENT_MANIFEST_FORMAT),
+        s.removed ? cache.get(s.removed, REMOVED_FORMAT) : Promise.resolve(new Set<number>()),
       ]);
       return { reader: new SegmentReader(m, cache), removed };
     }),
@@ -242,16 +277,32 @@ export async function locateDocs(
   return out;
 }
 
-/** When a release is rewritten into one segment. */
+/** When a release is rewritten into one segment, or its newer segments into one. */
 export interface MergePolicy {
   /** Most segments a release may have before a merge. */
   readonly maxSegments: number;
   /** Highest share of removed documents across the release before a merge. */
   readonly maxRemovedShare: number;
+  /**
+   * Live documents up to which the release is always one segment, and up
+   * to which its newer segments (everything after the first) are always
+   * rewritten into one (#1781). Rewriting a few thousand documents costs a
+   * Stage seconds; every extra segment costs every cold query another
+   * round of reads for its files.
+   */
+  readonly floorDocs: number;
 }
 
-/** Default merge policy: at most 8 segments, at most a quarter of the stored documents removed. */
-export const DEFAULT_MERGE_POLICY: MergePolicy = { maxSegments: 8, maxRemovedShare: 0.25 };
+/**
+ * Default merge policy: one segment up to 2,000 live documents, at most two
+ * while the newer documents stay within that, at most 8 segments and a
+ * quarter of the stored documents removed.
+ */
+export const DEFAULT_MERGE_POLICY: MergePolicy = {
+  maxSegments: 8,
+  maxRemovedShare: 0.25,
+  floorDocs: 2000,
+};
 
 /** One batch of changes for a collection. */
 export interface CollectionChanges {
@@ -281,6 +332,10 @@ export interface ApplyOptions {
   readonly protectedTerms?: ReadonlySet<string>;
   /** A new search profile (JSON), or undefined to keep the previous release's. */
   readonly profile?: unknown;
+  /** Keyword fields stored per document (the operations that read a value per hit name them). */
+  readonly columns?: readonly string[];
+  /** How segments are cut into files (tests and benchmarks; production keeps the defaults). */
+  readonly tuning?: SegmentTuning;
 }
 
 /** What `applyChanges` produced. */
@@ -311,6 +366,10 @@ export async function applyChanges(
   if (previous && previous.schemaDigest !== digest)
     throw new RangeError(
       "applyChanges: the previous release was built for another schema; rebuild from the documents",
+    );
+  if (previous && releaseNeedsRebuild(previous, o.columns))
+    throw new RangeError(
+      "applyChanges: the previous release has an older format or other keyword columns; rebuild from the documents",
     );
   if (
     previous &&
@@ -363,27 +422,39 @@ export async function applyChanges(
   }
   const counts = passageCounts();
 
-  const storedTotal =
-    (opened?.segments ?? []).reduce((n, s) => n + s.reader.manifest.docCount, 0) + keyed.length;
-  const removedTotal = removed.reduce((n, s) => n + s.size, 0);
   const policy = o.mergePolicy ?? DEFAULT_MERGE_POLICY;
+  const segs = opened?.segments ?? [];
+  const storedTotal = segs.reduce((n, s) => n + s.reader.manifest.docCount, 0) + keyed.length;
+  const removedTotal = removed.reduce((n, s) => n + s.size, 0);
+  const liveOf = (i: number): number =>
+    (segs[i]?.reader.manifest.docCount ?? 0) - (removed[i]?.size ?? 0);
+  const liveTotal = storedTotal - removedTotal;
+  // Live documents of the segments after the first, plus the new ones.
+  const newerLive = segs.reduce((n, _s, i) => (i === 0 ? n : n + liveOf(i)), 0) + keyed.length;
   const merge =
     (o.forceMerge ?? false) ||
-    (opened !== null && opened.segments.length + 1 > policy.maxSegments) ||
+    liveTotal <= policy.floorDocs ||
+    (opened !== null && segs.length + 1 > policy.maxSegments) ||
     (storedTotal > 0 && removedTotal / storedTotal > policy.maxRemovedShare);
+  // The newer segments and the change become one segment beside the first.
+  const mergeNewer = !merge && segs.length > 1 && newerLive <= policy.floorDocs;
 
   const embedDocs = async (docs: readonly KeyedDoc[]): Promise<Map<number, PassageVector[]>> => {
     if (!vectorField || !o.embed || !o.vectorModel) return new Map();
     return vectorsFor(docs, vectorField, o.embed, pool, counts);
   };
 
-  const writerFor = async (vocabularyFrom: OpenRelease | null): Promise<SegmentWriter> => {
+  const writerFor = async (
+    vocabularyFrom: OpenRelease | null,
+    segmentsOf: readonly number[] = [],
+  ): Promise<SegmentWriter> => {
     const vocabulary = new Map<string, number>();
     if (vocabularyFrom) {
+      const from = segmentsOf.map((i) => vocabularyFrom.segments[i]).filter((x) => x !== undefined);
       const buckets = new Set<string>();
-      for (const s of vocabularyFrom.segments)
+      for (const s of from)
         for (const b of Object.keys(s.reader.manifest.vocabulary)) buckets.add(b);
-      for (const s of vocabularyFrom.segments) {
+      for (const s of from) {
         for (const b of buckets)
           for (const w of await s.reader.vocabulary(b))
             vocabulary.set(w.word, (vocabulary.get(w.word) ?? 0) + w.df);
@@ -395,21 +466,22 @@ export async function applyChanges(
       vocabulary,
       dims: o.vectorModel?.dims,
       protectedTerms: o.protectedTerms,
+      ...(o.columns ? { columns: o.columns } : {}),
+      ...o.tuning,
     });
   };
 
-  const segments: ReleaseSegment[] = [];
-  if (merge) {
-    const writer = await writerFor(null);
+  /** Writes `old` (live documents with their vectors) and the changed documents, interleaved by key. */
+  const writeMerged = async (
+    writer: SegmentWriter,
+    old: readonly { doc: KeyedDoc; vectors?: (EncodedVector | null)[] }[],
+  ): Promise<ReleaseSegment> => {
     const fresh = await embedDocs(keyed);
-    const pending = [...keyed];
     let pi = 0;
-    // Old documents and changed ones interleave in key order; a changed key's old copy is in a removed set.
-    const old = opened ? await liveDocsInKeyOrder(opened, removed) : [];
     let oi = 0;
-    while (oi < old.length || pi < pending.length) {
+    while (oi < old.length || pi < keyed.length) {
       const o1 = old[oi];
-      const p1 = pending[pi];
+      const p1 = keyed[pi];
       if (p1 && (!o1 || p1.key < o1.doc.key)) {
         writer.add(p1, fresh.get(p1.key));
         pi++;
@@ -419,26 +491,47 @@ export async function applyChanges(
       }
     }
     const written = writer.finish();
-    segments.push({
+    return {
       manifest: written.manifestFile,
       removed: null,
       docCount: written.manifest.docCount,
       removedCount: 0,
-    });
+    };
+  };
+
+  /** Segment `i` of the previous release as it stays, with its new removed set. */
+  const kept = (i: number): ReleaseSegment => {
+    const r = removed[i] as Set<number>;
+    const file = r.size > 0 ? contentName("r", encodeKeys(r), "bin") : null;
+    if (file) sink(file, encodeKeys(r));
+    return {
+      manifest: (previous as ReleaseManifest).segments[i]?.manifest as string,
+      removed: file,
+      docCount: segs[i]?.reader.manifest.docCount ?? 0,
+      removedCount: r.size,
+    };
+  };
+
+  const segments: ReleaseSegment[] = [];
+  if (merge) {
+    // Old documents and changed ones interleave in key order; a changed key's old copy is in a removed set.
+    const all = segs.map((_s, i) => i);
+    const old = opened ? await liveDocsInKeyOrder(opened, removed, all) : [];
+    segments.push(await writeMerged(await writerFor(null), old));
+  } else if (mergeNewer && opened) {
+    segments.push(kept(0));
+    const newer = segs.map((_s, i) => i).slice(1);
+    const old = await liveDocsInKeyOrder(opened, removed, newer);
+    segments.push(await writeMerged(await writerFor(opened, [0]), old));
   } else {
-    (opened?.segments ?? []).forEach((s, i) => {
-      const r = removed[i] as Set<number>;
-      const file = r.size > 0 ? contentName("r", encodeKeys(r), "bin") : null;
-      if (file) sink(file, encodeKeys(r));
-      segments.push({
-        manifest: (previous as ReleaseManifest).segments[i]?.manifest as string,
-        removed: file,
-        docCount: s.reader.manifest.docCount,
-        removedCount: r.size,
-      });
+    segs.forEach((_s, i) => {
+      segments.push(kept(i));
     });
     if (keyed.length > 0) {
-      const writer = await writerFor(opened);
+      const writer = await writerFor(
+        opened,
+        segs.map((_s, i) => i),
+      );
       const fresh = await embedDocs(keyed);
       for (const d of keyed) writer.add(d, fresh.get(d.key));
       const written = writer.finish();
@@ -452,7 +545,7 @@ export async function applyChanges(
   }
 
   const manifest: ReleaseManifest = {
-    format: 1,
+    format: RELEASE_FORMAT as 2,
     schemaDigest: digest,
     segments,
     nextKey,
@@ -460,11 +553,12 @@ export async function applyChanges(
     vectorModel:
       vectorField && o.vectorModel ? { id: o.vectorModel.id, dims: o.vectorModel.dims } : null,
     profile: o.profile === undefined ? (previous?.profile ?? null) : writeProfile(o.profile, sink),
+    columns: [...(o.columns ?? [])],
   };
   const data = utf8.encode(JSON.stringify(manifest));
   const file = contentName("release", data, "json");
   sink(file, data);
-  return { manifest, file, merged: merge, bytesWritten, passages: counts };
+  return { manifest, file, merged: merge || mergeNewer, bytesWritten, passages: counts };
 }
 
 /** Options of {@link buildRelease}. */
@@ -496,6 +590,8 @@ export async function buildRelease(
     sink,
     dims: o.vectorModel?.dims,
     protectedTerms: o.protectedTerms,
+    ...(o.columns ? { columns: o.columns } : {}),
+    ...o.tuning,
   });
   const seen = new Set<string>();
   let key = 0;
@@ -524,7 +620,7 @@ export async function buildRelease(
   await flush();
   const written = writer.finish();
   const manifest: ReleaseManifest = {
-    format: 1,
+    format: RELEASE_FORMAT as 2,
     schemaDigest: schemaDigest(o.schema),
     segments: [
       {
@@ -539,6 +635,7 @@ export async function buildRelease(
     vectorModel:
       vectorField && o.vectorModel ? { id: o.vectorModel.id, dims: o.vectorModel.dims } : null,
     profile: o.profile === undefined ? null : writeProfile(o.profile, sink),
+    columns: [...(o.columns ?? [])],
   };
   const data = utf8.encode(JSON.stringify(manifest));
   const file = contentName("release", data, "json");
@@ -546,16 +643,17 @@ export async function buildRelease(
   return { manifest, file, merged: true, bytesWritten, passages: counts };
 }
 
-/** Every live document of a release with its stored vectors, ascending by key. */
+/** The live documents of segments `which` with their stored vectors, ascending by key. */
 async function liveDocsInKeyOrder(
   opened: OpenRelease,
   removed: readonly ReadonlySet<number>[],
+  which: readonly number[],
 ): Promise<{ doc: KeyedDoc; vectors?: (EncodedVector | null)[] }[]> {
   const out: { doc: KeyedDoc; vectors?: (EncodedVector | null)[] }[] = [];
-  for (let si = 0; si < opened.segments.length; si++) {
+  for (const si of which) {
     const seg = opened.segments[si] as OpenRelease["segments"][number];
     const gone = removed[si] as ReadonlySet<number>;
-    const vectors = await segmentVectors(seg.reader, null);
+    const vectors = await seg.reader.vectorsOf(null);
     for await (const doc of seg.reader.allStored()) {
       if (gone.has(doc.key)) continue;
       out.push({ doc, vectors: vectors.get(doc.key) });
@@ -578,7 +676,7 @@ export async function readProfile(
   cache: FileCacheLike,
 ): Promise<unknown | null> {
   if (!release.profile) return null;
-  return cache.get(release.profile, (d) => parseJson<unknown>(d));
+  return cache.get(release.profile, PROFILE_FORMAT);
 }
 
 /** Every file a release references, for copies and garbage collection. */
@@ -590,13 +688,22 @@ export async function releaseFiles(
   for (const s of manifest.segments) {
     files.add(s.manifest);
     if (s.removed) files.add(s.removed);
-    const m = await cache.get(s.manifest, (d) => parseJson<SegmentManifest>(d));
+    const m = await cache.get(s.manifest, SEGMENT_MANIFEST_FORMAT);
+    // A packed segment's parts live only inside its pack.
+    if (m.pack) {
+      files.add(m.pack.file);
+      continue;
+    }
     files.add(m.docsFile);
     for (const x of m.shards) files.add(x.file);
     for (const x of m.stores) files.add(x.file);
     for (const x of Object.values(m.vocabulary)) files.add(x);
     for (const x of m.vectors?.codes ?? []) files.add(x);
     for (const x of m.vectors?.blocks ?? []) files.add(x);
+    if (m.vectors?.partitions) {
+      files.add(m.vectors.partitions.centroids);
+      for (const l of m.vectors.partitions.lists) files.add(l.file);
+    }
   }
   return files;
 }
