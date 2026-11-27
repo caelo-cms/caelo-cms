@@ -11,7 +11,13 @@
  * field-by-field translation.
  */
 
-import type { ListItem, ListTypeDef, PageTypeDef, StaticFileContentType } from "@caelo-cms/shared";
+import type {
+  ListItem,
+  ListTypeDef,
+  ModuleKind,
+  PageTypeDef,
+  StaticFileContentType,
+} from "@caelo-cms/shared";
 
 export type StateSchemaVersion = 1;
 
@@ -19,6 +25,15 @@ export interface ModuleState {
   readonly schemaVersion: StateSchemaVersion;
   readonly slug: string;
   readonly displayName: string;
+  /**
+   * #1746 — the catalog metadata `list_modules` shows (what the module is
+   * for, its role). A chat's edit of them is branch state like every other
+   * column, so the snapshot carries them. `undefined` only on snapshots
+   * written before #1746: they never captured them, so a merge or revert
+   * of one leaves the live columns as they are instead of inventing values.
+   */
+  readonly description?: string;
+  readonly kind?: ModuleKind;
   /** v0.12.3 (issue #106) — stable module `type`, captured so revert
    *  restores the NOT NULL column. Snapshots written before 0103 lack
    *  it; the parse-upgrade falls back to `slug` (matching how 0103
