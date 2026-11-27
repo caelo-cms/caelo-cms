@@ -229,7 +229,7 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       `${SHARED}/base-css.ts`,
       `${SHARED}/css-*.ts`,
       `${SHARED}/font*.ts`,
-      `${SHARED}/seo.ts`,
+      `${SHARED}/seo{,-head}.ts`,
       `${SHARED}/url.ts`,
       `${SHARED}/link-refs.ts`,
       `${SHARED}/edit-markers.ts`,

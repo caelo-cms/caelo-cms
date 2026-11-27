@@ -29,8 +29,11 @@
  * session to it (`mcp_transport_sessions`, scoped to the connection row, so
  * a made-up header can only name the caller's own mappings). A call's own
  * `workSessionId` wins over it, so sub-agents sharing one connection keep
- * their own sessions. The id also makes the `tools/call` JSON-RPC id an
- * idempotency key: a repeated request returns the first result.
+ * their own sessions. The id also makes the `tools/call` JSON-RPC id,
+ * together with the call itself, an idempotency key: a repeated request
+ * returns the first result. A client that reconnects with the id it holds
+ * may count its JSON-RPC ids from 0 again; its calls are different calls
+ * under the same ids and run as such (#1704, rpc-tool-call-id.ts).
  *
  * Power-MCP (the Power surface) resolves the principal ONCE per request,
  * here, and hands it to the in-process Power-MCP steps — no op re-resolves
@@ -251,7 +254,7 @@ function powerBackend(
           ...(transportSessionId
             ? {
                 transportSessionId,
-                toolCallId: rpcToolCallId(transportSessionId, rpcRequestId),
+                toolCallId: rpcToolCallId(transportSessionId, rpcRequestId, call),
               }
             : {}),
         }),

@@ -38,7 +38,11 @@ import {
   pluginsNotRunningHere,
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
-import { VALUE_BREAKS_MARKUP, valueBreaksMarkupRepair } from "@caelo-cms/shared";
+import {
+  markupLeavingContent,
+  VALUE_BREAKS_MARKUP,
+  valueBreaksMarkupRepair,
+} from "@caelo-cms/shared";
 import { z } from "zod";
 import { pageMarkerHint, pluginValueRefusedHint } from "../../deploy/render-failures.js";
 import { describeError, toolError } from "./_describe-error.js";
@@ -332,6 +336,7 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
             displayName: template.displayName,
             htmlBytes: template.html.length,
             cssBytes: template.css.length,
+            ...endsOutsideContent(template.html),
           }
         : null,
       theme: { tokenCount: themeTokenCount },
@@ -343,6 +348,7 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
         position: m.position,
         htmlBytes: m.html.length,
         cssBytes: m.css.length,
+        ...endsOutsideContent(m.html),
       })),
       slots: {
         replaced: rendered.replacedSlots,
@@ -358,6 +364,17 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
 };
 
 /**
+ * #1787 — `{ endsOutsideContent }` with the markup that keeps a module's or
+ * the template's HTML from ending in plain content, which makes the page
+ * leave every plugin value raw (`context-open-markup`); `{}` when it ends
+ * in content, so the summary stays as small as before.
+ */
+function endsOutsideContent(html: string): { endsOutsideContent?: string } {
+  const markup = markupLeavingContent(html);
+  return markup === null ? {} : { endsOutsideContent: markup };
+}
+
+/**
  * Site-wide settings the preview flags on every page (pages.render_preview's
  * `seoMarkers`). They are not slots the AI fills on the page, and each blocks
  * publishing, so the summary names the tool that clears it.
@@ -367,6 +384,8 @@ const SITE_SETTING_NEXT_STEPS: Readonly<Record<string, string>> = {
     "The site's public URL is not configured; publishing fails until it is. Call propose_set_site_seo({siteBaseUrl: 'https://<public domain>'}) — the Owner approves.",
   "site-language-unset":
     "The site language is not set; publishing fails until it is. Call set_site_identity({siteLanguage: '<BCP 47 tag, e.g. de>'}).",
+  "seo-title-variable-unset:site_name":
+    "The page's title template uses {site_name}, and the site has no name: the <title> shows it raw and Publish live refuses the build. Call set_site_identity({siteName}), or drop {site_name} from the template (set_page_type_seo_many).",
 };
 
 /**

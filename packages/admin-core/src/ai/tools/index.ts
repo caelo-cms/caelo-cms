@@ -144,6 +144,7 @@ import {
 import {
   deletePageTypesManyTool,
   listPageTypesTool,
+  setPageTypeSeoManyTool,
   upsertPageTypesManyTool,
 } from "./page-type-tools.js";
 import { patchPageModuleFieldsTool } from "./patch-page-module-fields.js";
@@ -519,6 +520,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // P8 — SEO sidecar tools.
   // Bulk `_many` variant via the DRY makeBulkTool factory (CLAUDE.md §11).
   registry.register(setPageSeoManyTool);
+  registry.register(setPageTypeSeoManyTool);
   registry.register(autofillPageSeoManyTool);
   // P8 AI-first review pass — bulk variants + redirect surface.
   registry.register(findRedirectsTool);

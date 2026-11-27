@@ -170,7 +170,8 @@ export const UPSERT_PAGE_TYPES_JSON_SCHEMA = {
             type: "array",
             items: {
               type: "object",
-              description: "a field: {name, label, type, required?, default?, options?, …}",
+              description:
+                "a field: {name, label, type, required?, default?, options?, …}; type `page` = pages it names, in order: {pageType?: <page type slug>, multiple?}",
             },
           },
           vocabularies: {

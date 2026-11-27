@@ -12,18 +12,29 @@
    * they reach the live site with the next Stage and a Publish live. The
    * dot on the button says so without opening it; red when the page has no
    * meta description, which a Stage refuses.
+   *
+   * #1752 — every value is the one a build renders, with where it comes
+   * from: written for this page (by a person, or by the AI and whether a
+   * person reviewed it), its page type's or the site's title template, or
+   * shared from another value of the page.
    */
 
   import { Info } from "lucide-svelte";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Popover, PopoverContent, PopoverTrigger } from "#lib/components/ui/popover/index.js";
+  import { type SeoOriginValue as SeoValue, seoOriginText } from "#lib/seo-origin.js";
   import { cn } from "#lib/utils.js";
   import { askInChat } from "./ask-in-chat.js";
 
   interface PageSeoInfo {
-    readonly title: string;
-    readonly metaDescription: string;
+    readonly title: SeoValue;
+    readonly metaDescription: SeoValue;
+    readonly ogTitle: SeoValue;
+    readonly ogDescription: SeoValue;
+    readonly ogType: SeoValue;
+    readonly robots: string;
+    readonly pageType: string;
     readonly ogImageUrl: string | null;
     readonly ogImageSource: "page" | "language" | "site" | "none";
     readonly canonicalUrl: string | null;
@@ -48,7 +59,7 @@
   const seo = $derived("error" in info ? null : info);
   const pending = $derived(new Set(seo?.pending ?? []));
   const anyPending = $derived(seo !== null && (seo.newPage || pending.size > 0));
-  const missingDescription = $derived(seo !== null && seo.metaDescription === "");
+  const missingDescription = $derived(seo !== null && seo.metaDescription.value === "");
   const isPending = (...fields: string[]): boolean =>
     seo !== null && (seo.newPage || fields.some((f) => pending.has(f)));
 
@@ -69,6 +80,9 @@
           : "Page SEO",
   );
 
+  /** Where a value comes from, in the operator's words. */
+  const originOf = (v: SeoValue, pageType: string): string => seoOriginText(v, pageType);
+
   /** #1452 — the image shown is not always the page's own. */
   const ogImageOrigin = $derived(
     seo === null
@@ -85,30 +99,69 @@
     seo === null
       ? []
       : [
-          { label: "Title", value: seo.title, fields: ["title"] },
+          {
+            label: "Title in search results",
+            field: "title",
+            value: seo.title.value,
+            origin: originOf(seo.title, seo.pageType),
+            fields: ["title", "seoTitle"],
+          },
           {
             label: "Meta description",
-            value: seo.metaDescription || "None yet — a Stage refuses a published page without one.",
-            empty: seo.metaDescription === "",
+            field: "metaDescription",
+            value:
+              seo.metaDescription.value ||
+              "None yet — a Stage refuses a published page without one.",
+            empty: seo.metaDescription.value === "",
+            origin: originOf(seo.metaDescription, seo.pageType),
             fields: ["metaDescription"],
           },
-          { label: "Social share title (og:title)", value: seo.title, fields: ["title"] },
+          {
+            label: "Social share title (og:title)",
+            field: "ogTitle",
+            value: seo.ogTitle.value,
+            origin: originOf(seo.ogTitle, seo.pageType),
+            fields: ["ogTitle", "seoTitle", "title"],
+          },
           {
             label: "Social share description (og:description)",
-            value: seo.metaDescription || "None",
-            empty: seo.metaDescription === "",
-            fields: ["metaDescription"],
+            field: "ogDescription",
+            value: seo.ogDescription.value || "None",
+            empty: seo.ogDescription.value === "",
+            origin: originOf(seo.ogDescription, seo.pageType),
+            fields: ["ogDescription", "metaDescription"],
+          },
+          {
+            label: "Shared as (og:type)",
+            field: "ogType",
+            value: seo.ogType.value,
+            origin: originOf(seo.ogType, seo.pageType),
+            fields: [],
           },
           {
             label: "Canonical URL",
+            field: "canonicalUrl",
             value: seo.canonicalUrl ?? "The page's own URL",
             empty: seo.canonicalUrl === null,
+            origin: "",
             fields: ["canonicalUrl"],
           },
           {
             label: "Search engines",
-            value: seo.noindex ? "Hidden (noindex)" : "Indexed",
-            fields: ["noindex"],
+            field: "robots",
+            value: seo.noindex ? `Hidden (${seo.robots})` : `Indexed (${seo.robots})`,
+            origin: "",
+            fields: [
+              "noindex",
+              "nofollow",
+              "noarchive",
+              "nosnippet",
+              "noimageindex",
+              "maxSnippet",
+              "maxImagePreview",
+              "maxVideoPreview",
+              "nosnippetContent",
+            ],
           },
         ],
   );
@@ -148,14 +201,15 @@
       {:else if seo}
         <div class="space-y-0.5 rounded-md border bg-muted/40 px-3 py-2" data-testid="page-seo-serp">
           <p class="truncate text-xs text-muted-foreground">{crumb}</p>
-          <p class="text-[15px] leading-snug text-link">{seo.title}</p>
+          <p class="text-[15px] leading-snug text-link">{seo.title.value}</p>
           <p
             class={cn(
               "text-xs text-muted-foreground",
               missingDescription && "text-red-700 dark:text-red-300",
             )}
           >
-            {seo.metaDescription || "No meta description. Search engines pick a snippet themselves."}
+            {seo.metaDescription.value ||
+              "No meta description. Search engines pick a snippet themselves."}
           </p>
         </div>
 
@@ -173,16 +227,21 @@
 
         <dl class="divide-y">
           {#each rows as row (row.label)}
-            <div class="py-2" data-testid="page-seo-row" data-field={row.fields.join(",")}>
+            <div class="py-2" data-testid="page-seo-row" data-field={row.field}>
               <dt class="flex items-center gap-2 text-xs font-medium text-muted-foreground">
                 {row.label}
-                {#if isPending(...row.fields)}
+                {#if row.fields.length > 0 && isPending(...row.fields)}
                   <Badge variant="warning" data-testid="page-seo-pending">Pending</Badge>
                 {/if}
               </dt>
               <dd class={cn("mt-0.5 break-words text-sm", row.empty && "text-muted-foreground italic")}>
                 {row.value}
               </dd>
+              {#if row.origin}
+                <dd class="mt-0.5 text-xs text-muted-foreground" data-testid="page-seo-origin">
+                  {row.origin}
+                </dd>
+              {/if}
             </div>
           {/each}
           <div class="py-2" data-testid="page-seo-row" data-field="ogImageAssetId">

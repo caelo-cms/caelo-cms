@@ -607,6 +607,22 @@ describe("history tools", () => {
   });
 });
 
+/** #1752 — a resolved head as `pages_seo.get_many` returns it. */
+function resolvedHead(title: string, description: string, origin: string) {
+  return {
+    title: { value: `${title} | Acme`, origin: "page_type", template: "{page_title} | Acme" },
+    metaDescription: description ? { value: description, origin } : { value: "", origin: "unset" },
+    ogTitle: { value: title, origin: "inherited", inheritsFrom: "pageTitle" },
+    ogDescription: description
+      ? { value: description, origin: "inherited", inheritsFrom: "metaDescription" }
+      : { value: "", origin: "unset", inheritsFrom: null },
+    ogType: { value: "article", origin: "page_type" },
+    robots: "max-image-preview:large",
+    pageType: "news",
+    unsetVariables: [],
+  };
+}
+
 describe("content maintenance tools", () => {
   it("list_media_usages and get_page_seo validate ids at the boundary", async () => {
     const h = harness({
@@ -617,6 +633,7 @@ describe("content maintenance tools", () => {
           title: "Home",
           path: "/",
           seo: null,
+          resolved: resolvedHead("Home", "", "unset"),
           shareImage: { source: "none", assetId: null, url: null },
           contentText: "Welcome",
           contentTextTruncated: false,
@@ -645,10 +662,22 @@ describe("content maintenance tools", () => {
             i === 0
               ? {
                   pageId,
+                  seoTitle: "",
                   metaDescription: "Stored text.",
+                  ogTitle: "",
+                  ogDescription: "",
                   ogImageAssetId: null,
                   canonicalUrl: null,
                   noindex: false,
+                  nofollow: false,
+                  noarchive: false,
+                  nosnippet: false,
+                  noimageindex: false,
+                  maxSnippet: null,
+                  maxImagePreview: "large",
+                  maxVideoPreview: null,
+                  nosnippetPlacements: [{ blockName: "content", position: 1 }],
+                  origins: { metaDescription: "ai" },
                   changefreq: "weekly",
                   priority: 0.5,
                   autofilledAt: "2026-10-01T00:00:00.000Z",
@@ -657,6 +686,7 @@ describe("content maintenance tools", () => {
                   pendingFields: ["metaDescription"],
                 }
               : null,
+          resolved: resolvedHead(`Page ${i}`, i === 0 ? "Stored text." : "", "ai"),
           shareImage: { source: "none", assetId: null, url: null },
           contentText: i === 0 ? "Fast setup\nLive in minutes" : "Long text…",
           contentTextTruncated: i === 1,
@@ -667,7 +697,15 @@ describe("content maintenance tools", () => {
     });
     const one = await run(getPageSeoTool, { pageId: U1 }, h.toolCtx);
     expect(h.calls[0]?.input).toEqual({ pageIds: [U1] });
-    expect(one.content).toContain("metaDescription: Stored text.");
+    expect(one.content).toContain('metaDescription: "Stored text." — AI-written, not reviewed');
+    // #1752 — every head value with its origin, so the AI fills only real gaps.
+    expect(one.content).toContain(
+      'title: "Page 0 | Acme" — from template of page type news: `{page_title} | Acme`',
+    );
+    expect(one.content).toContain('og:title: "Page 0" — inherited from the page title');
+    expect(one.content).toContain("og:type: article — page type news");
+    expect(one.content).toContain("robots: max-image-preview:large");
+    expect(one.content).toContain("nosnippetPlacements: content#1");
     expect(one.content).toContain("Fast setup\nLive in minutes");
     // A change the chat has not staged yet is named.
     expect(one.content).toContain("pending (not staged): metaDescription");

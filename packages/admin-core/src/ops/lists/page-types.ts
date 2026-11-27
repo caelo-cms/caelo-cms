@@ -36,6 +36,7 @@ import { headOverlaySql } from "../../draft.js";
 import { countPagesByType } from "../../lists/counts.js";
 import { checkDefinitionExt } from "../../lists/ext.js";
 import { fitPageToType, loadVocabularyIndex } from "../../lists/page-fit.js";
+import { loadPageRefIndex } from "../../lists/page-refs.js";
 import { parseTermRef } from "../../lists/page-terms.js";
 import {
   duplicatePageTypeMessage,
@@ -53,7 +54,7 @@ import {
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import { emitSnapshot } from "../../snapshots/index.js";
 import type { PageTypeState } from "../../snapshots/state.js";
-import { listPagesOp, updatePageOp } from "../content/pages.js";
+import { listPagesOp, pageRefLookupOf, updatePageOp } from "../content/pages.js";
 import { structureWriteRefusal } from "./_permission.js";
 import {
   branchOf,
@@ -287,6 +288,8 @@ export const upsertPageTypesManyOp = defineOperation({
     const pageCounts = await countPagesByType(tx, branchId);
     const inView = await loadListEntities(tx, "pageType", branchId);
     const existingSlugs = new Set(inView.map((t) => t.state.slug));
+    // #1754 — a `page` property may ask for a type created in this call.
+    const knownPageTypes = new Set([...existingSlugs, ...input.pageTypes.map((t) => t.slug)]);
     const guardPool: PageTypeForGuard[] = [
       ...inView.map((t) => ({
         slug: t.state.slug,
@@ -317,7 +320,7 @@ export const upsertPageTypesManyOp = defineOperation({
       }
       definitionProblems.push(
         ...listIssuesToDetails(["pageTypes", i], checkPageTypeDef(def)),
-        ...(await checkReferences(tx, branchId, def)).map((message) => ({
+        ...(await checkReferences(tx, branchId, def, knownPageTypes)).map((message) => ({
           path: ["pageTypes", i],
           message,
         })),
@@ -368,10 +371,27 @@ export const upsertPageTypesManyOp = defineOperation({
           return failBatch(wrote, await entityWriteBlockedError(tx, op, "pageType", id, lock));
         }
       }
+      // #1752 — the type's SEO is set by page_types.set_seo_many; a
+      // replacement that does not name it keeps the one the caller sees
+      // now, read after the lock: a takeover may just have brought another
+      // chat's pending SEO of this type in.
+      const kept =
+        def.seo === undefined && existing !== null
+          ? await loadListEntityForUpsert(tx, "pageType", branchId, def.slug)
+          : null;
+      const keptSeo =
+        kept !== null && kept.state.deletedAt === null ? kept.state.definition.seo : undefined;
 
       // Re-check the type's pages against the new definition.
       const pages = existing ? await loadPagesInView(tx, branchId, { pageTypeIds: [id] }) : [];
       const vocabularies = await loadVocabularyIndex(tx, branchId, [def]);
+      // #1754 — a new or narrowed `page` property is checked against the
+      // pages each page of the type names.
+      const pageRefs = await loadPageRefIndex(
+        pageRefLookupOf(tx, ctx),
+        def,
+        pages.map((p) => p.properties),
+      );
       const blocked: string[] = [];
       const rewrites: { pageId: string; properties: Record<string, unknown>; terms: string[] }[] =
         [];
@@ -399,6 +419,8 @@ export const upsertPageTypesManyOp = defineOperation({
             terms: input.dropValues ? terms : [...p.terms],
           },
           vocabularies,
+          pageRefs,
+          p.id,
         );
         if (fit.issues.length > 0) {
           blocked.push(`${label}: ${fit.issues.slice(0, 2).join(" ")}`);
@@ -423,10 +445,11 @@ export const upsertPageTypesManyOp = defineOperation({
         );
       }
 
+      const seo = def.seo ?? keptSeo;
       const state: PageTypeState = {
         schemaVersion: 1,
         slug: def.slug,
-        definition: def,
+        definition: seo === undefined ? def : { ...def, seo },
         version: (found?.state.version ?? 0) + 1,
         deletedAt: null,
       };
@@ -492,8 +515,16 @@ async function checkReferences(
   tx: Tx,
   branchId: string | null,
   def: PageTypeDef,
+  knownPageTypes: ReadonlySet<string>,
 ): Promise<string[]> {
   const issues: string[] = [];
+  for (const f of def.properties) {
+    if (f.type === "page" && f.pageType !== undefined && !knownPageTypes.has(f.pageType)) {
+      issues.push(
+        `properties: "${f.name}" takes pages of page type "${f.pageType}", which does not exist — create that type in the same call (e.g. an "author" type for author pages) or leave pageType out.`,
+      );
+    }
+  }
   const visible = branchId
     ? sql`(chat_branch_id IS NULL OR chat_branch_id = ${branchId}::uuid)`
     : sql`chat_branch_id IS NULL`;
@@ -547,12 +578,34 @@ export const deletePageTypesManyOp = defineOperation({
     const branchId = branchOf(ctx);
     const deleted: string[] = [];
     let wrote = false;
-    for (const slug of [...new Set(input.slugs)]) {
+    const deleting = new Set(input.slugs);
+    // #1754 — the `page` properties that ask for a page type by slug.
+    const askedFor = (await loadListEntities(tx, "pageType", branchId)).flatMap((other) =>
+      deleting.has(other.state.slug)
+        ? []
+        : other.state.definition.properties.flatMap((f) =>
+            f.type === "page" && f.pageType !== undefined
+              ? [{ slug: f.pageType, by: `${other.state.slug}.${f.name}` }]
+              : [],
+          ),
+    );
+    for (const slug of [...deleting]) {
       const t = await loadListEntityBySlug(tx, "pageType", branchId, slug);
       if (!t) {
         return failBatch(
           wrote,
           handlerError(op, `no page type "${slug}" — page_types.list shows the ones that exist.`),
+        );
+      }
+      const askers = askedFor.filter((a) => a.slug === slug).map((a) => a.by);
+      if (askers.length > 0) {
+        return failBatch(
+          wrote,
+          handlerError(
+            op,
+            `page type "${slug}" is what the page propert${askers.length === 1 ? "y" : "ies"} ${askers.join(", ")} take${askers.length === 1 ? "s" : ""} — drop pageType from ${askers.length === 1 ? "it" : "them"} (page_types.upsert_many) first, then retry.`,
+            true,
+          ),
         );
       }
       const pages = await loadPagesInView(tx, branchId, { pageTypeIds: [t.id] });

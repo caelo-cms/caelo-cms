@@ -243,7 +243,7 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
     "Edit metadata of 1..N pages — the ONLY tool for it: rename, retitle, reslug, status, template, page type, properties, terms.",
     "DO NOT USE FOR: nesting under another page / back to top level -> `move_pages`; SEO -> `set_page_seo_many`; modules -> `update_modules_many`.",
     "CORE RULES:",
-    "- THREE independent identifiers, never substitute one for another: `title` (HTML <title>), `shortTitle` (label in breadcrumbs, menus, page picker; translated with the page), `slug` (URL). 'Rename this page' = `title` + `shortTitle`; the URL only when the operator asks.",
+    "- THREE independent identifiers, never substitute one for another: `title` (page title; `<title>` via its title template), `shortTitle` (label in breadcrumbs, menus, page picker; translated with the page), `slug` (URL). 'Rename this page' = `title` + `shortTitle`; the URL only when the operator asks.",
     `- Changing \`slug\` moves the page's URL AND every nested page's URL; a 301 from each old URL is created in the same transaction. On-site links (menus, link lists, modules, content) follow automatically — do not update them. A slug change moving ${PAGE_MOVE_APPROVAL_THRESHOLD}+ URLs (page + subtree) pauses for one Owner click in chat.`,
     "- Items apply independently: per-item failures (not found, version conflict) are reported, the rest applies.",
   ].join("\n"),
@@ -305,7 +305,7 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
             properties: {
               type: "object",
               description:
-                "Page type properties, merged (null removes one), e.g. `{author:'Ada', event_date:'2026-11-03'}`.",
+                "Page type properties, merged (null removes one), e.g. `{event_date:'2026-11-03', authors:['/team/ada', '/team/ben']}` (a `page` property: page paths, in order).",
               additionalProperties: true,
             },
             terms: {

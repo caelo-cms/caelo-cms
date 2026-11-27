@@ -45,7 +45,12 @@
  *   - both between the attributes of the same tag, each right after
  *     whitespace or a closing quote (`<a {{#ext}}target="_blank"{{/ext}}>`);
  *     the open tag may also end the tag name (`<li{{#on}} class="on"{{/on}}>`)
- *     when what follows the close tag cannot continue that name.
+ *     and the close tag a valueless name (`<input {{#r}}checked{{/r}}>`)
+ *     when what follows the close tag cannot continue that name, and a
+ *     block that ends a name and starts one must not repeat into a join
+ *     that moves a value (see `sectionKeeps`). Not between the attributes
+ *     of a `<font>` or an `<annotation-xml>`, nor in the latter's
+ *     `encoding`: those decide whether what follows is SVG, MathML or HTML.
  *
  *   A section anywhere else, a `{{! comment }}` where a section could not
  *   stand, a nested module's partial outside HTML element content, a
@@ -113,6 +118,20 @@ const TEXT_ONLY_ELEMENTS = new Set([
 /** Elements that change how what follows them is read: an element a value names could be one. */
 const READING_ELEMENTS = [...TEXT_ONLY_ELEMENTS, "script", "style", "svg", "math", "select"];
 
+/**
+ * Elements whose attributes decide how what follows them is read: a
+ * `<font>` with a `color`, `face` or `size` ends SVG or MathML, and an
+ * `<annotation-xml>` whose `encoding` is `text/html` reads its content as
+ * HTML. A value or a section there could move every value after it into
+ * another namespace, where a `<script href>` loads code.
+ */
+const READING_ATTRIBUTE_ELEMENTS: ReadonlySet<string> = new Set(["font", "annotation-xml"]);
+
+/** Whether attribute `n` of `element` is one whose value decides how what follows is read. */
+function readingAttribute(element: Element, n: string): boolean {
+  return element.tagName.toLowerCase() === "annotation-xml" && n === "encoding";
+}
+
 /** How many templates' contexts are kept: enough for every module a build renders over and over. */
 export const CONTEXT_CACHE_SIZE = 512;
 
@@ -146,6 +165,15 @@ export interface PlaceholderContexts {
    * (see `page-reading.ts`).
    */
   readonly endsInContent: boolean;
+  /**
+   * Where the markup starts that keeps the template from ending in plain
+   * content, when it does not: the first section, partial, delimiter
+   * change or value that can change how what follows reads, or the
+   * template's length when its own end is the problem (raw text, SVG,
+   * MathML, a `<select>`, a comment or an unfinished tag left open).
+   * Null when {@link endsInContent}. What the AI is shown to rewrite.
+   */
+  readonly endsOutsideFrom: number | null;
   /**
    * #1748 — where each value tag sits for a CORE value, by the offset of
    * its `{{` (the inner one of a `{{{…}}}` too), checked by
@@ -274,14 +302,20 @@ function computeContexts(html: string): PlaceholderContexts {
   if (tags.length === 0) {
     const text = `${html}${markers.mark(0)}`;
     const root = parseBody(text);
+    // A browser keeps markup in a `<select>` that this reading drops.
+    const select = selectDivergence(root, text);
+    const ends = isPlainContent(placesOf(root, markers).get(0));
     return {
       byStart,
       nestedOutsideContent: new Set(),
       corePlaces: new Map(),
-      // A browser keeps markup in a `<select>` that this reading drops.
-      endsInContent:
-        isPlainContent(placesOf(root, markers).get(0)) &&
-        selectDivergence(root, text) === Number.POSITIVE_INFINITY,
+      endsInContent: ends && select === Number.POSITIVE_INFINITY,
+      endsOutsideFrom:
+        select !== Number.POSITIVE_INFINITY
+          ? Math.min(select, html.length)
+          : ends
+            ? null
+            : html.length,
     };
   }
 
@@ -309,14 +343,24 @@ function computeContexts(html: string): PlaceholderContexts {
     corePlaces.set(tag.start, places);
     if (html[tag.start + 2] === "{") corePlaces.set(tag.start + 1, places);
   }
+  // Where the reading of the end marker holds in every render (not where
+  // the value rules stop trusting the reading: a value after an unquoted
+  // `alt={{alt}}` is refused, but the module still ends where it ends).
+  const endsInContent = values.endsInContent && values.endHolds && sections.endHolds;
+  const changesFrom = Math.min(
+    values.endHolds ? Number.POSITIVE_INFINITY : values.unsafeFrom,
+    sections.endHolds ? Number.POSITIVE_INFINITY : sections.from,
+  );
   return {
     byStart,
     nestedOutsideContent,
     corePlaces,
-    // Where the reading of the end marker holds in every render (not where
-    // the value rules stop trusting the reading: a value after an unquoted
-    // `alt={{alt}}` is refused, but the module still ends where it ends).
-    endsInContent: values.endsInContent && values.endHolds && sections.endHolds,
+    endsInContent,
+    endsOutsideFrom: endsInContent
+      ? null
+      : changesFrom !== Number.POSITIVE_INFINITY
+        ? changesFrom
+        : html.length,
   };
 }
 
@@ -670,6 +714,12 @@ function readValues(
         unsafeFrom = Math.min(unsafeFrom, tag.start);
         endHolds = false;
       }
+      if (namesReadingAttribute(place)) {
+        // `<svg><font {{a}}>` may be a `color` that ends the SVG;
+        // `encoding="{{e}}"` may read an `<annotation-xml>` as HTML.
+        unsafeFrom = Math.min(unsafeFrom, tag.start);
+        endHolds = false;
+      }
       if (spellingMayEndText(place, i, { html, tags, toTemplate })) {
         // Empty, or spelled with `-`/`!`, it may end the raw text or the
         // comment it stands in (`<{{v}}/textarea>`, `<!--{{v}}->`).
@@ -983,6 +1033,20 @@ function endTagNameValues(html: string, tags: readonly MustacheSpan[]): number {
   return first;
 }
 
+/**
+ * Whether a value at `place` could decide how what follows is read: it
+ * names an attribute of a `<font>` or an `<annotation-xml>`, or stands in
+ * the `encoding` of an `<annotation-xml>` ({@link READING_ATTRIBUTE_ELEMENTS}).
+ */
+function namesReadingAttribute(place: Place): boolean {
+  if (place.at === "attr-name") {
+    return READING_ATTRIBUTE_ELEMENTS.has(place.element.tagName.toLowerCase());
+  }
+  return (
+    place.at === "attr-value" && readingAttribute(place.element, attributeName(place.attribute))
+  );
+}
+
 /** Whether an element whose name holds a value (`<{{tag}}>`, `<h{{n}}>`) could be one of {@link READING_ELEMENTS}. */
 function couldChangeReading(tagName: string, markers: MarkerSet): boolean {
   const name = tagName.toLowerCase();
@@ -1134,6 +1198,8 @@ function attributeContext(
   if (n.startsWith("on")) return refusal("context-event-handler");
   if (n === "style") return refusal("context-style-attribute");
   if (n === "srcdoc") return refusal("context-srcdoc");
+  // It decides how the content is read, like a tag name would.
+  if (readingAttribute(element, n)) return refusal("context-tag");
   if (ns === H.NS.HTML && el === "meta") return refusal("context-meta");
   if (ns === H.NS.HTML && el === "base") return refusal("context-base");
   if (ns === H.NS.SVG && SVG_ANIMATION.has(el) && SVG_ANIMATION_ATTRIBUTES.has(n)) {
@@ -1238,23 +1304,43 @@ function sectionsUnsafeFrom(
         if (place.foreign && cdata) return null;
         // A block that opens or closes a `<select>` changes how what follows is read.
         const where = `${place.foreign ? id(place.foreign) : "html"}:${place.select ? id(place.select) : "-"}`;
-        return { key: `text:${where}`, glued: false };
+        return { key: `text:${where}`, glued: false, bare: false };
       }
       case "attr-value": {
+        // `encoding` decides how an `<annotation-xml>`'s content is read.
+        if (readingAttribute(place.element, attributeName(place.attribute))) return null;
         const loc = attributeLocation(place.element, place.attribute);
         const span = loc ? attributeValueSpan(second.text, loc.startOffset, loc.endOffset) : null;
         if (!span || (!span.quoted && span.valueStart === at)) return null;
         return {
           key: `value:${id(place.element)}:${attributeName(place.attribute)}`,
           glued: false,
+          bare: false,
         };
       }
       case "attr-name": {
+        // Which attributes a `<font>` or an `<annotation-xml>` has decides
+        // how what follows is read: no block may add or drop one.
+        if (READING_ATTRIBUTE_ELEMENTS.has(place.element.tagName.toLowerCase())) return null;
         const loc = attributeLocation(place.element, place.attribute);
         // It starts a name (after whitespace or a closing quote), or ends
         // one that has no value (`disabled{{/a}}`).
-        if (loc?.startOffset !== at && !glued.has(i)) return null;
-        return { key: `tag:${id(place.element)}`, glued: glued.has(i) };
+        const starts = loc?.startOffset === at;
+        if (!starts && !glued.has(i)) return null;
+        const valueless =
+          loc !== undefined &&
+          attributeValueSpan(second.text, loc.startOffset, loc.endOffset) === null;
+        // A tag that starts a name leaves that name to what follows it. As
+        // the whole name, with an `=` after it, it would hand the browser an
+        // `=` where no name stands: `{{/a}}="{{v}}"` without the block reads
+        // the value's words as attributes (`="x onfocus=…`).
+        if (starts && !valueless && attributeName(place.attribute) === markers.mark(i)) return null;
+        return {
+          key: `tag:${id(place.element)}`,
+          glued: glued.has(i),
+          // `{{#a}}checked …`: the name it starts has no `=`, on an HTML element.
+          bare: starts && valueless && place.element.namespaceURI === H.NS.HTML,
+        };
       }
       default:
         return null;
@@ -1343,11 +1429,14 @@ function markedTemplate(
 /**
  * A boundary a section tag stands at: `key` names it (a matching tag must
  * share it), `glued` when the tag ends a name, so a name character after
- * the block would continue that name.
+ * the block would continue that name, and `bare` when the tag starts the
+ * name of an attribute written without `=` on an HTML element
+ * (`{{#a}}checked`).
  */
 interface Boundary {
   readonly key: string;
   readonly glued: boolean;
+  readonly bare: boolean;
 }
 
 /**
@@ -1372,6 +1461,17 @@ const ENDS_NAME = /[\t\n\f\r />]/;
  * (the close tag `to`) leaves the HTML around it as it is: both at the same
  * boundary, and no name continued across the block. A comment is a section
  * with no block (`from` is `to`).
+ *
+ * A block that starts with a name and ends one, between the attributes of
+ * one tag (`<input {{#required}}checked disabled{{/required}}>`), joins the
+ * two names when it repeats (`checked disabledchecked disabled`). That join
+ * is what would move a value: `{{#l}}click="{{v}}" on{{/l}}` repeated puts
+ * the second `v` in an `onclick`. It cannot happen when the block renders at
+ * most once, which an inverted section always does, and it moves nothing
+ * when the name the block starts has no value: the join then makes one
+ * more attribute without a value, and on an HTML element (not a `<font>`,
+ * whose attributes {@link READING_ATTRIBUTE_ELEMENTS} keeps out of every
+ * block) no attribute without a value changes how anything after it is read.
  */
 function sectionKeeps(
   html: string,
@@ -1390,11 +1490,24 @@ function sectionKeeps(
     close.glued &&
     from !== to &&
     from.end !== to.start &&
-    !ENDS_NAME.test(html[from.end] ?? "")
+    !ENDS_NAME.test(html[from.end] ?? "") &&
+    !isInverted(html, from) &&
+    !open.bare
   ) {
     return false;
   }
   return true;
+}
+
+/** Whether `tag` opens an inverted section (`{{^a}}`), whose block renders at most once. */
+function isInverted(html: string, tag: MustacheSpan): boolean {
+  return (
+    tag.kind === "open" &&
+    html
+      .slice(tag.start + 2, tag.end)
+      .trimStart()
+      .startsWith("^")
+  );
 }
 
 // ── URL attributes ─────────────────────────────────────────────────────

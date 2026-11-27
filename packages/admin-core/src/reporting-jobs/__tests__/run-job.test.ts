@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { gcpAuditLauncherFromEnv } from "../../quality/gcp-audit-launcher.js";
 import { parseJobOrder, runOrder } from "../job-entry.js";
 import {
   createJobReporter,
@@ -18,6 +19,7 @@ import {
   type ReportTransport,
 } from "../job-reporter.js";
 import type { JobOrder, ReportEnvelope } from "../protocol.js";
+import { planRunCapacity } from "../run-capacity.js";
 import { runJobAttempt } from "../run-job.js";
 
 const ORDER: JobOrder = {
@@ -144,6 +146,37 @@ describe("deferAttempt and faultWatchingReporter", () => {
     await watched.settled();
     expect(watched.inFlight()).toEqual([]);
     expect(watched.fault()).toBeInstanceOf(ReportError);
+  });
+
+  it("passes the order's capacity and task slot through, so the audit can size its Lighthouse runs", () => {
+    // v0.12.17: the wrapper dropped `capacity`, and every Google Cloud audit
+    // failed with "the audit runner's order carries no CPU capacity".
+    const capacity = planRunCapacity("p", "europe-west1", 3000);
+    const inner = createJobReporter({ ...ORDER, capacity, tasks: 2, maxTasks: 2 }, recording(), {
+      taskIndex: 1,
+    });
+    const watched = faultWatchingReporter(inner).reporter;
+    expect(inner.slot).toBeDefined();
+    expect(watched.capacity).toEqual(capacity);
+    expect(watched.slot).toEqual(inner.slot);
+    // Every field the reporter carries survives the wrapper, not only these two.
+    for (const key of Object.keys(inner) as (keyof typeof inner)[]) {
+      if (key === "call") continue;
+      expect(watched[key]).toEqual(inner[key]);
+    }
+  });
+
+  it("the GCP Lighthouse launcher starts from a wrapped reporter's capacity", () => {
+    const capacity = planRunCapacity("p", "europe-west1", 3000);
+    const watched = faultWatchingReporter(
+      createJobReporter({ ...ORDER, capacity }, recording()),
+    ).reporter;
+    const env = {
+      CAELO_PROVIDER: "gcp",
+      CAELO_AUDIT_JOB: "projects/p/locations/europe-west1/jobs/caelo-production-audit",
+      CAELO_AUDIT_RESULTS_BUCKET: "p-caelo-production-audit-results",
+    };
+    expect(gcpAuditLauncherFromEnv(env, watched.capacity?.lighthouseTasks)).not.toBeNull();
   });
 });
 

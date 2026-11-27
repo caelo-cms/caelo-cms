@@ -20,6 +20,9 @@ interface SeoSettings {
   robotsRules: RobotsRules;
   robotsTxt: string | null;
   robotsWarnings: string[];
+  /** #1752 — the `<title>` template of pages whose page type has none. */
+  titleTemplate: string;
+  siteName: string | null;
   searchNotifications: {
     id: string;
     channel: "websub" | "indexnow";
@@ -94,6 +97,8 @@ export const load: PageServerLoad = async ({ locals }) => {
           robotsRules: [],
           robotsTxt: null,
           robotsWarnings: [],
+          titleTemplate: "",
+          siteName: null,
           searchNotifications: [],
         },
     robotsRulesText: settings.ok
@@ -190,6 +195,22 @@ export const actions: Actions = {
     });
     if (!r.ok) return fail(400, { error: describeError(r.error) });
     return { ok: true, message: "Site language saved." };
+  },
+  // #1752 — the site's title template (page types can have their own; the
+  // AI sets those with set_page_type_seo_many).
+  saveTitleTemplate: async ({ request, locals }) => {
+    requirePermission(locals, "roles.manage");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const r = await execute(registry, adapter, locals.ctx, "page_types.set_seo_many", {
+      siteTitleTemplate: String(form.get("titleTemplate") ?? "").trim(),
+    });
+    if (!r.ok) return fail(400, { error: describeError(r.error) });
+    return {
+      ok: true,
+      message: "Title template saved. It goes live with the next Stage and Publish live.",
+    };
   },
   // #1706 — the robots.txt rules, written as robots.txt lines and checked
   // strictly; the other settings stay as they are stored.

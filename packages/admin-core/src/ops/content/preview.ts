@@ -90,8 +90,10 @@ import {
   renderModuleWithContent,
   renderSeoHead,
   resolveDocumentLanguage,
+  resolvePageSeoHead,
   type SiteSeoSettings,
   scanCssVars,
+  seoTitleVariableMarker,
   siteFeedLink,
   type TemplateField,
   unknownCssVarMarker,
@@ -112,6 +114,7 @@ import {
   resolveLinkPartition,
   resolvePageListOverlays,
 } from "../../lists/load.js";
+import { PAGE_SEO_COLUMN_DEFAULTS } from "../../seo/page-seo.js";
 import { resolvePageShareImages } from "../../seo/share-image.js";
 import { loadSiteView, type SiteView } from "../../site-view.js";
 import { pendingUrlAnnotationPageIds } from "./branch-url-drift.js";
@@ -297,6 +300,14 @@ async function renderPreview(
   }
   const pageId = page.pageRow.page_id;
   const { pageRow, modRows, layoutModRows, placementBindings, resources, pageUrlStyle } = page;
+  // #1752 — the placements whose stored content the page keeps out of
+  // snippets, decided before content variants stand in for that content.
+  const nosnippetContent = new Set(page.seo?.nosnippetContent ?? []);
+  const nosnippetKeys = new Set(
+    [...placementBindings]
+      .filter(([, b]) => nosnippetContent.has(b.contentInstanceId))
+      .map(([key]) => key),
+  );
   const instanceByIdResource = resources.instances;
   const moduleByIdResource = resources.modules;
 
@@ -591,6 +602,7 @@ async function renderPreview(
         rendered?: boolean;
         css: string;
         js: string;
+        nosnippet?: boolean;
       }[]
     >();
     for (const r of modRows) {
@@ -603,6 +615,7 @@ async function renderPreview(
         rendered: true,
         css: r.css,
         js: r.js,
+        ...(nosnippetKeys.has(`${r.block_name}#${r.position}`) ? { nosnippet: true } : {}),
       });
       grouped.set(r.block_name, arr);
     }
@@ -749,15 +762,53 @@ async function renderPreview(
     [{ pageId, ownAssetId: page.ownOgImageAssetId }],
     renderScope,
   );
+  // #391 — plugin head contributions ride the SAME compose call the static
+  // generator uses (byte parity by construction). They need absolute URLs:
+  // with no base URL none are collected and `<html lang>` carries the
+  // stored site language (or none).
+  const contributions = siteBaseUrl
+    ? await collectContributions([pageId], { siteBaseUrl, pageUrlStyle, ...renderScope })
+    : null;
+  // #1752 — the head resolves exactly as the build resolves it (seo-pass.ts):
+  // page → page type → site, the page type in this branch's view.
+  const pageType = view.pageTypes.find((t) => t.id === pageRow.page_type_id);
+  if (!pageType) {
+    return failure(
+      `page type ${pageRow.page_type_id} of this page is not in the site view — reload the editor`,
+    );
+  }
+  const head = resolvePageSeoHead({
+    pageTitle: pageRow.title,
+    shortTitle: pageRow.short_title,
+    seo: page.seo ?? PAGE_SEO_COLUMN_DEFAULTS,
+    pageTypeSeo: pageType.state.definition.seo,
+    site: { titleTemplate: settings.seoTitleTemplate, siteName: settings.siteName },
+    forceNoindex: followUp !== null && pagination?.followUps === "noindex",
+  });
+  for (const v of head.unsetVariables) seoMarkers.push(seoTitleVariableMarker(v));
+  // The build dates an article from the live record when it records the
+  // page there (indexable page 1): the preview shows the dates live now.
+  const firstPublished = pageRow.first_published_at;
+  const article =
+    followUp === null &&
+    !head.robots.noindex &&
+    contributions?.sitemap.get(pageId)?.exclude !== true &&
+    firstPublished !== null &&
+    page.liveChangedAt !== null
+      ? {
+          publishedTime: new Date(firstPublished).toISOString(),
+          modifiedTime: page.liveChangedAt,
+        }
+      : null;
   const headBlock = renderSeoHead({
-    title: pageRow.title,
-    metaDescription: page.seo?.metaDescription ?? "",
+    head,
+    pageTitle: pageRow.title,
+    siteName: settings.siteName,
+    article,
     canonical:
       followUp !== null && canonical !== null
         ? pagedUrl(canonical, followUp, pageUrlStyle)
         : canonical,
-    noindex:
-      (page.seo?.noindex ?? false) || (followUp !== null && pagination?.followUps === "noindex"),
     ogImageUrl: shareImages.get(pageId)?.url ?? null,
     organization,
     // The feed link every built page carries (docs/dev/search-engine-feed.md).
@@ -771,13 +822,6 @@ async function renderPreview(
         })
       : null,
   });
-  // #391 — plugin head contributions ride the SAME compose call the static
-  // generator uses (byte parity by construction). They need absolute URLs:
-  // with no base URL none are collected and `<html lang>` carries the
-  // stored site language (or none).
-  const contributions = siteBaseUrl
-    ? await collectContributions([pageId], { siteBaseUrl, pageUrlStyle, ...renderScope })
-    : null;
   const contributedHead = contributions?.head.get(pageId);
   html = injectSeoIntoHead(
     html,

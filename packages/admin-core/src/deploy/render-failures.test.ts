@@ -393,6 +393,34 @@ describe("describeRenderFailures — the next step of a stopped build (#1718)", 
   });
 });
 
+describe("a title template variable without a value (#1752)", () => {
+  const onPage = (title: string, path: string) =>
+    failure({
+      pageTitle: title,
+      pagePath: path,
+      blockName: null,
+      moduleSlug: null,
+      reason: "seo-title-variable-unset:site_name",
+      line: `page "${title}": its title template uses {site_name}, which has no value`,
+    });
+
+  it("sends the site name to set_site_identity", () => {
+    const r = renderRepairOf({ reason: "seo-title-variable-unset:site_name", moduleSlug: null });
+    expect(r.tool).toBe("set_site_identity");
+    expect(r.hint).toContain("set_page_type_seo_many");
+  });
+
+  it("tells the operator which pages show it, without markers or tool names", () => {
+    const text =
+      stagedRenderReport([onPage("Team", "/team"), onPage("Pricing", "/pricing")], 2)
+        ?.operatorText ?? "";
+    expect(text).toContain(
+      "The page title template uses a value the site does not have yet (the site's name) — on Team (/team), Pricing (/pricing)",
+    );
+    expect(text).not.toMatch(/seo-title|set_|site_name/);
+  });
+});
+
 describe("renderRepairOf — a plugin value the host refused (#1729)", () => {
   it("sends the AI to the plugin, with the rule and the field, within the finding's cut", () => {
     const r = renderRepairOf({
@@ -405,6 +433,49 @@ describe("renderRepairOf — a plugin value the host refused (#1729)", () => {
     );
     expect(r.hint).toContain("submit_plugin");
     expect(r.hint.length).toBeLessThan(500);
+  });
+
+  it("sends a refusal for where the page puts the value to the markup, never the plugin (#1787)", () => {
+    // The real-AI cookie banner: its values were refused by placement, and
+    // the hint told the AI to fix the plugin's data, which it cannot.
+    const conditional = renderRepairOf({
+      reason:
+        "plugin-value-refused:consent-manager.consent_categories.key:context-conditional-markup",
+      moduleSlug: "cookie-banner",
+    });
+    expect(conditional.tool).toBe("update_modules_many");
+    expect(conditional.hint).toContain(
+      'module "cookie-banner" puts the plugin "consent-manager"\'s key value',
+    );
+    expect(conditional.hint).toContain("<input {{#a}}checked{{/a}}>");
+    expect(conditional.hint).not.toContain("plugin's data");
+    const open = renderRepairOf({
+      reason: "plugin-value-refused:consent-manager.consent_categories.key:context-open-markup",
+      moduleSlug: "cookie-banner",
+    });
+    expect(open.tool).toBe("inspect_page_render");
+    expect(open.hint).toContain("endsOutsideContent");
+    const slot = renderRepairOf({
+      reason: "plugin-value-refused:consent-manager.consent_categories.key:context-slot-placement",
+      moduleSlug: "cookie-banner",
+    });
+    expect(slot.tool).toBe("move_module");
+    const handler = renderRepairOf({
+      reason: "plugin-value-refused:consent-manager.consent_categories.label:context-event-handler",
+      moduleSlug: "cookie-banner",
+    });
+    expect(handler.tool).toBe("update_modules_many");
+    expect(handler.hint).toContain("(context-event-handler)");
+    for (const r of [conditional, open, slot, handler]) {
+      expect(r.hint.length).toBeLessThan(500);
+    }
+    // A rule about the value itself still sends the AI to the plugin.
+    expect(
+      renderRepairOf({
+        reason: "plugin-value-refused:consent-manager.consent_categories.label:url-scheme",
+        moduleSlug: "cookie-banner",
+      }).tool,
+    ).toBe("get_plugin");
   });
 
   it("names the head vocabulary for a refused head entry, and the image rule for a share image", () => {
