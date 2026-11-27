@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { renderSeoHead } from "@caelo-cms/shared";
+import { PAGE_SEO_HEAD_DEFAULTS, renderSeoHead, resolvePageSeoHead } from "@caelo-cms/shared";
 import { builtPageOutputPath } from "./generate.js";
 import { NOT_FOUND_PAGE_FILE, notFoundPageBuildError } from "./not-found-page.js";
 import { isSitemapEntry, notFoundPageSeo } from "./seo-pass.js";
@@ -63,14 +63,25 @@ describe("notFoundPageBuildError", () => {
 
 describe("404 page SEO", () => {
   it("renders noindex and no canonical / og:url / JSON-LD url", () => {
+    const seo = notFoundPageSeo();
     const head = renderSeoHead({
-      title: "Page not found",
-      metaDescription: "",
+      head: resolvePageSeoHead({
+        pageTitle: "Page not found",
+        shortTitle: "Page not found",
+        seo: PAGE_SEO_HEAD_DEFAULTS,
+        pageTypeSeo: undefined,
+        site: { titleTemplate: "{page_title}", siteName: null },
+        forceNoindex: seo.noindex,
+      }),
+      pageTitle: "Page not found",
+      siteName: null,
+      article: null,
       ogImageUrl: null,
       organization: {},
-      ...notFoundPageSeo(),
+      feed: null,
+      canonical: seo.canonical,
     });
-    expect(head).toContain('<meta name="robots" content="noindex" />');
+    expect(head).toContain('<meta name="robots" content="noindex, max-image-preview:large" />');
     expect(head).not.toContain('rel="canonical"');
     expect(head).not.toContain("og:url");
     expect(head).not.toContain('"url"');

@@ -229,6 +229,7 @@ const EXPECTED = `--- preview en
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pricing</title>
 <link rel="canonical" href="https://example.com/t1729h-pricing/" />
+<meta name="robots" content="max-image-preview:large" />
 <link rel="alternate" type="application/atom+xml" title="example.com" href="https://example.com/feed.xml" />
 <meta property="og:title" content="Pricing" />
 <meta property="og:type" content="website" />
@@ -245,6 +246,7 @@ const EXPECTED = `--- preview en
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pricing</title>
 <link rel="canonical" href="https://example.com/de/t1729h-preise/" />
+<meta name="robots" content="max-image-preview:large" />
 <link rel="alternate" type="application/atom+xml" title="example.com" href="https://example.com/feed.xml" />
 <meta property="og:title" content="Pricing" />
 <meta property="og:type" content="website" />
@@ -261,6 +263,7 @@ const EXPECTED = `--- preview en
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pricing</title>
 <link rel="canonical" href="https://example.com/fr/t1729h-prix/" />
+<meta name="robots" content="max-image-preview:large" />
 <link rel="alternate" type="application/atom+xml" title="example.com" href="https://example.com/feed.xml" />
 <meta property="og:title" content="Pricing" />
 <meta property="og:type" content="website" />
@@ -277,6 +280,7 @@ const EXPECTED = `--- preview en
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pricing</title>
 <link rel="canonical" href="https://es.example.com/t1729h-precios/" />
+<meta name="robots" content="max-image-preview:large" />
 <link rel="alternate" type="application/atom+xml" title="example.com" href="https://example.com/feed.xml" />
 <meta property="og:title" content="Pricing" />
 <meta property="og:type" content="website" />
@@ -293,6 +297,7 @@ const EXPECTED = `--- preview en
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Solo</title>
 <link rel="canonical" href="https://example.com/t1729h-solo/" />
+<meta name="robots" content="max-image-preview:large" />
 <link rel="alternate" type="application/atom+xml" title="example.com" href="https://example.com/feed.xml" />
 <meta property="og:title" content="Solo" />
 <meta property="og:type" content="website" />
@@ -305,6 +310,7 @@ const EXPECTED = `--- preview en
 <head>
 <title>Pricing</title>
 <link rel="canonical" href="https://example.com/t1729h-pricing/" />
+<meta name="robots" content="max-image-preview:large" />
 <meta property="og:title" content="Pricing" />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://example.com/t1729h-pricing/" />
@@ -320,6 +326,7 @@ const EXPECTED = `--- preview en
 <head>
 <title>Pricing</title>
 <link rel="canonical" href="https://example.com/de/t1729h-preise/" />
+<meta name="robots" content="max-image-preview:large" />
 <meta property="og:title" content="Pricing" />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://example.com/de/t1729h-preise/" />
@@ -335,6 +342,7 @@ const EXPECTED = `--- preview en
 <head>
 <title>Pricing</title>
 <link rel="canonical" href="https://example.com/fr/t1729h-prix/" />
+<meta name="robots" content="max-image-preview:large" />
 <meta property="og:title" content="Pricing" />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://example.com/fr/t1729h-prix/" />
@@ -350,6 +358,7 @@ const EXPECTED = `--- preview en
 <head>
 <title>Pricing</title>
 <link rel="canonical" href="https://es.example.com/t1729h-precios/" />
+<meta name="robots" content="max-image-preview:large" />
 <meta property="og:title" content="Pricing" />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://es.example.com/t1729h-precios/" />
@@ -365,6 +374,7 @@ const EXPECTED = `--- preview en
 <head>
 <title>Solo</title>
 <link rel="canonical" href="https://example.com/t1729h-solo/" />
+<meta name="robots" content="max-image-preview:large" />
 <meta property="og:title" content="Solo" />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://example.com/t1729h-solo/" />

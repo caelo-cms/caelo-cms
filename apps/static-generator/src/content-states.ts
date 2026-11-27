@@ -85,7 +85,8 @@ export class ContentStates {
   private constructor(
     private readonly base: number | null,
     private readonly live: ReadonlyMap<string, LiveState>,
-    private readonly publishAt: string,
+    /** The run's start: the date of every page this build changes (and first publishes). */
+    readonly publishAt: string,
     private readonly full: boolean,
   ) {}
 

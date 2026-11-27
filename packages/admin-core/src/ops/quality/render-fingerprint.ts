@@ -35,8 +35,10 @@ export type RenderFingerprint = z.infer<typeof renderFingerprintSchema>;
 /**
  * The `site_defaults` columns that reach a page or a build file, by the
  * classification in docs/dev/redirects-and-settings-sync.md. Everything
- * else on the row is authoring state (site name, purpose, design brief,
- * default layout), which renders nothing and must not force a Stage. The
+ * else on the row is authoring state (purpose, design brief, default
+ * layout), which renders nothing and must not force a Stage. #1752 — the
+ * site name renders (`og:site_name`, `{site_name}`), and so does the title
+ * template. The
  * usage threshold only counts while the CDN copy is on. A pending home or
  * 404 page is not here: it changes nothing on main until its page merges,
  * and that merge moves it to the pointer.
@@ -56,6 +58,9 @@ const RENDERED_SITE_SETTINGS = {
   // #1706 — the live robots.txt of a production build.
   robots_rules: { label: "robots.txt rules", value: sql`sd.robots_rules::text` },
   site_language: { label: "site language", value: sql`sd.site_language` },
+  // #1752 — og:site_name, {site_name} and the <title> of pages without their own.
+  site_name: { label: "site name", value: sql`sd.site_name` },
+  seo_title_template: { label: "title template", value: sql`sd.seo_title_template` },
   media_cdn_copy_enabled: {
     label: "media CDN copy",
     value: sql`sd.media_cdn_copy_enabled::text`,
@@ -124,6 +129,12 @@ export async function computeRenderFingerprint(tx: Tx): Promise<RenderFingerprin
     FROM pages p
     WHERE p.status = 'published' AND p.deleted_at IS NULL AND p.chat_branch_id IS NULL
     UNION ALL
+    -- #1752 — a page type's title template and og:type render into every
+    -- page of it; a type without them is no row (nothing of it renders).
+    SELECT 'page_type_seo:' || pt.id, md5((pt.definition->'seo')::text)
+    FROM page_types pt
+    WHERE pt.deleted_at IS NULL AND pt.chat_branch_id IS NULL AND pt.definition ? 'seo'
+    UNION ALL
     ${renderedSettingRows()}
   `)) as unknown as { k: string; h: string }[];
   const out: RenderFingerprint = {};
@@ -165,6 +176,7 @@ async function labels(tx: Tx, diffs: readonly FingerprintDiff[]): Promise<Map<st
     UNION ALL SELECT id::text, display_name FROM themes WHERE id = ANY(${uuidArray(ids)})
     UNION ALL SELECT id::text, slug FROM plugins WHERE id = ANY(${uuidArray(ids)})
     UNION ALL SELECT id::text, COALESCE(current_path, title) FROM pages WHERE id = ANY(${uuidArray(ids)})
+    UNION ALL SELECT id::text, slug FROM page_types WHERE id = ANY(${uuidArray(ids)})
   `)) as unknown as { id: string; label: string }[];
   return new Map(rows.map((r) => [r.id, r.label]));
 }
@@ -198,6 +210,9 @@ function toStageChanges(
         if (d.change !== "removed") {
           out.push({ entity: "pluginConfig", entityId: d.id, label: `plugin ${label}` });
         }
+        break;
+      case "page_type_seo":
+        out.push({ entity: "siteSetting", entityId: d.id, label: `SEO of page type ${label}` });
         break;
       case "setting":
         if (isRenderedSiteSetting(d.id)) {

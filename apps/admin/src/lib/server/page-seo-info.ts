@@ -6,16 +6,37 @@
  * this chat's draft has them, and which of them are pending (changed in
  * the draft, live only after a Stage and a Publish live). None of these
  * is visible in the rendered preview, so the editor shows them on demand.
+ *
+ * #1752 — each value as a build renders it (`pages_seo.get`'s `resolved`:
+ * the page's own text, its page type's or the site's template, or shared
+ * from another field) with where it comes from.
  */
 
 import { execute } from "@caelo-cms/query-api";
-import type { ExecutionContext, ShareImageSource } from "@caelo-cms/shared";
+import type { ExecutionContext, SeoValueOrigin, ShareImageSource } from "@caelo-cms/shared";
 import { getQueryContext } from "./query.js";
+
+/** A head value and where it comes from (`resolvePageSeoHead`). */
+export interface SeoInfoValue {
+  readonly value: string;
+  readonly origin: SeoValueOrigin;
+  /** The template it was filled from (`page_type` / `site` titles). */
+  readonly template?: string | null;
+  /** The field it is shared from (`inherited` values). */
+  readonly inheritsFrom?: string | null;
+}
 
 /** One page's SEO as the editor shows it. */
 export interface PageSeoInfo {
-  readonly title: string;
-  readonly metaDescription: string;
+  readonly title: SeoInfoValue;
+  readonly metaDescription: SeoInfoValue;
+  readonly ogTitle: SeoInfoValue;
+  readonly ogDescription: SeoInfoValue;
+  readonly ogType: SeoInfoValue;
+  /** The `<meta name="robots">` content. */
+  readonly robots: string;
+  /** The page type the templates come from. */
+  readonly pageType: string;
   /** The image the page really gets (#1452); null with a source = deleted asset. */
   readonly ogImageUrl: string | null;
   /** Where that image comes from: the page, its language, the site, or nowhere. */
@@ -29,11 +50,19 @@ export interface PageSeoInfo {
 }
 
 interface SeoRow {
-  metaDescription: string;
-  ogImageAssetId: string | null;
   canonicalUrl: string | null;
   noindex: boolean;
   pendingFields: string[];
+}
+
+interface ResolvedHead {
+  title: SeoInfoValue;
+  metaDescription: SeoInfoValue;
+  ogTitle: SeoInfoValue;
+  ogDescription: SeoInfoValue;
+  ogType: SeoInfoValue;
+  robots: string;
+  pageType: string;
 }
 
 /**
@@ -55,7 +84,11 @@ export async function loadPageSeoInfo(
     console.error("[edit] page SEO read failed", { pageId: draft.id, error: r.error });
     return { error: "This page's SEO could not be read — reload the editor to try again." };
   }
-  const seo = (r.value as { seo: SeoRow | null }).seo;
+  const { seo, resolved } = r.value as { seo: SeoRow | null; resolved: ResolvedHead | null };
+  if (resolved === null) {
+    console.error("[edit] page SEO has no resolved head", { pageId: draft.id });
+    return { error: "This page's SEO could not be read — reload the editor to try again." };
+  }
   const images = await execute(registry, adapter, ctx, "pages_seo.share_images", {
     pageIds: [draft.id],
   });
@@ -74,8 +107,13 @@ export async function loadPageSeoInfo(
     ...(seo?.pendingFields ?? []),
   ];
   return {
-    title: draft.title,
-    metaDescription: seo?.metaDescription ?? "",
+    title: resolved.title,
+    metaDescription: resolved.metaDescription,
+    ogTitle: resolved.ogTitle,
+    ogDescription: resolved.ogDescription,
+    ogType: resolved.ogType,
+    robots: resolved.robots,
+    pageType: resolved.pageType,
     ogImageUrl: image?.url ?? null,
     ogImageSource: image?.source ?? "none",
     canonicalUrl: seo?.canonicalUrl ?? null,
