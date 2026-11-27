@@ -57,6 +57,7 @@ import {
   type PluginValueOrigin,
   pluginLocalListOf,
   pluginValue,
+  pluginValueOf,
   pluginValueRefusedMarker,
   refusedPluginValue,
   refusedPluginValueMarker,
@@ -1483,13 +1484,17 @@ function createPageContext(
         else {
           const { list, item } = found[0] as { list: LoadedList; item: ListItem };
           const translated = overlay?.listValues.get(`${list.id}/${item.id}`)?.get("text");
-          const raw = translated ?? item.values.text;
-          const refused = refusedPluginValueMarker(raw);
+          const stored = translated ?? item.values.text;
+          const refused = refusedPluginValueMarker(stored);
+          // #1729 — a plugin's translation keeps its origin, so the engine
+          // checks it where `{{site_text.<key>}}` lands.
+          const owned = pluginValueOf(stored);
+          const raw = owned ? owned.value : stored;
           v =
             refused !== null
               ? { kind: "failed", marker: refused }
               : typeof raw === "string"
-                ? text(raw)
+                ? text(raw, owned?.origin)
                 : { kind: "failed", marker: `site-text-missing:${key}` };
         }
         memo.set(key, v);

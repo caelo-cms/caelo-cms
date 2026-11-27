@@ -12,6 +12,7 @@
 
 import { describe, expect, it } from "bun:test";
 import type { LinkPageVariant } from "../link-refs.js";
+import { renderTemplate } from "../template-engine.js";
 import { fixtureData, fixtureLinkIndex, ITEM, LIST, PAGE } from "./list-fixtures.test.js";
 import type { ListTypeDef } from "./list-type.js";
 import type { PluginMediaFacts } from "./plugin-values.js";
@@ -176,5 +177,50 @@ describe("list-resolve values (#1729, §4.5)", () => {
     expect(failed(bad.get("image"))).toBe(
       `plugin-value-refused:probe.list-resolve.${at("image")}:media-reference`,
     );
+  });
+});
+
+describe("a plugin's translation of a site text (#1729, §4.5)", () => {
+  const SITE_TEXTS = "00000000-0000-4000-8000-0000000000e1";
+  const TEXT_ITEM = "00000000-0000-4000-9000-0000000000e2";
+  const at = `list/${SITE_TEXTS}/item/${TEXT_ITEM}/text`;
+  const render = (html: string, translated: string) =>
+    renderTemplate({
+      html,
+      fields: [],
+      contentValues: {},
+      lists: createListRenderContext(
+        fixtureData({
+          pageVariants: variants,
+          overlays: overlay([[at, translated]]),
+          lists: [
+            {
+              id: SITE_TEXTS,
+              slug: "site-texts",
+              name: "Site texts",
+              typeSlug: "site-texts",
+              items: [
+                {
+                  id: TEXT_ITEM,
+                  node: "text",
+                  values: { key: "breadcrumb_label", text: "Breadcrumb" },
+                },
+              ],
+            },
+          ],
+        }),
+      ).forPage(PAGE.home, {}),
+    });
+
+  it("renders through {{site_text.<key>}}", () => {
+    const r = render('<nav aria-label="{{site_text.breadcrumb_label}}"></nav>', "Brotkrumen");
+    expect(r.missingSlots).toEqual([]);
+    expect(r.html).toBe('<nav aria-label="Brotkrumen"></nav>');
+  });
+
+  it("keeps the plugin's origin, so it is held to the rule where it lands", () => {
+    const r = render('<a href="{{site_text.breadcrumb_label}}">x</a>', "javascript:alert(1)");
+    expect(r.html).not.toContain("javascript:");
+    expect(r.missingSlots).toContain(`plugin-value-refused:probe.list-resolve.${at}:url-scheme`);
   });
 });
