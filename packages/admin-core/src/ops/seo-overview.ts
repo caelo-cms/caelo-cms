@@ -73,9 +73,10 @@ export const pagesSeoOverviewOp = defineOperation({
   name: "pages_seo.overview",
   pluginAccess: "read",
   readScope: "request",
-  // Why not ai: the AI reads the same values with get_page_seo (each with
-  // its origin) and the findings with check_stage_audit; this is the read
-  // behind the seo plugin's panel and duplicate check, and the Owner's.
+  // Why human-only: no AI tool, because the AI reads the same values with
+  // get_page_seo (each with its origin) and the findings with
+  // check_stage_audit; this is the read behind the seo plugin's panel and
+  // duplicate check, and the Owner's.
   actorScope: ["human", "plugin", "system"],
   database: "cms_admin",
   input: z
