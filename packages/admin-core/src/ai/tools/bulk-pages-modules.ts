@@ -305,7 +305,7 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
             properties: {
               type: "object",
               description:
-                "Page type properties, merged (null removes one), e.g. `{author:'Ada', event_date:'2026-11-03'}`.",
+                "Page type properties, merged (null removes one), e.g. `{event_date:'2026-11-03', authors:['/team/ada', '/team/ben']}` (a `page` property: page paths, in order).",
               additionalProperties: true,
             },
             terms: {

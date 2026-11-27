@@ -13,6 +13,7 @@ import {
   type CanonicaliseField,
   canonicaliseContentValues,
   canonicaliseFieldDefaults,
+  canonicaliseFieldSources,
   canonicaliseHtmlLinks,
   type ExecutionContext,
   urlFieldNamesInHtml,
@@ -95,10 +96,13 @@ export async function canonicaliseModuleCode<F extends CanonicaliseField>(
       fields:
         code.fields === undefined
           ? undefined
-          : canonicaliseFieldDefaults(
-              code.fields,
+          : canonicaliseFieldSources(
+              canonicaliseFieldDefaults(
+                code.fields,
+                run,
+                urlFieldNamesInHtml(code.html ?? previous?.html ?? ""),
+              ),
               run,
-              urlFieldNamesInHtml(code.html ?? previous?.html ?? ""),
             ),
     }),
     { previous, pendingEntity: "module" },

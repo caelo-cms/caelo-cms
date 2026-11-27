@@ -18,6 +18,7 @@ import {
 } from "@caelo-cms/query-api";
 import {
   canonicaliseHtmlLinks,
+  canonicaliseQueryRefs,
   canonicaliseUrl,
   type ExecutionContext,
   type FieldDef,
@@ -157,10 +158,8 @@ function canonicaliseEntries(
       values[f.name] = canonicaliseFieldValue(f, values[f.name], run, `${where}.values.${f.name}`);
     }
     const out: { -readonly [K in keyof ListItem]: ListItem[K] } = { ...it, values };
-    // A query's `parent` is a page reference; reads show it as the page's path.
-    const parent = it.query?.parent;
-    if (typeof parent === "string") {
-      out.query = { ...it.query, parent: canonicaliseUrl(parent, run, `${where}.query.parent`) };
+    if (it.query !== undefined) {
+      out.query = canonicaliseQueryRefs(it.query, run, `${where}.query`) as ListItem["query"];
     }
     if (it.children) out.children = canonicaliseEntries(def, it.children, run, `${where}.children`);
     return out;

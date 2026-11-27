@@ -23,7 +23,8 @@ export type FieldWidget =
   | "date"
   | "icon"
   | "module"
-  | "term";
+  | "term"
+  | "page";
 
 /** Everything an input needs to render one field. */
 export interface FieldInputSpec {
@@ -40,9 +41,12 @@ export interface FieldInputSpec {
   options?: readonly string[];
   /** Module inputs: accepted module types (empty = any). */
   accepts?: readonly string[];
-  /** Term inputs: vocabulary list slug, and whether several terms may be picked. */
+  /** Term inputs: vocabulary list slug. */
   vocabulary?: string;
+  /** Term and page inputs: whether several may be picked. */
   multiple?: boolean;
+  /** #1754 — page inputs: the page type the chosen pages must have (absent = any). */
+  pageType?: string;
 }
 
 const TEXT_MAX = 500;
@@ -69,6 +73,13 @@ export function fieldInputSpec(field: FieldDef): FieldInputSpec {
       return { ...base, widget: "module", accepts: field.accepts ?? [] };
     case "term":
       return { ...base, widget: "term", vocabulary: field.list, multiple: field.multiple === true };
+    case "page":
+      return {
+        ...base,
+        widget: "page",
+        multiple: field.multiple === true,
+        ...(field.pageType !== undefined ? { pageType: field.pageType } : {}),
+      };
     default:
       return { ...base, widget: field.type };
   }
@@ -99,6 +110,7 @@ export function isEmptyValue(field: FieldDef, value: unknown): boolean {
         (value as { href: string }).href.trim() === ""
       );
     case "term":
+    case "page":
       return Array.isArray(value) && value.length === 0;
     default:
       return false;
@@ -153,6 +165,11 @@ export function fieldProblems(field: FieldDef, value: unknown): string[] {
   // Humanised references (a page path, `/_caelo/media/…`) are stored as
   // references on save, so the shape check is the server's for those.
   if (field.type === "media" && typeof v === "string" && v.startsWith("/_caelo/media/")) return [];
+  // #1754 — a page property's pages read as paths and are stored as
+  // references on save; whether each path names a page is the server's check.
+  if (field.type === "page" && Array.isArray(v) && v.some((x) => String(x).startsWith("/"))) {
+    return [];
+  }
   if (field.required && (v === undefined || isEmptyValue(field, v))) return ["Required."];
   return validateFieldValue(field, v, field.name).map((i) => i.message);
 }
