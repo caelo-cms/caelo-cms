@@ -159,12 +159,13 @@ function moduleFieldItemSchema(): Record<string, unknown> {
       list: {
         type: "string",
         pattern: LIST_REF_PATTERN,
-        description: 'Required when `bind:"shared"`.',
+        description:
+          'Required when `bind:"shared"`. On a `page_terms` or `breadcrumbs` source: a vocabulary — breadcrumbs then lead through the page\'s term overview page (`landing_page`).',
       },
       source: {
         type: "object",
         description:
-          'bind "source": {kind:"query", defaults:{page_type:"<slug>", order:"published_desc", limit:10}, editable?:[knobs a placement may set; default none]} — defaults need order and limit (no limit with paginate) | {kind:"system", name: breadcrumbs|children|siblings|page_terms|term_pages|pagination} | {kind:"plugin", name} (a plugin list iterated by name needs no field).',
+          'bind "source": {kind:"query", defaults:{page_type:"<slug>", order:"published_desc", limit:10}, editable?:[knobs a placement may set; default none]} — defaults need order and limit (no limit with paginate); `refers_to:{property, page:"self"|"caelo:page/<id>"}` = pages whose `page` property names that page (an author page\'s articles) | {kind:"system", name: breadcrumbs|children|siblings|page_terms|term_pages|pagination} | {kind:"plugin", name} (a plugin list iterated by name needs no field).',
       },
       // #1257 — an overview listing every match over follow-up pages.
       paginate: {

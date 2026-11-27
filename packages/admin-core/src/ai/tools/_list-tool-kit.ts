@@ -61,9 +61,13 @@ export function makeOpTool<I>(args: MakeOpToolArgs<I>): ToolDefinitionWithHandle
   };
 }
 
-function describeField(f: FieldDef): string {
+/** One field as `name*:type(details)` — the compact form list and page type reads show. */
+export function describeField(f: FieldDef): string {
   const req = f.required ? "*" : "";
   if (f.type === "term") return `${f.name}${req}:term(${f.list}${f.multiple ? ", many" : ""})`;
+  if (f.type === "page") {
+    return `${f.name}${req}:page(${f.pageType ?? "any type"}${f.multiple ? ", many" : ""})`;
+  }
   if (f.type === "select") return `${f.name}${req}:select(${f.options.join("|")})`;
   return `${f.name}${req}:${f.type}`;
 }

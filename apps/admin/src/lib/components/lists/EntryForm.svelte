@@ -18,7 +18,7 @@
     def: ListTypeDef;
     item: EditorItem;
     ctx: FieldEditorContext;
-    pageTypes: readonly { slug: string; name: string; properties: readonly { name: string; label: string }[] }[];
+    pageTypes: readonly { slug: string; name: string; properties: readonly { name: string; label: string; type?: string }[] }[];
     previewAvailable: boolean;
     csrfToken: string;
     onvalue: (name: string, value: unknown) => void;
