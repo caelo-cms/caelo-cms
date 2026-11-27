@@ -161,10 +161,11 @@ export interface PlaceholderContexts {
 /**
  * #1748 — where a value tag sits, as the structure rule for a CORE value
  * reads it (`core-value-structure.ts`): what in the value would change the
- * markup around it depends only on this. `after` is the template's text
- * right after the tag ({@link CORE_AFTER} characters, another tag's
- * marker included), which can complete what the value starts: the `>` of
- * a `</textarea` or of a comment's `--`, the letter of a trailing `<`.
+ * markup around it depends only on this. `before` and `after` are the
+ * template's text right before and after the tag ({@link CORE_AFTER}
+ * characters each, another tag's marker included), which can complete
+ * what the value starts or the value what they start: the `>` of a
+ * `</textarea` or of a comment's `--`, the letter after a trailing `<`.
  */
 export type CorePlace =
   /**
@@ -180,9 +181,14 @@ export type CorePlace =
       readonly after: string;
     }
   /** The text of an HTML element only its end tag ends: `script`, `style`, `title`, `textarea`, … */
-  | { readonly kind: "raw-text"; readonly element: string; readonly after: string }
-  /** A comment's text; `atStart` right after its `<!--`. */
-  | { readonly kind: "comment"; readonly atStart: boolean; readonly after: string }
+  | {
+      readonly kind: "raw-text";
+      readonly element: string;
+      readonly before: string;
+      readonly after: string;
+    }
+  /** A comment's text. */
+  | { readonly kind: "comment"; readonly before: string; readonly after: string }
   /** An attribute's value: its quote (null unquoted), and whether the value starts it. */
   | { readonly kind: "attribute"; readonly quote: '"' | "'" | null; readonly atStart: boolean }
   /** A tag's name (`inName`) or its attribute list (`<div {{attrs}}>`). */
@@ -690,6 +696,7 @@ function readValues(
  */
 function corePlaceOf(place: Place, mark: string, at: number, text: string): CorePlace | null {
   const after = at < 0 ? "" : text.slice(at + mark.length, at + mark.length + CORE_AFTER);
+  const before = at < 0 ? "" : text.slice(Math.max(0, at - CORE_AFTER), at);
   switch (place.at) {
     case "text": {
       const parent = place.parent;
@@ -698,7 +705,7 @@ function corePlaceOf(place: Place, mark: string, at: number, text: string): Core
         parent?.namespaceURI === H.NS.HTML &&
         (name === "script" || name === "style" || TEXT_ONLY_ELEMENTS.has(name))
       ) {
-        return { kind: "raw-text", element: name, after };
+        return { kind: "raw-text", element: name, before, after };
       }
       return {
         kind: "content",
@@ -708,7 +715,7 @@ function corePlaceOf(place: Place, mark: string, at: number, text: string): Core
       };
     }
     case "comment":
-      return { kind: "comment", atStart: place.node.data.startsWith(mark), after };
+      return { kind: "comment", before, after };
     case "attr-value": {
       const loc = attributeLocation(place.element, place.attribute);
       const span = loc ? attributeValueSpan(text, loc.startOffset, loc.endOffset) : null;
@@ -753,7 +760,9 @@ function openTagsOf(chain: Ancestors | null): string | null {
         ? e.attrs.find((a) => a.name === "encoding")
         : undefined;
     tags.push(
-      encoding ? `<${name} encoding="${encoding.value.replaceAll('"', "&quot;")}">` : `<${name}>`,
+      encoding
+        ? `<${name} encoding="${encoding.value.replaceAll('"', "&quot;").replaceAll("<", "&lt;")}">`
+        : `<${name}>`,
     );
   }
   return tags.reverse().join("");

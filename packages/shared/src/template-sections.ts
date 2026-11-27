@@ -885,8 +885,9 @@ const ENTRY_SCOPE_KINDS: ReadonlySet<string> = new Set(["list", "module-list"]);
 
 /**
  * #1748 — the value tags inside every `{{#name}}` section of `html` (a list
- * field's entries' keys, dotted link paths included; `page.*` and
- * `site_text.*` left out), by offset: where a list's entries render.
+ * field's entries' keys, dotted link paths included; `page.*`,
+ * `site_text.*` and `{{&f}}`, which reads the module field, left out), by
+ * offset: where a list's entries render.
  */
 export function sectionValueTags(html: string, name: string): ModuleValueTag[] {
   const tokens = tokenize(html);
@@ -899,7 +900,8 @@ export function sectionValueTags(html: string, name: string): ModuleValueTag[] {
     if (close === undefined || t.sigil !== "#" || t.name.toLowerCase() !== lower) continue;
     for (let k = i + 1; k < close; k += 1) {
       const inner = tokens[k] as Token;
-      if ((inner.sigil !== "" && inner.sigil !== "&") || isContextHead(inner.name)) continue;
+      // `{{&f}}` reads the module field, never the entry (moduleValueTags has it).
+      if (inner.sigil !== "" || isContextHead(inner.name)) continue;
       if (seen.has(inner.start)) continue;
       seen.add(inner.start);
       out.push({ start: inner.start, name: inner.name.toLowerCase() });

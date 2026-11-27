@@ -383,3 +383,27 @@ describe("#1748 review: what the value meets around it", () => {
     ]);
   });
 });
+
+describe("#1748 review, round 2", () => {
+  it("counts the template's text before the value: the value can complete what it started", () => {
+    expect(rule("<!-- --{{x}}hidden -->", ">")).toBe("ends-comment");
+    expect(rule("<!--{{x}} -->", ">")).toBe("ends-comment");
+    expect(at("<!-- -{{x}} -->", "x>")).toBeNull();
+    expect(rule("<textarea></text{{x}}</textarea>", "area>")).toBe("ends-textarea");
+    expect(at("<textarea>a{{x}}</textarea>", "/textarea")).toBeNull();
+  });
+
+  it("refuses a value that takes an element around it off the stack, not only the innermost", () => {
+    expect(rule('<form><div>{{x}}</div><input name="email"></form>', "<form></form>")).toBe(
+      "end-tag-form",
+    );
+    expect(at("<form><div>{{x}}</div></form>", "<b>x</b>")).toBeNull();
+  });
+
+  it("checks a list entry only at the tags that read the entry, not at a `{{&field}}`", () => {
+    const items = [{ id: "e1", node: "text", values: { body: "<p>Text</p>", text: "a" } }];
+    expect(
+      listEntryValueProblems("{{#nav}}<p>{{&body}}</p>{{/nav}}", "nav", items, ["items"]),
+    ).toEqual([]);
+  });
+});

@@ -167,9 +167,9 @@ export function coreValueProblem(place: CorePlace, value: string): CoreValueProb
     case "content":
       return value.includes("<") ? contentProblem(place, value) : null;
     case "raw-text":
-      return rawTextProblem(place.element, value, place.after);
+      return rawTextProblem(place.element, value, place.before, place.after);
     case "comment":
-      return commentProblem(place.atStart, value, place.after);
+      return commentProblem(value, place.before, place.after);
     case "attribute":
       return attributeProblem(place, value);
     case "tag":
@@ -421,17 +421,14 @@ function treeProblem(open: string, value: string, where: string): CoreValueProbl
   const parse = parseInFrame(open, `${value} ${mark}`);
   const target = frameTarget(parse);
   const text = markText(parse.root, mark);
-  if (text !== null && text.parentNode === target) return null;
   const from = open.length;
   const to = open.length + value.length;
-  if (text === null) {
-    const lt = value.lastIndexOf("<");
-    return { rule: "unfinished-tag", spelling: spellingAt(value, Math.max(0, lt)), place: where };
-  }
-  // The module's element, closed by a token of the value.
-  const closed = parse.innermost?.sourceCodeLocation?.endOffset;
-  if (parse.innermost && closed !== undefined && closed >= from && closed < to) {
-    const at = closed - from;
+  // Every element of the frame stays open through the value: a `</form>`
+  // takes the module's form off the stack while the mark still lands in
+  // its `<div>`, and the module's inputs after it leave the form.
+  const closed = closedFrameElement(parse.root, `${open}${value} ${mark}`, open, from, to);
+  if (closed !== null) {
+    const at = closed.at - from;
     const tag = /^<\/?([a-zA-Z][^\t\n\f\r />]*)/.exec(value.slice(at));
     if (tag && value[at + 1] === "/") {
       return {
@@ -441,10 +438,15 @@ function treeProblem(open: string, value: string, where: string): CoreValueProbl
       };
     }
     return {
-      rule: `closes-${ruleName(parse.innermost.tagName)}`,
+      rule: `closes-${ruleName(closed.element.tagName)}`,
       spelling: tagSpelling(value, at),
       place: where,
     };
+  }
+  if (text !== null && text.parentNode === target) return null;
+  if (text === null) {
+    const lt = value.lastIndexOf("<");
+    return { rule: "unfinished-tag", spelling: spellingAt(value, Math.max(0, lt)), place: where };
   }
   // The innermost element the value opened that holds the mark.
   for (let n: Node | null = text.parentNode; n !== null && n !== target; n = parentOf(n)) {
@@ -466,6 +468,38 @@ function treeProblem(open: string, value: string, where: string): CoreValueProbl
   };
 }
 
+/**
+ * The innermost element `open`'s start tags made that a token of the value
+ * (`[from, to)` of the parsed `text`) ended, with where that token starts;
+ * null when every one of them is still open after the value.
+ */
+function closedFrameElement(
+  root: Node,
+  text: string,
+  open: string,
+  from: number,
+  to: number,
+): { readonly element: Element; readonly at: number } | null {
+  if (open.length === 0) return null;
+  const starts = new Set<number>();
+  for (let at = open.indexOf("<"); at !== -1; at = open.indexOf("<", at + 1)) starts.add(at);
+  let found: { element: Element; at: number; start: number } | null = null;
+  for (const node of walk(root)) {
+    if (!("tagName" in node)) continue;
+    const loc = (node as Element).sourceCodeLocation;
+    if (loc === undefined || loc === null || !starts.has(loc.startOffset)) continue;
+    // An element a token closes implicitly ends where that token starts;
+    // one its own end tag closes (or a `</form>` removes) ends after it.
+    const end = loc.endOffset;
+    if (end === undefined || end < from || end > to) continue;
+    if (found === null || loc.startOffset > found.start) {
+      const at = text[end] === "<" && end < to ? end : text.lastIndexOf("<", end - 1);
+      found = { element: node as Element, at: Math.max(from, at), start: loc.startOffset };
+    }
+  }
+  return found === null ? null : { element: found.element, at: found.at };
+}
+
 /** A node's parent; a template's content leads back to nothing (the walk stops at the target). */
 function parentOf(n: Node): Node | null {
   return ("parentNode" in n ? (n.parentNode as Node | null) : null) ?? null;
@@ -474,47 +508,84 @@ function parentOf(n: Node): Node | null {
 // ── Raw text, comments, attributes, tags ──────────────────────────────
 
 /**
- * An end tag of `element` that starts in `value`: completed by the value
- * or by the template's text after it (`after`), or by whatever the end of
- * that text leaves open (a following tag's value): `</textarea` before the
- * template's `>` ends the element too.
+ * The first match of `pattern` in `before + value + after` that overlaps
+ * the value, as `[start, end)` of that text: the template's text on either
+ * side can complete what the value starts, or the value complete what the
+ * template started.
  */
-function rawTextProblem(element: string, value: string, after: string): CoreValueProblem | null {
-  const where = `the text of <${element}>`;
-  // Nothing ends a `<plaintext>`.
-  if (element === "plaintext") return null;
-  const read = asciiLower(value + after);
-  const end = `</${element}`;
-  for (let at = read.indexOf(end); at !== -1 && at < value.length; at = read.indexOf(end, at + 1)) {
-    const next = read[at + end.length];
-    if (next === undefined || HTML_WS.test(next) || next === "/" || next === ">") {
-      return {
-        rule: `ends-${ruleName(element)}`,
-        spelling: spellingAt(value, at, at + end.length + 1),
-        place: where,
-      };
-    }
-  }
-  if (element === "script") {
-    const at = (value + after).indexOf("<!--");
-    if (at !== -1 && at < value.length) {
-      return { rule: "script-comment", spelling: "<!--", place: where };
-    }
+function overlapping(
+  pattern: RegExp,
+  before: string,
+  value: string,
+  after: string,
+): RegExpExecArray | null {
+  const text = before + value + after;
+  const from = before.length;
+  const to = before.length + value.length;
+  const re = new RegExp(
+    pattern.source,
+    pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`,
+  );
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    if (m.index < to && m.index + m[0].length > from) return m;
+    if (m[0].length === 0) re.lastIndex += 1;
   }
   return null;
 }
 
-/** A comment's end that starts in `value`, completed by it or by the template's text after it. */
-function commentProblem(atStart: boolean, value: string, after: string): CoreValueProblem | null {
-  const where = "a comment";
-  const ends = /--!?>/g;
-  for (let m = ends.exec(value + after); m !== null; m = ends.exec(value + after)) {
-    if (m.index < value.length) return { rule: "ends-comment", spelling: m[0], place: where };
+/**
+ * An end tag of `element` the value takes part in: `</textarea` before the
+ * template's `>`, or `area>` after the template's `</text`. The end of the
+ * template's text the reading keeps counts as the end of the tag name (a
+ * following tag's value may supply it).
+ */
+function rawTextProblem(
+  element: string,
+  value: string,
+  before: string,
+  after: string,
+): CoreValueProblem | null {
+  const where = `the text of <${element}>`;
+  // Nothing ends a `<plaintext>`.
+  if (element === "plaintext") return null;
+  const name = element.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const end = overlapping(
+    new RegExp(`</${name}(?:[\\t\\n\\f\\r />]|$)`, "i"),
+    before,
+    value,
+    after,
+  );
+  if (end !== null) {
+    return {
+      rule: `ends-${ruleName(element)}`,
+      spelling: spellingAt(
+        value,
+        Math.max(0, end.index - before.length),
+        end.index - before.length + end[0].length,
+      ),
+      place: where,
+    };
   }
-  if (atStart && (value.startsWith(">") || value.startsWith("->"))) {
-    return { rule: "ends-comment", spelling: value.startsWith(">") ? ">" : "->", place: where };
+  if (element === "script" && overlapping(/<!--/, before, value, after) !== null) {
+    return { rule: "script-comment", spelling: "<!--", place: where };
   }
   return null;
+}
+
+/**
+ * A comment's end the value takes part in: its own `-->` / `--!>`, a `--`
+ * before the template's `>`, a `>` after the template's `--`, or a `>` /
+ * `->` right after the comment's `<!--` (`<!-->`, `<!--->`).
+ */
+function commentProblem(value: string, before: string, after: string): CoreValueProblem | null {
+  const end = overlapping(/--!?>|<!--->?|<!-->/, before, value, after);
+  if (end === null) return null;
+  const at = Math.max(0, end.index - before.length);
+  return {
+    rule: "ends-comment",
+    spelling: spellingAt(value, at, end.index - before.length + end[0].length) || end[0],
+    place: "a comment",
+  };
 }
 
 function attributeProblem(
