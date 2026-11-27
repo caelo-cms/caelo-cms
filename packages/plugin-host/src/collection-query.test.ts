@@ -15,13 +15,18 @@ import {
   type CollectionSchema,
   FileCache,
   openRelease,
+  readQueryVectors,
 } from "@caelo-cms/collection-index";
 import {
   checkCollectionOperations,
   searchOperationManifest,
   searchProfile,
 } from "@caelo-cms/plugin-sdk";
-import { type OpenEntry, runCollectionOperation } from "./collection-query.js";
+import {
+  ModelUnavailableError,
+  type OpenEntry,
+  runCollectionOperation,
+} from "./collection-query.js";
 
 const PAGES: CollectionSchema = {
   fields: {
@@ -42,6 +47,10 @@ async function entry(
   docs: readonly CollectionDoc[],
   schema: CollectionSchema,
   profile: unknown,
+  vectors?: {
+    embed: (texts: readonly string[]) => Promise<Float32Array[]>;
+    queryVectors?: ReadonlyMap<string, Float32Array>;
+  },
 ): Promise<OpenEntry> {
   const files = new Map<string, Uint8Array>();
   const cache = () =>
@@ -58,11 +67,23 @@ async function entry(
   const applied = await applyChanges(
     null,
     { upserts: docs, deletes: [] },
-    { schema, sink: (n, d) => void files.set(n, d), cache: cache() },
+    {
+      schema,
+      sink: (n, d) => void files.set(n, d),
+      cache: cache(),
+      ...(vectors
+        ? {
+            embed: vectors.embed,
+            vectorModel: { id: "fake-8", dims: 8 },
+            ...(vectors.queryVectors ? { queryVectors: vectors.queryVectors } : {}),
+          }
+        : {}),
+    },
   );
   return {
     release: await openRelease(applied.manifest, cache()),
     profile: searchProfile.parse(profile),
+    queryVectors: await readQueryVectors(applied.manifest, cache()),
   };
 }
 
@@ -287,5 +308,67 @@ describe("collection operations: pages of a merged order", () => {
     expect(new Set(seen).size).toBe(45);
     // The boosted product pages come first.
     expect(seen.slice(0, 10).every((u) => Number(u.slice(2, 4)) % 3 === 0)).toBe(true);
+  });
+});
+
+describe("known queries (#1785)", () => {
+  const SEMANTIC: CollectionSchema = {
+    fields: {
+      title: { kind: "text" },
+      url: { kind: "keyword" },
+      sections: { kind: "passages", vector: true },
+    },
+  };
+  const toward = (seed: number) =>
+    Float32Array.from({ length: 8 }, (_v, j) => Math.cos((seed + 1) * (j + 1)));
+  const docs: CollectionDoc[] = [0, 1, 2].map((i) => ({
+    id: `p${i}`,
+    lang: "de",
+    values: {
+      title: `Seite ${i}`,
+      url: `/p${i}/`,
+      sections: [{ anchor: "a", heading: "", text: `Inhalt ${i}` }],
+    },
+  }));
+  const modelGone = async (): Promise<Float32Array> => {
+    throw new ModelUnavailableError("the model is not in this test");
+  };
+
+  it("a query the release knows is answered without the model; another one needs it", async () => {
+    const pages = await entry(
+      docs,
+      SEMANTIC,
+      { ...BASE_PROFILE, semantic: { weight: 1, minSimilarity: -1 } },
+      {
+        embed: async (texts) => texts.map((t) => toward(Number(t.slice(-1)))),
+        queryVectors: new Map([["was kostet das", toward(2)]]),
+      },
+    );
+    expect(pages.queryVectors.size).toBe(1);
+    const op = searchOperationManifest.parse({
+      name: "search",
+      kind: "search",
+      collection: "pages",
+      description: "The site's pages.",
+      returns: ["url"],
+      maxResults: 10,
+    });
+    const known = await runCollectionOperation(
+      op,
+      pages,
+      "k",
+      new URLSearchParams({ q: "was kostet das", lang: "de" }),
+      { embedQuery: modelGone },
+    );
+    expect(known.status).toBe(200);
+    expect((known.body as { hits: { url: string }[] }).hits[0]?.url).toBe("/p2/");
+    const unknown = await runCollectionOperation(
+      op,
+      pages,
+      "k",
+      new URLSearchParams({ q: "etwas anderes", lang: "de" }),
+      { embedQuery: modelGone },
+    );
+    expect(unknown.status).toBe(503);
   });
 });

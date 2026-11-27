@@ -49,6 +49,7 @@ import {
   prefetchRelease,
   prefixedCache,
   readProfile,
+  readQueryVectors,
   scopedStore,
   storeFromUrl,
 } from "@caelo-cms/collection-index";
@@ -181,10 +182,13 @@ export class GatewayCollections {
         const scoped = scopedStore(this.storeOrThrow(), prefix);
         const manifest = parseRelease(await scoped.read(releaseKey));
         const release = await openRelease(manifest, cache);
-        const raw = await readProfile(manifest, cache);
+        const [raw, queryVectors] = await Promise.all([
+          readProfile(manifest, cache),
+          readQueryVectors(manifest, cache),
+        ]);
         const parsed = raw === null ? null : searchProfile.safeParse(raw);
         const profile = parsed?.success ? parsed.data : null;
-        return { release, profile };
+        return { release, profile, queryVectors };
       })();
       entry.catch(() => {
         this.open.delete(id);

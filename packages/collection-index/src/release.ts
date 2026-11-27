@@ -84,6 +84,8 @@ export interface ReleaseManifest {
   readonly profile: string | null;
   /** Keyword fields stored per document in every segment's docs file (format 2). */
   readonly columns?: readonly string[];
+  /** Vectors of the queries the profile names (#1785), or null. */
+  readonly queryVectors?: string | null;
 }
 
 /**
@@ -336,6 +338,8 @@ export interface ApplyOptions {
   readonly columns?: readonly string[];
   /** How segments are cut into files (tests and benchmarks; production keeps the defaults). */
   readonly tuning?: SegmentTuning;
+  /** Vectors of known queries by their text (#1785), written as the release's query-vector file. */
+  readonly queryVectors?: ReadonlyMap<string, Float32Array>;
 }
 
 /** What `applyChanges` produced. */
@@ -554,6 +558,7 @@ export async function applyChanges(
       vectorField && o.vectorModel ? { id: o.vectorModel.id, dims: o.vectorModel.dims } : null,
     profile: o.profile === undefined ? (previous?.profile ?? null) : writeProfile(o.profile, sink),
     columns: [...(o.columns ?? [])],
+    queryVectors: writeQueryVectors(o.queryVectors, sink),
   };
   const data = utf8.encode(JSON.stringify(manifest));
   const file = contentName("release", data, "json");
@@ -636,6 +641,7 @@ export async function buildRelease(
       vectorField && o.vectorModel ? { id: o.vectorModel.id, dims: o.vectorModel.dims } : null,
     profile: o.profile === undefined ? null : writeProfile(o.profile, sink),
     columns: [...(o.columns ?? [])],
+    queryVectors: writeQueryVectors(o.queryVectors, sink),
   };
   const data = utf8.encode(JSON.stringify(manifest));
   const file = contentName("release", data, "json");
@@ -670,6 +676,69 @@ function writeProfile(profile: unknown, sink: FileSink): string {
   return file;
 }
 
+/**
+ * The query-vector file (#1785): count and dims (u32 LE), then per query
+ * its UTF-8 text (u16 length) and its vector (dims × float32 LE), sorted
+ * by text so the same queries give the same file.
+ */
+function writeQueryVectors(
+  vectors: ReadonlyMap<string, Float32Array> | undefined,
+  sink: FileSink,
+): string | null {
+  if (!vectors || vectors.size === 0) return null;
+  const entries = [...vectors].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const dims = (entries[0] as [string, Float32Array])[1].length;
+  const texts = entries.map(([t]) => utf8.encode(t));
+  const out = new Uint8Array(8 + texts.reduce((n, t) => n + 2 + t.length + dims * 4, 0));
+  const view = new DataView(out.buffer);
+  view.setUint32(0, entries.length, true);
+  view.setUint32(4, dims, true);
+  let at = 8;
+  entries.forEach(([, v], i) => {
+    const t = texts[i] as Uint8Array;
+    if (v.length !== dims) throw new RangeError("query vectors: mixed dimensions");
+    if (t.length > 0xffff) throw new RangeError("query vectors: a query longer than 64 KiB");
+    view.setUint16(at, t.length, true);
+    out.set(t, at + 2);
+    at += 2 + t.length;
+    for (let j = 0; j < dims; j++) view.setFloat32(at + j * 4, v[j] as number, true);
+    at += dims * 4;
+  });
+  const file = contentName("v", out, "bin");
+  sink(file, out);
+  return file;
+}
+
+const QUERY_VECTORS_FORMAT: FileFormat<Map<string, Float32Array>> = {
+  parse: (data) => {
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    const count = view.getUint32(0, true);
+    const dims = view.getUint32(4, true);
+    const out = new Map<string, Float32Array>();
+    let at = 8;
+    for (let i = 0; i < count; i++) {
+      const length = view.getUint16(at, true);
+      const text = utf8Decoder.decode(data.subarray(at + 2, at + 2 + length));
+      at += 2 + length;
+      const v = new Float32Array(dims);
+      for (let j = 0; j < dims; j++) v[j] = view.getFloat32(at + j * 4, true);
+      at += dims * 4;
+      out.set(text, v);
+    }
+    return out;
+  },
+  bytes: (m, d) => d.length + m.size * 96,
+};
+
+/** The vectors of a release's known queries by text (#1785); empty when it has none. */
+export async function readQueryVectors(
+  release: ReleaseManifest,
+  cache: FileCacheLike,
+): Promise<ReadonlyMap<string, Float32Array>> {
+  if (!release.queryVectors) return new Map();
+  return cache.get(release.queryVectors, QUERY_VECTORS_FORMAT);
+}
+
 /** Reads a release's search profile, or null when it has none. */
 export async function readProfile(
   release: ReleaseManifest,
@@ -685,6 +754,7 @@ export async function releaseFiles(
   cache: FileCacheLike,
 ): Promise<Set<string>> {
   const files = new Set<string>(manifest.profile ? [manifest.profile] : []);
+  if (manifest.queryVectors) files.add(manifest.queryVectors);
   for (const s of manifest.segments) {
     files.add(s.manifest);
     if (s.removed) files.add(s.removed);

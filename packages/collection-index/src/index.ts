@@ -61,6 +61,7 @@ export {
   type ReleaseManifest,
   type ReleaseSegment,
   readProfile,
+  readQueryVectors,
   releaseFiles,
   releaseNeedsRebuild,
   schemaDigest,

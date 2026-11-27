@@ -25,6 +25,7 @@ import {
   openRelease,
   parseRelease,
   readProfile,
+  readQueryVectors,
   storeFromUrl,
 } from "@caelo-cms/collection-index";
 import {
@@ -515,9 +516,12 @@ async function openAdminRelease(
       const cache = new FileCache({ read: (f) => store.read(`${prefix}/${f}`) }, 64 * 1024 * 1024);
       const manifest = parseRelease(await store.read(`${prefix}/${releaseKey}`));
       const release = await openRelease(manifest, cache);
-      const raw = await readProfile(manifest, cache);
+      const [raw, queryVectors] = await Promise.all([
+        readProfile(manifest, cache),
+        readQueryVectors(manifest, cache),
+      ]);
       const parsed = raw === null ? null : searchProfile.safeParse(raw);
-      return { release, profile: parsed?.success ? parsed.data : null };
+      return { release, profile: parsed?.success ? parsed.data : null, queryVectors };
     })();
     entry.catch(() => adminReleases.delete(id));
     adminReleases.set(id, entry);

@@ -175,6 +175,16 @@ export const searchProfile = z
       .object({ weight: z.number().min(0).max(5), minSimilarity: z.number().min(-1).max(1) })
       .strict()
       .nullable(),
+    /**
+     * Per language: queries visitors are known to ask (approved popular
+     * queries, say). With semantic search the index job embeds them, with
+     * the suggestions and the pinned results' queries, and the release
+     * carries their vectors, so the gateway answers them without its query
+     * model (#1785).
+     */
+    knownQueries: z
+      .record(z.string().min(2).max(16), z.array(z.string().min(1).max(200)).max(500))
+      .default({}),
     /** Per language: suggestions shown before or while typing. */
     suggestions: z
       .record(

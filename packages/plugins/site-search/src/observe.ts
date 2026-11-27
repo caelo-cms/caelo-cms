@@ -191,6 +191,26 @@ async function listEntries(ctx: Ctx, listId: unknown): Promise<ListEntry[]> {
 }
 
 /** The observer operation. */
+/** Most known queries per language the profile carries. */
+const KNOWN_QUERIES_PER_LANGUAGE = 200;
+
+/** The approved popular queries per language, for the profile's known queries. */
+async function knownQueries(ctx: Ctx): Promise<Record<string, string[]>> {
+  if (!ctx.adminQuery) return {};
+  const rows = await ctx.adminQuery.list<"popular_queries", { text: string; lang: string }>(
+    "popular_queries",
+    { status: "approved", limit: 2000 },
+  );
+  const out: Record<string, string[]> = {};
+  for (const r of rows) {
+    const lang = r.lang.split("-")[0] as string;
+    const list = out[lang] ?? [];
+    out[lang] = list;
+    if (list.length < KNOWN_QUERIES_PER_LANGUAGE && !list.includes(r.text)) list.push(r.text);
+  }
+  return out;
+}
+
 export async function observe(ctx: Ctx, args: PageOutputObserverArgs): Promise<ObserveResult> {
   if (!ctx.config) throw new Error("site-search: its configuration is not readable");
   const { pages, anchors } = collectionsOf(ctx);
@@ -340,7 +360,10 @@ export async function observe(ctx: Ctx, args: PageOutputObserverArgs): Promise<O
       { has: () => true },
     );
     notes.push(...built.notes);
-    await pages.setProfile(built.profile);
+    // #1785 — the approved popular queries travel in the profile: with
+    // semantic search the index embeds them, and the gateway answers them
+    // without loading its query model.
+    await pages.setProfile({ ...built.profile, knownQueries: await knownQueries(ctx) });
     const anchorWeight = profileConfigOf(values).anchorWeight;
     await anchors.setProfile({
       ...built.profile,

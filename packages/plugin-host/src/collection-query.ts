@@ -62,6 +62,8 @@ export interface CollectionAnswer {
 export interface OpenEntry {
   readonly release: OpenRelease;
   readonly profile: SearchProfile | null;
+  /** Vectors of the queries the profile names (#1785): such a query needs no model. */
+  readonly queryVectors: ReadonlyMap<string, Float32Array>;
 }
 
 /** Embeds a visitor's query; the gateway's is WebAssembly (see {@link wasmQueryEmbedder}). */
@@ -418,7 +420,10 @@ export async function runCollectionOperation(
           })
         : Promise.resolve(null),
       semantic && fingerprint
-        ? embedQuery(fingerprint, q).then((vector) =>
+        ? (entry.queryVectors.has(q)
+            ? Promise.resolve(entry.queryVectors.get(q) as Float32Array)
+            : embedQuery(fingerprint, q)
+          ).then((vector) =>
             searchVectors(release, {
               vector,
               limit: VECTOR_CANDIDATES,
