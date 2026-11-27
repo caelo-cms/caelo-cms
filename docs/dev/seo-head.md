@@ -5,6 +5,11 @@ value each SEO tag in a page's `<head>` shows, where it comes from, and
 who may change it. The resolver is
 [`packages/shared/src/seo-head.ts`](../../packages/shared/src/seo-head.ts)
 (`resolvePageSeoHead`); `renderSeoHead` in `seo.ts` writes the tags.
+Plugins add to the head only from the closed vocabulary of
+[`docs/dev/external-plugin-brokers.md`](./external-plugin-brokers.md)
+(hreflang alternates, `og:locale`, sitemap entries); a plugin `robots` meta
+or any other tag this page describes is refused, so core and plugin never
+write the same tag.
 
 ## 1. Fields
 
