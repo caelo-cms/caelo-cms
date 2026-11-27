@@ -32,8 +32,10 @@ import {
   type MediaFailure,
   type MediaReferenceFailure,
   mediaUrlForRef,
+  NESTED_PLACEMENT_RULE,
   type NestedModuleWithheld,
   type OgImageFailure,
+  OPEN_MARKUP_RULE,
   PAGE_KEY_TYPES,
   PAGE_KEY_UNKNOWN,
   PAGE_PATH_UNKNOWN,
@@ -52,6 +54,7 @@ import {
   renderFailureKind,
   renderFailureMarker,
   replacementMediaUrls,
+  SLOT_PLACEMENT_RULE,
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { languageName } from "../links/link-notice.js";
@@ -279,6 +282,49 @@ export function pageMarkerHint(marker: string, mod: string): string | undefined 
   }
 }
 
+/** The rules a value is refused with for where the page puts it (`context-*`, shared `template-contexts.ts`). */
+const PLACEMENT_RULE_PREFIX = "context-";
+
+/**
+ * #1787 — how the AI repairs a plugin's value refused for where the page
+ * puts it (`context-*`): the module's markup, the page's other modules, or
+ * the layout's slot, never the plugin's data; null for any other rule.
+ *
+ * @param mod the place in the AI's terms (`module "cookie-banner"`).
+ */
+export function placementRefusalRepair(body: string, mod: string): RenderRepair | null {
+  const { plugin, field, rule } = parsePluginValueRefused(body);
+  if (!rule.startsWith(PLACEMENT_RULE_PREFIX)) return null;
+  const value = `the plugin "${plugin}"'s ${field} value`;
+  switch (rule) {
+    case "context-conditional-markup":
+      return {
+        tool: "update_modules_many",
+        hint: `${mod} puts ${value} after a section, comment or partial that may reshape the markup after it, so Caelo leaves it raw. Rewrite that markup (update_modules_many): a section wraps whole elements ({{#a}}<li>…</li>{{/a}}), text in one quoted attribute value, or whole attributes in a start tag (<input {{#a}}checked{{/a}}>); it never cuts into a tag or attribute name, an unquoted value or a comment.`,
+      };
+    case OPEN_MARKUP_RULE:
+      return {
+        tool: "inspect_page_render",
+        hint: `Caelo leaves every plugin value on this page raw, ${value} in ${mod} too: a module on it, or its template, does not end in plain HTML content in every render. inspect_page_render shows that markup as endsOutsideContent: close what it leaves open (<script>, <style>, <textarea>, <select>, <svg>, a comment or tag), or make its section wrap whole elements or attributes (update_modules_many).`,
+      };
+    case SLOT_PLACEMENT_RULE:
+      return {
+        tool: "move_module",
+        hint: `${mod} stands in a slot of the layout or template that a browser does not read as plain HTML content (inside <noscript>, <svg>, a <select> or a comment), so Caelo leaves its plugin values raw. Place the module in a block in plain content (move_module), or move that <caelo-slot> there (propose_update_layout, propose_update_template).`,
+      };
+    case NESTED_PLACEMENT_RULE:
+      return {
+        tool: "update_modules_many",
+        hint: `${mod} places a nested module outside plain HTML element content (in an attribute, raw text, SVG, a <select>, or after markup a section can change), so Caelo leaves the plugin values inside it raw. Put the {{>…}} or the module list between elements, with update_modules_many.`,
+      };
+    default:
+      return {
+        tool: "update_modules_many",
+        hint: `${mod} puts ${value} where a plugin's value may never go (${rule}): an event handler, style, srcdoc, a script or style body, a tag or attribute name, <meta>, <base>, an SVG animation, a URL loaded as code or a form target, or after a scheme like javascript:. Caelo leaves it raw. Move the placeholder into text or a quoted attribute (title, href) with update_modules_many.`,
+      };
+  }
+}
+
 /**
  * #1708 — how the AI repairs a module a plugin withholds (a consent-gated
  * embed) that sits inside another module's field, where no gate can hold
@@ -305,9 +351,14 @@ export function nestedModuleWithheldHint(
 /**
  * #1729 — how the AI handles a value a plugin handed a page that the host
  * refused (`plugin-value-refused:<plugin>.<source>.<field>:<rule>`, shared
- * `lists/plugin-values.ts`): the plugin's data, not the module's.
+ * `lists/plugin-values.ts`): the plugin's data, or (#1787) where the
+ * module puts it ({@link placementRefusalRepair}).
+ *
+ * @param mod the place in the AI's terms, for a refusal by placement.
  */
-export function pluginValueRefusedHint(body: string): string {
+export function pluginValueRefusedHint(body: string, mod = "a module on this page"): string {
+  const placement = placementRefusalRepair(body, mod);
+  if (placement !== null) return placement.hint;
   const { plugin, source, field, rule } = parsePluginValueRefused(body);
   // #1729 (§6.2) — the head and sitemap vocabulary, and share images.
   if (source === PLUGIN_HEAD_POINT) {
@@ -439,7 +490,12 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
     case PAGE_PATH_UNKNOWN:
       return { tool: "update_modules_many", hint: pageMarkerHint(marker, mod) as string };
     case PLUGIN_VALUE_REFUSED:
-      return { tool: "get_plugin", hint: pluginValueRefusedHint(path) };
+      return (
+        placementRefusalRepair(path, mod) ?? {
+          tool: "get_plugin",
+          hint: pluginValueRefusedHint(path, mod),
+        }
+      );
     default:
       return { tool: "set_content_instance_values_many", hint: `${REFERENCE_REPAIR}.` };
   }

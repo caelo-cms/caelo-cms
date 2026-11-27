@@ -435,6 +435,49 @@ describe("renderRepairOf — a plugin value the host refused (#1729)", () => {
     expect(r.hint.length).toBeLessThan(500);
   });
 
+  it("sends a refusal for where the page puts the value to the markup, never the plugin (#1787)", () => {
+    // The real-AI cookie banner: its values were refused by placement, and
+    // the hint told the AI to fix the plugin's data, which it cannot.
+    const conditional = renderRepairOf({
+      reason:
+        "plugin-value-refused:consent-manager.consent_categories.key:context-conditional-markup",
+      moduleSlug: "cookie-banner",
+    });
+    expect(conditional.tool).toBe("update_modules_many");
+    expect(conditional.hint).toContain(
+      'module "cookie-banner" puts the plugin "consent-manager"\'s key value',
+    );
+    expect(conditional.hint).toContain("<input {{#a}}checked{{/a}}>");
+    expect(conditional.hint).not.toContain("plugin's data");
+    const open = renderRepairOf({
+      reason: "plugin-value-refused:consent-manager.consent_categories.key:context-open-markup",
+      moduleSlug: "cookie-banner",
+    });
+    expect(open.tool).toBe("inspect_page_render");
+    expect(open.hint).toContain("endsOutsideContent");
+    const slot = renderRepairOf({
+      reason: "plugin-value-refused:consent-manager.consent_categories.key:context-slot-placement",
+      moduleSlug: "cookie-banner",
+    });
+    expect(slot.tool).toBe("move_module");
+    const handler = renderRepairOf({
+      reason: "plugin-value-refused:consent-manager.consent_categories.label:context-event-handler",
+      moduleSlug: "cookie-banner",
+    });
+    expect(handler.tool).toBe("update_modules_many");
+    expect(handler.hint).toContain("(context-event-handler)");
+    for (const r of [conditional, open, slot, handler]) {
+      expect(r.hint.length).toBeLessThan(500);
+    }
+    // A rule about the value itself still sends the AI to the plugin.
+    expect(
+      renderRepairOf({
+        reason: "plugin-value-refused:consent-manager.consent_categories.label:url-scheme",
+        moduleSlug: "cookie-banner",
+      }).tool,
+    ).toBe("get_plugin");
+  });
+
   it("names the head vocabulary for a refused head entry, and the image rule for a share image", () => {
     const head = renderRepairOf({
       reason: "plugin-value-refused:probe.head-composition.link:rel-stylesheet",

@@ -38,7 +38,7 @@ import {
   pluginsNotRunningHere,
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
-import { parseNestedModuleWithheldMarker } from "@caelo-cms/shared";
+import { markupLeavingContent, parseNestedModuleWithheldMarker } from "@caelo-cms/shared";
 import { z } from "zod";
 import {
   nestedModuleWithheldHint,
@@ -336,6 +336,7 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
             displayName: template.displayName,
             htmlBytes: template.html.length,
             cssBytes: template.css.length,
+            ...endsOutsideContent(template.html),
           }
         : null,
       theme: { tokenCount: themeTokenCount },
@@ -347,6 +348,7 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
         position: m.position,
         htmlBytes: m.html.length,
         cssBytes: m.css.length,
+        ...endsOutsideContent(m.html),
       })),
       slots: {
         replaced: rendered.replacedSlots,
@@ -360,6 +362,17 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
     return okJson(summary);
   },
 };
+
+/**
+ * #1787 — `{ endsOutsideContent }` with the markup that keeps a module's or
+ * the template's HTML from ending in plain content, which makes the page
+ * leave every plugin value raw (`context-open-markup`); `{}` when it ends
+ * in content, so the summary stays as small as before.
+ */
+function endsOutsideContent(html: string): { endsOutsideContent?: string } {
+  const markup = markupLeavingContent(html);
+  return markup === null ? {} : { endsOutsideContent: markup };
+}
 
 /**
  * Site-wide settings the preview flags on every page (pages.render_preview's
