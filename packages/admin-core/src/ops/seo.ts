@@ -34,6 +34,7 @@ import {
   ok,
   type RobotsRules,
   robotsRuleGroupSchema,
+  robotsRulesNotes,
   robotsRulesSchema,
   robotsRulesWarnings,
   robotsTxt,
@@ -773,6 +774,8 @@ export const siteDefaultsGetSeoOp = defineOperation({
     robotsTxt: z.string().nullable(),
     /** What a rule set takes from search engines (the whole site for `*`, …). */
     robotsWarnings: z.array(z.string()),
+    /** #1758 — what its preference lines (training token, Content-Signal) do and do not do. */
+    robotsNotes: z.array(z.string()),
   }),
   handler: async (_ctx, _input, tx) => {
     const rows = (await tx.execute(sql`
@@ -818,6 +821,7 @@ export const siteDefaultsGetSeoOp = defineOperation({
               rules: robotsRules,
             }),
       robotsWarnings: robotsRulesWarnings(robotsRules),
+      robotsNotes: robotsRulesNotes(robotsRules),
     });
   },
 });

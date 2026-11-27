@@ -38,6 +38,7 @@ import {
   type ProposalStatus,
   proposalStatus,
   type RobotsRules,
+  robotsRulesNotes,
   robotsRulesWarnings,
   robotsTxt,
   type SiteDefaultsSetSeoInput,
@@ -107,13 +108,17 @@ function mergedSeo(current: StoredSeo, payload: SiteSeoProposalInput): StoredSeo
 
 /**
  * #1706 — what the approval card says about robots.txt: the live file as
- * the next Stage and Publish live would ship it, and what it takes from
- * search engines. Empty when the proposal leaves the rules alone.
+ * the next Stage and Publish live would ship it, what it takes from search
+ * engines, and (#1758) what its preference lines do not do. Empty when the
+ * proposal leaves the rules alone.
  */
 function robotsCard(current: StoredSeo, payload: SiteSeoProposalInput): string {
   if (payload.robotsRules === undefined) return "";
   const after = mergedSeo(current, payload);
-  const warnings = robotsRulesWarnings(after.robotsRules);
+  const warnings = [
+    ...robotsRulesWarnings(after.robotsRules).map((w) => `WARNING: ${w}`),
+    ...robotsRulesNotes(after.robotsRules).map((n) => `NOTE: ${n}`),
+  ];
   const file = after.siteBaseUrl
     ? robotsTxt({
         robots: "index",
@@ -124,7 +129,7 @@ function robotsCard(current: StoredSeo, payload: SiteSeoProposalInput): string {
       })
     : "(no site address yet, so nothing is published)";
   return [
-    ...warnings.map((w) => `WARNING: ${w}`),
+    ...warnings,
     "The live site's robots.txt after the next Stage and Publish live:",
     file.trimEnd(),
     "Staging keeps Disallow: / for every crawler.",

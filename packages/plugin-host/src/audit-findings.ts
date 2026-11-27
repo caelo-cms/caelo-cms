@@ -21,6 +21,7 @@
 
 import { type PluginAuditFindingsArgs, pluginAuditFindings } from "@caelo-cms/plugin-sdk";
 import type { z } from "zod";
+import { auditCallsThatFit } from "./audit-fact-wire.js";
 import {
   isPluginDisabled,
   loadedPlugins,
@@ -77,25 +78,55 @@ export async function pluginAuditFindingsCall(
       `audit findings: ${slug} (${label}) is a batch call with only its own pages but no auditRunId to read the others by — the caller must pass the audit run (#1721)`,
     );
   }
-  const r = await runPluginOperation({
-    invocation: renderInvocation(MAIN_RENDER),
-    pluginSlug: slug,
-    operationName,
-    args,
-  });
-  if (!r.ok) {
-    throw new Error(
-      `audit findings: ${slug}.${operationName} (${label}) failed: ${r.error.kind}: ${r.error.message}`,
-    );
+  const call = async (callArgs: PluginAuditFindingsArgs, callLabel: string) => {
+    const r = await runPluginOperation({
+      invocation: renderInvocation(MAIN_RENDER),
+      pluginSlug: slug,
+      operationName,
+      args: callArgs,
+    });
+    if (!r.ok) {
+      throw new Error(
+        `audit findings: ${slug}.${operationName} (${callLabel}) failed: ${r.error.kind}: ${r.error.message}`,
+      );
+    }
+    const parsed = pluginAuditFindings.safeParse(r.value);
+    if (!parsed.success) {
+      throw new Error(
+        `audit findings: plugin "${slug}" returned an invalid answer (${callLabel}): ${parsed.error.issues
+          .slice(0, 5)
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .join("; ")}`,
+      );
+    }
+    return parsed.data;
+  };
+  // A sandboxed plugin gets its call as one message of at most 1 MB: a
+  // batch whose facts take more goes as consecutive calls (audit-fact-wire.ts).
+  return lp.tier === 2 ? callInParts(call, args, label) : call(args, label);
+}
+
+/**
+ * One batch call as the consecutive calls that fit the sandbox wire
+ * ({@link auditCallsThatFit}), their findings in call order. A part that
+ * answers `factBatches` or `batchPages` comes back as it answered, so the
+ * runner refuses it as it refuses any batch call that does.
+ *
+ * Exported for its unit test; `maxBytes` defaults to the wire's budget.
+ */
+export async function callInParts(
+  call: (args: PluginAuditFindingsArgs, label: string) => Promise<PluginAuditFindings>,
+  args: PluginAuditFindingsArgs,
+  label: string,
+  maxBytes?: number,
+): Promise<PluginAuditFindings> {
+  const parts = auditCallsThatFit(args, maxBytes);
+  if (parts.length === 1) return call(parts[0] as PluginAuditFindingsArgs, label);
+  const findings: PluginAuditFindings["findings"] = [];
+  for (const [i, part] of parts.entries()) {
+    const answer = await call(part, `${label}, part ${i + 1} of ${parts.length}`);
+    if (answer.factBatches || answer.batchPages) return answer;
+    findings.push(...answer.findings);
   }
-  const parsed = pluginAuditFindings.safeParse(r.value);
-  if (!parsed.success) {
-    throw new Error(
-      `audit findings: plugin "${slug}" returned an invalid answer (${label}): ${parsed.error.issues
-        .slice(0, 5)
-        .map((i) => `${i.path.join(".")}: ${i.message}`)
-        .join("; ")}`,
-    );
-  }
-  return parsed.data;
+  return { findings };
 }

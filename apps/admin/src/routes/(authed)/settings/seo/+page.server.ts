@@ -20,6 +20,8 @@ interface SeoSettings {
   robotsRules: RobotsRules;
   robotsTxt: string | null;
   robotsWarnings: string[];
+  /** #1758 — what the preference lines (training token, Content-Signal) do not do. */
+  robotsNotes: string[];
   searchNotifications: {
     id: string;
     channel: "websub" | "indexnow";
@@ -94,6 +96,7 @@ export const load: PageServerLoad = async ({ locals }) => {
           robotsRules: [],
           robotsTxt: null,
           robotsWarnings: [],
+          robotsNotes: [],
           searchNotifications: [],
         },
     robotsRulesText: settings.ok

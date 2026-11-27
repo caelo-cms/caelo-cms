@@ -872,6 +872,11 @@ export const MAX_AUDIT_FACT_BATCH_PAGES = 200;
  * needs them side by side (a page and its language versions in one
  * batch). Core then calls the operation once per batch with `facts`, and
  * files the findings of every call. A plugin that needs no facts omits it.
+ * A sandboxed (runtime-installed) plugin gets each call as one message of
+ * at most 1 MB: a batch whose facts take more arrives as consecutive calls
+ * of its pages in the order asked for (with `"own"`, each with its own
+ * pages), and a page whose facts alone take more is cut like the caps cut
+ * it (`truncatedFacts`). Keep batches that must be read side by side small.
  *
  * `batchPages` (answer to the first call only, #1721): what `pages` the
  * batch calls carry. `"all"` (the default): every page of the build, on

@@ -78,7 +78,19 @@ export const proposeSetSiteSeoTool = makeProposeTool({
               minItems: 1,
               maxItems: 10,
               items: { type: "string", maxLength: 64 },
-              description: "`*`, or crawler product tokens (`Googlebot`, `GPTBot`, `CCBot`).",
+              description:
+                '`*`, or crawler product tokens (`Googlebot`, `GPTBot`, `CCBot`), or alone `__usage_ai-training` (training preference: `disallow: ["/"]` = do not train; no crawler, no contentSignal).',
+            },
+            contentSignal: {
+              type: "object",
+              additionalProperties: false,
+              description:
+                '`Content-Signal` line: may these crawlers use the site for search results, AI answers (aiInput), AI training (aiTrain). A preference, blocks nothing; keep `allow`/`disallow` (a group needs a path, e.g. `allow: ["/"]`).',
+              properties: {
+                search: { type: "boolean" },
+                aiInput: { type: "boolean" },
+                aiTrain: { type: "boolean" },
+              },
             },
             allow: { type: "array", maxItems: 50, items: { type: "string", maxLength: 512 } },
             disallow: {
@@ -114,6 +126,7 @@ export const getSiteSeoTool = makeReadTool<Record<string, never>>({
       robotsRules: unknown[];
       robotsTxt: string | null;
       robotsWarnings: string[];
+      robotsNotes: string[];
       searchNotifications: {
         channel: string;
         status: string;
@@ -130,6 +143,7 @@ export const getSiteSeoTool = makeReadTool<Record<string, never>>({
       `organizationJson: ${JSON.stringify(v.organizationJson)}`,
       `robotsRules: ${JSON.stringify(v.robotsRules)}`,
       ...v.robotsWarnings.map((w) => `robots WARNING: ${w}`),
+      ...v.robotsNotes.map((n) => `robots NOTE: ${n}`),
       v.robotsTxt === null
         ? "robots.txt: (none until the site URL is set)"
         : `robots.txt of the live site after the next Stage + Publish live (staging blocks every crawler):\n${v.robotsTxt.trimEnd()}`,
