@@ -20,6 +20,7 @@ import {
   templateEndsInContent,
 } from "./page-reading.js";
 import { composePagePreview, composePageWithLayout } from "./preview-compose.js";
+import { renderTemplate } from "./template-engine.js";
 
 const ESCAPE = '<p title="</noscript><img src=x onerror=alert(1)>">Bitte JavaScript aktivieren</p>';
 const owned = (value: string, type = "richtext") =>
@@ -307,5 +308,116 @@ describe("where a module ends (#1732 review, round 4)", () => {
     expect(out.html).toContain("<noscript>Bitte JS aktivieren");
     expect(reasons(out)).toContain(refused(OPEN_MARKUP_RULE));
     expect(out.html).not.toContain("onerror=alert(1)>");
+  });
+});
+
+/**
+ * #1732 review, round 5 — a value the reading treats as a word may render
+ * empty (or as `-`, `!`, `]]`) and so end the raw text or comment it
+ * stands in; and a withheld module's placeholder is markup the page shows.
+ */
+describe("values that may end raw text or a comment, and placeholders (#1732 review, round 5)", () => {
+  const textField = (name: string) => ({ name, kind: "text" as const });
+  const renderWith = (html: string, values: Record<string, unknown>) =>
+    renderTemplate({
+      html,
+      fields: ["x", "v", "note"].map(textField),
+      contentValues: { x: owned("alert(1)", "text"), ...values },
+    });
+
+  // Each runs `alert(1)` in Chromium with the value shown, when `x` is not refused.
+  const ending: Record<string, [string, string]> = {
+    textareaEndTag: [`<textarea><{{v}}/textarea><img src=x onerror="{{x}}"></textarea>`, ""],
+    noscriptEndTag: [`<noscript><{{v}}/noscript><img src=x onerror="{{x}}"></noscript>`, ""],
+    scriptEndTag: [`<script>/*<{{v}}/script><img src=x onerror="{{x}}">*/</script>`, ""],
+    commentAbrupt: [`<!--{{v}}-><img src=x onerror="{{x}}">-->`, ""],
+    commentDash: [`<!-- n -{{v}}-><img src=x onerror="{{x}}"> -->`, ""],
+    commentDashSpelled: [`<!-- n -{{v}}-><img src=x onerror="{{x}}"> -->`, "-"],
+    commentBang: [`<!-- n --{{v}}><img src=x onerror="{{x}}"> -->`, "!"],
+    commentStart: [`<!{{v}}-- <p title="x>"> --><img src=x onerror="{{x}}">`, ""],
+    tagNameComment: [`<{{v}}!-- --><img src=x onerror="{{x}}">`, ""],
+    scriptEscape: [
+      `<script><!{{v}}--<script>/*</script><img src=x onerror="{{x}}">*/</script></script>`,
+      "",
+    ],
+  };
+
+  it("1: refuses the plugin values after such a value and counts the module as open", () => {
+    for (const [name, [html, v]] of Object.entries(ending)) {
+      const r = renderWith(html, { v });
+      expect({
+        name,
+        refused: r.missingSlots.some((m) => m.startsWith("plugin-value-refused")),
+      }).toEqual({
+        name,
+        refused: true,
+      });
+      expect({ name, html: r.html.includes('onerror="alert(1)"') }).toEqual({ name, html: false });
+      expect({ name, ends: templateEndsInContent(html) }).toEqual({ name, ends: false });
+    }
+  });
+
+  it("1: keeps values in comments, raw text and RCDATA that cannot end them", () => {
+    for (const html of [
+      `<!-- {{note}} --><p title="{{x}}">p</p>`,
+      `<!--{{note}}--><p title="{{x}}">p</p>`,
+      `<textarea>{{note}}</textarea><p title="{{x}}">p</p>`,
+      `<title>{{note}} | Site</title><p title="{{x}}">p</p>`,
+      `<script>var u = "/{{note}}"; var n = 1-{{note}};</script><p title="{{x}}">p</p>`,
+      `<noscript><img src="/{{note}}.gif" alt=""></noscript><p title="{{x}}">p</p>`,
+    ]) {
+      const r = renderWith(html, { note: "" });
+      expect({ html, missing: r.missingSlots }).toEqual({ html, missing: [] });
+      expect({ html, ends: templateEndsInContent(html) }).toEqual({ html, ends: true });
+    }
+  });
+
+  it("1: in SVG, an empty value that drops a tag's closing `/` leaves the tag open", () => {
+    expect(templateEndsInContent(`<svg><foreignObject r={{v}} /></svg>`)).toBe(false);
+    expect(templateEndsInContent(`<img src="/a.png" alt={{alt}} />`)).toBe(true);
+  });
+
+  const withheld = (placeholderHtml: string) => {
+    const VIDEO = "00000000-0000-4000-8000-000000000a01";
+    return composePageWithLayout({
+      layoutHtml:
+        '<!doctype html><html><head></head><body><caelo-slot name="content"></caelo-slot></body></html>',
+      layoutCss: "",
+      layoutBlocks: [],
+      templateHtml: '<main><caelo-slot name="content"></caelo-slot></main>',
+      templateCss: "",
+      blocks: [
+        {
+          blockName: "content",
+          modules: [
+            { ...notice("x", VIDEO, '<div class="video">yt</div>'), fields: [] },
+            notice(owned(ESCAPE), "m-hint", '<div class="hint">{{body}}</div>'),
+          ],
+        },
+      ],
+      nestedModules: { getModule: () => null, getContentInstance: () => null },
+      deferredModules: {
+        [VIDEO]: {
+          pluginSlug: "consent",
+          reason: "consent",
+          placeholderModuleSlug: "consent-ph",
+          placeholderHtml,
+          placeholderCss: "",
+        },
+      },
+    });
+  };
+
+  it("2: a withheld module's placeholder that ends outside content refuses every plugin value", () => {
+    const out = withheld('<div class="consent-ph"><noscript>Bitte JS aktivieren');
+    expect(out.openMarkup).toBe(true);
+    expect(reasons(out)).toContain(refused(OPEN_MARKUP_RULE));
+    expect(out.html).not.toContain("onerror=alert(1)>");
+  });
+
+  it("2: one that ends in content keeps them", () => {
+    const out = withheld('<div class="consent-ph">Video laden</div>');
+    expect(out.openMarkup).toBe(false);
+    expect(reasons(out)).toEqual([]);
   });
 });

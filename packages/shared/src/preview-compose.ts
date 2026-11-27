@@ -570,6 +570,16 @@ class RenderedTemplates {
     }
   }
 
+  /**
+   * Markup the composer puts on the page as it is: a withheld module's
+   * placeholder (the site module the plugin names, rendered by the plugin
+   * host, or the plugin's own) and an editor notice. The same for every
+   * page that shows it, so reading it costs one analysis per placeholder.
+   */
+  addInserted(html: string): void {
+    this.templates.push(html);
+  }
+
   anyEndsOutsideContent(): boolean {
     return anyEndsOutsideContent(this.templates);
   }
@@ -885,10 +895,14 @@ function composePageWithLayoutOnce(
     const tagged = stampPlacement(tagModuleId(baseHtml, m.moduleId), m, input);
     if (!deferral) return tagged;
     if (deferral.omit) {
-      if (deferral.editorNotice) deferredCss.add(deferral.editorNotice.css);
+      if (deferral.editorNotice) {
+        deferredCss.add(deferral.editorNotice.css);
+        used.addInserted(deferral.editorNotice.html);
+      }
       return omittedModuleNotice(m, deferral);
     }
     deferredCss.add(deferral.placeholderCss);
+    used.addInserted(deferral.placeholderHtml);
     const gatedNested = [...gatedNestedIds].map((id) => {
       const nested = input.nestedModules?.getModule(id);
       // renderModuleFields resolved every id it reports through this

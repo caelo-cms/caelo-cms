@@ -343,7 +343,7 @@ type Place =
       /** The nearest `<select>` ancestor, or null (see {@link selectContent}). */
       readonly select: Element | null;
     }
-  | { readonly at: "comment" }
+  | { readonly at: "comment"; readonly node: DefaultTreeAdapterTypes.CommentNode }
   | { readonly at: "doctype" }
   | { readonly at: "tag-name"; readonly element: Element }
   | {
@@ -399,7 +399,8 @@ function placesOf(root: Node, markers: MarkerSet): Map<number, Place[]> {
           select,
         });
       } else if (child.nodeName === "#comment") {
-        add((child as DefaultTreeAdapterTypes.CommentNode).data, { at: "comment" });
+        const comment = child as DefaultTreeAdapterTypes.CommentNode;
+        add(comment.data, { at: "comment", node: comment });
       } else if (child.nodeName === "#documentType") {
         const d = child as DefaultTreeAdapterTypes.DocumentType;
         add(`${d.name} ${d.publicId} ${d.systemId}`, { at: "doctype" });
@@ -573,6 +574,12 @@ function readValues(
         unsafeFrom = Math.min(unsafeFrom, tag.start);
         endHolds = false;
       }
+      if (spellingMayEndText(place, i, { html, tags, toTemplate })) {
+        // Empty, or spelled with `-`/`!`, it may end the raw text or the
+        // comment it stands in (`<{{v}}/textarea>`, `<!--{{v}}->`).
+        unsafeFrom = Math.min(unsafeFrom, tag.start);
+        endHolds = false;
+      }
       if (place.at === "attr-value" && valueIsOnlyTags(place.attribute, markers, text, place)) {
         // It may render empty: the browser then takes the next attribute as this value.
         unsafeFrom = Math.min(unsafeFrom, tag.start);
@@ -602,6 +609,98 @@ function readValues(
   return { contexts, unsafeFrom, endsInContent: isPlainContent(places.get(end)), endHolds };
 }
 
+/**
+ * Up to `n` characters of the template next to tag `i` (after it, or
+ * before it), with every other tag left out: a tag may render nothing.
+ * `offsets` are the characters' template offsets.
+ */
+function nearbyText(
+  html: string,
+  tags: readonly MustacheSpan[],
+  i: number,
+  direction: 1 | -1,
+  n: number,
+): { readonly text: string; readonly offsets: readonly number[] } {
+  const chars: string[] = [];
+  const offsets: number[] = [];
+  const self = tags[i] as MustacheSpan;
+  let k = i + direction;
+  let at = direction === 1 ? self.end : self.start - 1;
+  while (chars.length < n && at >= 0 && at < html.length) {
+    const t = tags[k];
+    if (t !== undefined && (direction === 1 ? at === t.start : at === t.end - 1)) {
+      at = direction === 1 ? t.end : t.start - 1;
+      k += direction;
+      continue;
+    }
+    chars.push(html[at] as string);
+    offsets.push(at);
+    at += direction;
+  }
+  if (direction === -1) {
+    chars.reverse();
+    offsets.reverse();
+  }
+  return { text: chars.join(""), offsets };
+}
+
+/**
+ * Whether value tag `i`, where this reading puts it (as a marker: a
+ * non-empty word), may end the text it stands in once it renders empty or
+ * spelled with characters an escaped value can hold (`-`, `!`, `]`): an
+ * end tag of raw text or RCDATA (`<{{v}}/textarea>`), a comment's end
+ * (`<!--{{v}}->`, `-{{v}}->` before a later `-->`) or start (`<!{{v}}--`),
+ * an end tag or comment where this reading has a start tag
+ * (`<{{v}}/p>`, `<{{v}}!--`), or the end of CDATA in SVG or MathML. A
+ * value can spell no `<` or `>`, so the template's own characters next to
+ * it decide; real modules write none of this.
+ */
+function spellingMayEndText(
+  place: Place,
+  i: number,
+  env: {
+    readonly html: string;
+    readonly tags: readonly MustacheSpan[];
+    readonly toTemplate: (a: number) => number;
+  },
+): boolean {
+  const before = nearbyText(env.html, env.tags, i, -1, 3).text;
+  const after = nearbyText(env.html, env.tags, i, 1, 8);
+  switch (place.at) {
+    case "comment": {
+      // `<!` and a word read as a bogus comment, ending at the first `>`;
+      // empty, `<!{{v}}--` starts a real one.
+      if (/<!-?$/.test(before)) return true;
+      // Only `-` and `!` before a `>`: the value may complete `-->` or
+      // `--!>` there (or `<!-->`), unless that `>` ends the comment anyway.
+      const close = /^[-!]*>/.exec(after.text);
+      if (close === null) return false;
+      const gt = after.offsets[close[0].length - 1];
+      const loc = place.node.sourceCodeLocation;
+      return loc == null || env.toTemplate(loc.endOffset - 1) !== gt;
+    }
+    case "text": {
+      if (place.foreign !== null && env.html.includes("<![CDATA[")) return true;
+      const parent = place.parent;
+      if (parent === null || parent.namespaceURI !== H.NS.HTML) return false;
+      const name = parent.tagName.toLowerCase();
+      if (name === "script") {
+        // `</script`, `<!--` (the escaped states), `<script` inside them…
+        if (/<!?-?$/.test(before)) return true;
+        // …and `-->`, which leaves them.
+        return env.html.includes("<!--") && /^[-!]*>/.test(after.text);
+      }
+      // An end tag `</name` needs the template's `<` right before the value.
+      return (name === "style" || TEXT_ONLY_ELEMENTS.has(name)) && before.endsWith("<");
+    }
+    case "tag-name":
+      // `<{{v}}/p>`, `<{{v}}!--`, `<{{v}}?`: empty, no start tag at all.
+      return before.endsWith("<") && /^[!/?]/.test(after.text);
+    default:
+      return false;
+  }
+}
+
 /** More unquoted values that may render empty in one start tag than this are not tried one by one. */
 const MAX_EMPTYABLE_PER_TAG = 4;
 
@@ -611,12 +710,16 @@ const MAX_EMPTYABLE_PER_TAG = 4;
  * render empty. An empty one makes the next attribute its value
  * (`alt= loading="lazy"`), which moves the end of the tag only when a `>`
  * or a quote in what follows then reads otherwise; everything after a tag
- * that ends in the same place reads the same.
+ * that ends in the same place reads the same. In SVG and MathML a tag's
+ * closing `/` counts too: `r=/>` leaves `<foreignObject r={{v}}/>` open.
  */
 function tagEndHolds(text: string, element: Element, ranges: ReadonlyMap<number, number>): boolean {
   const loc = element.sourceCodeLocation?.startTag;
   if (!loc || ranges.size > MAX_EMPTYABLE_PER_TAG) return false;
   const src = text.slice(loc.startOffset, loc.endOffset);
+  const own = htmlTokens(src)[0];
+  const selfClosing = own?.kind === "start" && own.selfClosing;
+  const foreign = element.namespaceURI !== H.NS.HTML;
   const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
   for (let mask = 1; mask < 1 << sorted.length; mask += 1) {
     let variant = "";
@@ -629,7 +732,9 @@ function tagEndHolds(text: string, element: Element, ranges: ReadonlyMap<number,
     variant += src.slice(at);
     // One start tag, ending where the source ends (an unfinished one is no token).
     const tokens = htmlTokens(variant);
-    if (tokens.length !== 1 || tokens[0]?.kind !== "start") return false;
+    const token = tokens[0];
+    if (tokens.length !== 1 || token?.kind !== "start") return false;
+    if (foreign && token.selfClosing !== selfClosing) return false;
   }
   return true;
 }
