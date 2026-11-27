@@ -260,14 +260,32 @@ describe("MCP-originated approval → decided in the admin → handed back", () 
 
   it("a cached replay of the same toolCallId returns the same handle without a second row", async () => {
     const callId = `handoff-replay-${crypto.randomUUID()}`;
-    const first = await proposeOverMcp(`handoff-replay-${crypto.randomUUID().slice(0, 6)}`, callId);
-    const second = await proposeOverMcp("ignored-on-replay", callId);
+    const displayName = `handoff-replay-${crypto.randomUUID().slice(0, 6)}`;
+    const first = await proposeOverMcp(displayName, callId);
+    const second = await proposeOverMcp(displayName, callId);
     expect(second.proposalId).toBe(first.proposalId);
     const rows = await withSystemTx(
       async (tx) =>
         tx`SELECT count(*)::int AS c FROM mcp_approval_handoffs WHERE proposal_id = ${first.proposalId}::uuid`,
     );
     expect((rows[0] as { c: number }).c).toBe(1);
+    // #1704 — another call under the key is not a replay: refused, and it
+    // neither gets the first call's handle nor queues a proposal of its own.
+    const other = await execute(registry, adapter, systemCtx, "mcp.execute_tool", {
+      plaintextToken: adminToken,
+      chatSessionId,
+      toolName: "propose_create_mcp_token",
+      args: { displayName: "another-call-same-key" },
+      toolCallId: callId,
+    });
+    expect(!other.ok && "message" in other.error && other.error.message).toContain(
+      "tool_call_id_reused",
+    );
+    const queued = await withSystemTx(
+      async (tx) =>
+        tx`SELECT count(*)::int AS c FROM mcp_approval_handoffs WHERE chat_session_id = ${chatSessionId}::uuid AND tool_call_id = ${callId}`,
+    );
+    expect((queued[0] as { c: number }).c).toBe(1);
   });
 
   it("needsApproval calls: in-flight while dispatching, then the tool result is handed back", async () => {
