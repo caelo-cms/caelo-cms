@@ -44,6 +44,7 @@ Plugin storage becomes a core Query API operation family, executed with the invo
 | `plugin_storage.update_many` | One patch on up to 1000 rows: every row or none, one snapshot header for all of them (#1391) |
 | `plugin_storage.compare_and_swap` | One row, only while expected values still match |
 | `plugin_storage.upsert` | THE row of a key: inserted when the key has none, else updated (#1659, private zone only; see "One row per key" below) |
+| `plugin_storage.lock_url_tables` | Not a write: the per-plugin lock every write to a declared URL table takes inside the transaction its checks and the write share (#1729, `urlTables`; external-plugin-brokers.md §6.8) |
 | `plugin_public_storage.*` | The same for the public zone (without `upsert`: a public table declares a `unique` index instead) |
 
 - **Two zones, two families.** `plugin_storage.*` for the private zone (the plugin's `cms_admin` schema) and `plugin_public_storage.*` for the public zone (`cms_public.<slug>`). The one batch write is `update_many` (#1391): `international-site`'s staleness rebuild flags thousands of variants, and one write with its own snapshot per row took minutes of database time on a small instance, because the journal and draft-head triggers on the snapshot tables run once per statement. `ctx.adminQuery` and `ctx.query` keep their SDK shape and become thin brokers over these operations; the host no longer issues SQL for plugins (§14.7).

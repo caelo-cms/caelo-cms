@@ -16,6 +16,9 @@
  * - An approval that decides about the chat's draft lands on the chat's
  *   branch: the chat sees the new address, main keeps the old one.
  * - Another plugin cannot claim the slots this one holds.
+ * - Two approved writes at once run one after the other: of two inserts of
+ *   one value, and of a value's delete and a page row naming it, exactly
+ *   one commits, so the tables stay composable (#1732 review).
  */
 
 import { afterAll, beforeAll, expect, it } from "bun:test";
@@ -28,12 +31,13 @@ import {
   collectUrlAnnotations,
   declaredUrlContributions,
   MAIN_RENDER,
+  makeInvocationContext,
   resetPluginHost,
   resolvePageUrl,
   runPluginOperation,
   urlContributionsRegistry,
 } from "@caelo-cms/plugin-host";
-import type { PluginInvocation } from "@caelo-cms/plugin-sdk";
+import type { PluginAdminQuery, PluginInvocation } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
@@ -428,6 +432,58 @@ it("an installed plugin's URL tables shape addresses, change only when approved,
     ),
   ).toThrow(`already claimed by plugin "${SLUG}"`);
 }, 240_000);
+
+/** The probe's own tables, through the host handle of an Owner-approved call. */
+async function approvedTables(): Promise<PluginAdminQuery> {
+  const ownerCtx = await owner();
+  const approvedWrite: PluginInvocation = { origin: "approved", actorId: ownerCtx.actorId };
+  const ctx = (await makeInvocationContext(SLUG, approvedWrite)) as unknown as {
+    adminQuery: PluginAdminQuery;
+  };
+  return ctx.adminQuery;
+}
+
+const outcome = (settled: PromiseSettledResult<unknown>[]) => ({
+  committed: settled.filter((r) => r.status === "fulfilled").length,
+  refusals: settled.flatMap((r) => (r.status === "rejected" ? [String(r.reason)] : [])),
+});
+
+it("commits one of a value's delete and a page row naming it made at once (#1732)", async () => {
+  // Runs after the first test: url-probe is installed, "de" maps /de.
+  const tables = await approvedTables();
+  const { id } = await tables.insert("markets", { code: "it", segment: "it", host: null });
+  const race = await seedPage(`${PFX}-race`);
+  const both = outcome(
+    await Promise.allSettled([
+      tables.delete("markets", id),
+      tables.insert("page_markets", { page_id: race, market: "it" }),
+    ]),
+  );
+  expect(both.committed).toBe(1);
+  expect(both.refusals).toHaveLength(1);
+  expect(both.refusals[0]).toMatch(
+    /still shapes the address of page|is not in markets; add the value first/,
+  );
+  // The tables stay composable: the page's address still builds.
+  const annotations = await collectUrlAnnotations([race], MAIN_RENDER);
+  const named = await tables.list("page_markets", { page_id: race, limit: 5 });
+  expect(annotations.has(race)).toBe(named.length === 1);
+}, 120_000);
+
+it("commits one of two approved inserts of the same value made at once (#1732)", async () => {
+  const tables = await approvedTables();
+  const twice = outcome(
+    await Promise.allSettled([
+      tables.insert("markets", { code: "fr", segment: "fr", host: null }),
+      tables.insert("markets", { code: "fr", segment: "fr", host: null }),
+    ]),
+  );
+  expect(twice.committed).toBe(1);
+  expect(twice.refusals).toHaveLength(1);
+  expect(twice.refusals[0]).toContain('value "fr" has two rows; keep one');
+  const rows = await tables.list<{ code: string }>("markets", { limit: 100 });
+  expect(rows.filter((r) => r.code === "fr")).toHaveLength(1);
+}, 120_000);
 
 it("refuses an update whose URL slot another running plugin holds, and keeps the running version (#1729)", async () => {
   // Runs after the test above: url-probe holds the host and path-prefix slots.

@@ -746,6 +746,7 @@ export const STORAGE_OPS = {
     delete: "plugin_storage.delete",
     compareAndSwap: "plugin_storage.compare_and_swap",
     upsert: "plugin_storage.upsert",
+    lockUrlTables: "plugin_storage.lock_url_tables",
   },
   public: {
     insert: "plugin_public_storage.insert",
@@ -756,6 +757,48 @@ export const STORAGE_OPS = {
     compareAndSwap: "plugin_public_storage.compare_and_swap",
   },
 } as const;
+
+/**
+ * #1729 — the lock every write to a plugin's declared URL tables
+ * (`urlTables`, url-tables.ts) takes before its checks read them: one per
+ * plugin, held to the end of the transaction the checks and the write share
+ * (capabilities.ts `urlTableWrite`), on main and on every branch alike. Two
+ * approved writes at once therefore run one after the other, and the second
+ * checks against the first's rows: two rows of one value, or a page naming
+ * a value deleted at the same moment, cannot both commit. A unique index
+ * cannot hold this: private storage refuses them (indexes.ts), as a chat
+ * branch's update lives in a snapshot no index sees until publish.
+ *
+ * The chat-scoped `pluginRow` lock (`lockPluginRow`) is a different thing:
+ * it reserves one row for one chat's draft until that is staged or
+ * dropped, is taken only on a branch, and is keyed by row, not table.
+ *
+ * Only useful inside a transaction the caller holds: on its own, the lock
+ * ends with the op's own transaction.
+ */
+function makeUrlTablesLockOp() {
+  const op = STORAGE_OPS.private.lockUrlTables;
+  return defineOperation({
+    name: op,
+    pluginAccess: "handle",
+    readScope: "request",
+    // Why plugin-only: the lock is keyed by the calling plugin's id; no
+    // other actor writes a plugin's URL tables.
+    actorScope: ["plugin"],
+    database: "cms_admin",
+    input: z.object({}).strict(),
+    output: z.object({}),
+    handler: async (ctx, _input, tx) => {
+      if (ctx.actorKind !== "plugin" || !ctx.pluginId) {
+        return fail(op, `${op}: only a plugin can lock its own URL tables`);
+      }
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${`caelo:plugin-url-tables:${ctx.pluginId}`}, 0))`,
+      );
+      return ok({});
+    },
+  });
+}
 
 /**
  * Register the storage operations on a registry. Idempotent: the admin
@@ -771,6 +814,7 @@ export function registerPluginStorageOps(
   for (const op of [
     ...makeOps("private", deps.lockPluginRow),
     makeUpsertOp(deps.lockPluginRow),
+    makeUrlTablesLockOp(),
     ...makeOps("public", deps.lockPluginRow),
   ]) {
     // The registry stores every op as OperationDefinition<unknown, unknown>.

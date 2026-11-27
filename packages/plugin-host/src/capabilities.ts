@@ -30,7 +30,13 @@ import type {
   PluginVisitor,
   PublicOperationDef,
 } from "@caelo-cms/plugin-sdk";
-import { admitsPlugins, type DatabaseAdapter, execute, pluginAccessOf } from "@caelo-cms/query-api";
+import {
+  admitsPlugins,
+  type DatabaseAdapter,
+  execute,
+  joinHeldTransaction,
+  pluginAccessOf,
+} from "@caelo-cms/query-api";
 import { LIVE_BUILD_REFUSAL, type LiveBuildUrls } from "@caelo-cms/shared";
 import { registerPluginChangeOps } from "./change-consumers.js";
 import { makePluginChatTools, makePluginCollections } from "./collections-host.js";
@@ -655,17 +661,37 @@ function makeScopedQuery(
    * changes only in an Owner-approved call, and never into a collision, an
    * unserved host or a page naming a missing value (url-tables.ts). For
    * every plugin that declares one.
+   *
+   * The checks read the tables and the write changes them in ONE
+   * transaction, under the plugin's URL-table lock taken before the first
+   * read (`plugin_storage.lock_url_tables`): every read and the write join
+   * it (joinHeldTransaction), so two approved writes at once cannot both
+   * pass checks made before either was stored. A write to any other table
+   * runs as before.
    */
-  async function guardUrlTable(write: UrlTableWrite): Promise<void> {
+  async function urlTableWrite<T>(write: UrlTableWrite, perform: () => Promise<T>): Promise<T> {
     const tables = plugin.definition.urlTables;
-    if (scope.pool !== "admin" || !tables || urlTableRole(tables, write.table) === null) return;
-    await checkUrlTableWrite({
-      pluginSlug: plugin.slug,
-      tables,
-      invocation,
-      write,
-      list: (t, f) => handle.list(t, f),
-    });
+    if (scope.pool !== "admin" || !tables || urlTableRole(tables, write.table) === null) {
+      return perform();
+    }
+    registerPluginStorageOps(infra.registry, { lockPluginRow: infra.lockPluginRow });
+    const adapter = scope.adapter ?? infra.adapter;
+    return adapter.withAdminTransaction(
+      ctx,
+      () =>
+        joinHeldTransaction(async () => {
+          await run(STORAGE_OPS.private.lockUrlTables, {});
+          await checkUrlTableWrite({
+            pluginSlug: plugin.slug,
+            tables,
+            invocation,
+            write,
+            list: (t, f) => handle.list(t, f),
+          });
+          return perform();
+        }),
+      { holder: `plugin ${plugin.slug} url-table ${write.method}` },
+    );
   }
 
   const handle: PluginQuery & Partial<Pick<PluginAdminQuery, "upsert">> = {
@@ -674,16 +700,17 @@ function makeScopedQuery(
       assertAuthoring("insert");
       const columns = tableColumns("insert", tableStr);
       assertDeclared("insert", tableStr, columns, Object.keys(data));
-      await guardUrlTable({ method: "insert", table: tableStr, data });
       if (Object.keys(data).length === 0) {
         throw new Error(`${scope.label}.insert: data must include at least one declared column`);
       }
-      return run<{ id: string }>(ops.insert, {
-        schema: schemaName,
-        table: tableStr,
-        columns,
-        data,
-      });
+      return urlTableWrite({ method: "insert", table: tableStr, data }, () =>
+        run<{ id: string }>(ops.insert, {
+          schema: schemaName,
+          table: tableStr,
+          columns,
+          data,
+        }),
+      );
     },
 
     list: async <T = Record<string, unknown>>(
@@ -758,8 +785,9 @@ function makeScopedQuery(
       if (keys.length === 0) {
         throw new Error(`${scope.label}.update: patch must include at least one declared column`);
       }
-      await guardUrlTable({ method: "update", table: tableStr, id, data: patch });
-      await run(ops.update, { schema: schemaName, table: tableStr, columns, id, patch });
+      await urlTableWrite({ method: "update", table: tableStr, id, data: patch }, () =>
+        run(ops.update, { schema: schemaName, table: tableStr, columns, id, patch }),
+      );
     },
 
     updateMany: async (table, ids, patch) => {
@@ -774,42 +802,47 @@ function makeScopedQuery(
         );
       }
       if (ids.length === 0) return;
-      await guardUrlTable({ method: "updateMany", table: tableStr, data: patch });
       if (ids.length > UPDATE_MANY_MAX) {
         throw new Error(
           `${scope.label}.updateMany: at most ${UPDATE_MANY_MAX} ids per call — split the list into several calls`,
         );
       }
-      await run(ops.updateMany, {
-        schema: schemaName,
-        table: tableStr,
-        columns,
-        ids: [...ids],
-        patch,
-      });
+      await urlTableWrite({ method: "updateMany", table: tableStr, data: patch }, () =>
+        run(ops.updateMany, {
+          schema: schemaName,
+          table: tableStr,
+          columns,
+          ids: [...ids],
+          patch,
+        }),
+      );
     },
 
     delete: async (table, id) => {
       const tableStr = table as string;
       assertAuthoring("delete");
       const columns = tableColumns("delete", tableStr);
-      await guardUrlTable({ method: "delete", table: tableStr, id });
-      await run(ops.delete, { schema: schemaName, table: tableStr, columns, id });
+      await urlTableWrite({ method: "delete", table: tableStr, id }, () =>
+        run(ops.delete, { schema: schemaName, table: tableStr, columns, id }),
+      );
     },
 
     compareAndSwap: async (table, id, expected, patch) => {
       const tableStr = table as string;
       assertAuthoring("compareAndSwap");
       const columns = tableColumns("compareAndSwap", tableStr);
-      await guardUrlTable({ method: "compareAndSwap", table: tableStr, id, data: patch });
-      const out = await run<{ swapped: boolean }>(ops.compareAndSwap, {
-        schema: schemaName,
-        table: tableStr,
-        columns,
-        id,
-        expected,
-        patch,
-      });
+      const out = await urlTableWrite(
+        { method: "compareAndSwap", table: tableStr, id, data: patch },
+        () =>
+          run<{ swapped: boolean }>(ops.compareAndSwap, {
+            schema: schemaName,
+            table: tableStr,
+            columns,
+            id,
+            expected,
+            patch,
+          }),
+      );
       return out.swapped;
     },
 
@@ -824,20 +857,18 @@ function makeScopedQuery(
               ...Object.keys(key),
               ...Object.keys(values),
             ]);
-            await guardUrlTable({
-              method: "upsert",
-              table: tableStr,
-              key,
-              data: { ...key, ...values },
-            });
-            return run<PluginUpsertResult>(STORAGE_OPS.private.upsert, {
-              schema: schemaName,
-              table: tableStr,
-              columns,
-              key,
-              values,
-              ifExists: options?.ifExists ?? "update",
-            });
+            return urlTableWrite(
+              { method: "upsert", table: tableStr, key, data: { ...key, ...values } },
+              () =>
+                run<PluginUpsertResult>(STORAGE_OPS.private.upsert, {
+                  schema: schemaName,
+                  table: tableStr,
+                  columns,
+                  key,
+                  values,
+                  ifExists: options?.ifExists ?? "update",
+                }),
+            );
           },
         }
       : {}),
