@@ -135,7 +135,11 @@ const HTML_WS = /[\t\n\f\r ]/;
 /** Characters without which a value cannot change the markup in any place (`-` ends a comment with the template's `>`). */
 const MAY_BREAK = /[<>"'\t\n\f\r -]/;
 
-/** Whether `value` holds a character that could change markup somewhere (a cheap first test). */
+/**
+ * Whether `value` holds a character that could change markup by itself (a
+ * cheap first test). Raw text and comments are checked whatever the value
+ * holds: the template's text around it can complete an end.
+ */
 export function mayBreakMarkup(value: string): boolean {
   return MAY_BREAK.test(value);
 }
@@ -186,10 +190,13 @@ export function coreValueProblemAt(
   offset: number,
   value: string,
 ): CoreValueProblem | null {
-  if (!mayBreakMarkup(value)) return null;
   const places = placeholderContexts(html).corePlaces.get(offset);
   if (places === undefined) return null;
+  const plain = !mayBreakMarkup(value);
   for (const place of places) {
+    // In raw text and comments the template's own text around the value
+    // can make letters an end (`</text{{x}}>` with `area`).
+    if (plain && place.kind !== "raw-text" && place.kind !== "comment") continue;
     const problem = coreValueProblem(place, value);
     if (problem !== null) return problem;
   }
@@ -227,9 +234,14 @@ function contentProblem(
   const open: { readonly name: string; readonly at: number }[] = [];
   let nestingOnly = true;
   for (const t of tokens) {
+    const depth = open.length;
     const problem = tokenProblem(t, value, open, where);
     if (problem !== null) return problem;
     if (t.kind === "start" && !NESTING_ONLY.has(t.name)) nestingOnly = false;
+    // An end tag that closes more than its own element (`<b><i>x</b>`)
+    // leaves formatting the tree builder reconstructs after the value:
+    // only the tree tells.
+    if (t.kind === "end" && open.length < depth - 1) nestingOnly = false;
   }
   const last = tokens[tokens.length - 1];
   if (last?.kind !== "text" || !last.value.endsWith(mark)) {
@@ -575,10 +587,12 @@ function rawTextProblem(
 /**
  * A comment's end the value takes part in: its own `-->` / `--!>`, a `--`
  * before the template's `>`, a `>` after the template's `--`, or a `>` /
- * `->` right after the comment's `<!--` (`<!-->`, `<!--->`).
+ * `->` right after the comment's `<!--` (`<!-->`, `<!--->`). A `-` after
+ * the `<!--` alone ends nothing (`<!--- note -->`).
  */
 function commentProblem(value: string, before: string, after: string): CoreValueProblem | null {
-  const end = overlapping(/--!?>|<!--->?|<!-->/, before, value, after);
+  // `<!-->` and `<!--->` hold a `-->` too: the comment's own `<!--` before the value.
+  const end = overlapping(/--!?>/, before, value, after);
   if (end === null) return null;
   const at = Math.max(0, end.index - before.length);
   return {

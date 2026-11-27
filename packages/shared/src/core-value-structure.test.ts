@@ -407,3 +407,21 @@ describe("#1748 review, round 2", () => {
     ).toEqual([]);
   });
 });
+
+describe("#1748 review, round 3", () => {
+  it("reads misnested formatting with the tree builder: it leaks into the module's markup", () => {
+    expect(rule("<div>{{x}} suffix</div>", "<b><i>x</b>")).toBe("unclosed-i");
+    expect(at("<div>{{x}} suffix</div>", "<b><i>x</i></b>")).toBeNull();
+  });
+
+  it("checks letters in raw text and comments, where the template's text can complete an end", () => {
+    expect(rule("<textarea></text{{x}}>hidden</textarea>", "area")).toBe("ends-textarea");
+    expect(at("<textarea>{{x}}</textarea>", "area")).toBeNull();
+    expect(at("<p>{{x}}</p>", "plain words")).toBeNull();
+  });
+
+  it("lets a dash after the comment's own start pass", () => {
+    expect(at("<!--{{x}} note -->", "-")).toBeNull();
+    expect(rule("<!--{{x}} note -->", "->")).toBe("ends-comment");
+  });
+});

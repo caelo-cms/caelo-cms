@@ -762,10 +762,11 @@ describe("a plugin's value where the browser puts it, round 2 (#1732 review)", (
   });
 
   it("7: a value in an end tag's name could close raw text: what follows is refused", () => {
+    // The core value closes the textarea too, which #1748 records.
     expect(
       at(`<textarea></{{end}}><img src=x onerror="{{x}}">`, { end: "textarea", x: x("alert(1)") })
         .missingSlots,
-    ).toEqual([rule("context-conditional-markup")]);
+    ).toEqual(["value-breaks-markup:end:ends-textarea", rule("context-conditional-markup")]);
     // `</h{{n}}>` closes no element that changes how content is read.
     expect(at(`<h2>x</h{{end}}><p>{{x}}</p>`, { end: "2", x: x("Hallo") }).missingSlots).toEqual(
       [],
@@ -810,9 +811,13 @@ describe("a plugin's value where the browser puts it, round 3 (#1732 review)", (
       [`<textarea></{{e1}}{{! c }}><img src=x onerror="{{x}}">`, { e1: "textarea" }],
       [`<textarea></text{{e1}}><img src=x onerror="{{x}}">`, { e1: "area" }],
     ] as const) {
-      expect(at(html, { ...values, x: x("alert(1)") }).missingSlots).toEqual([
-        rule("context-conditional-markup"),
-      ]);
+      // A core value that completes the end tag by itself is #1748's too;
+      // split over two values, each one alone ends nothing.
+      expect(
+        at(html, { ...values, x: x("alert(1)") }).missingSlots.filter(
+          (m) => !m.startsWith("value-breaks-markup:"),
+        ),
+      ).toEqual([rule("context-conditional-markup")]);
     }
     expect(at(`<h2>t</h{{n}}><p title="{{x}}">`, { n: "2", x: x("Hallo") }).missingSlots).toEqual(
       [],
