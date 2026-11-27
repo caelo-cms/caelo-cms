@@ -1260,6 +1260,7 @@ async function buildSite(
             ? outputPathOf(page)
             : pageOutputPath(pagedPath(page.current_path, n), target.pageUrlStyle),
         breadcrumbTrail: lists.breadcrumbTrail(),
+        listedPages: lists.listedPages(),
         ...(n > 1 && pagination
           ? { followUp: { page: n, indexable: pagination.followUps === "index" } }
           : {}),
@@ -1369,7 +1370,8 @@ async function buildSite(
     // P8 — SEO: per-page <head> meta + canonical + JSON-LD (env-independent
     // so promote can ship a staging build verbatim; staging's noindex lives
     // in robots.txt + the X-Robots-Tag header — see seo-pass.ts).
-    await timer.measure(parts, "seo", () => seo.apply(pages));
+    // #1753 — what the batch's structured data could not carry as given.
+    renderFailures.push(...(await timer.measure(parts, "seo", () => seo.apply(pages))));
     // P13 — plugin render pass: each active Tier-1 plugin's `staticRender`
     // spliced in at its placeholder; cache hits via static_bakes skip it.
     await timer.measure(parts, "plugin-render", () =>
@@ -1563,6 +1565,9 @@ async function buildSite(
 
   const sitemapEmitted = await seo.writeSitemap(writeBuildFile);
   if (sitemapEmitted) fileCount += 1;
+  // #1761 — the news and video sitemaps, listed in robots.txt below.
+  const extraSitemaps = await seo.writeExtraSitemaps(writeBuildFile);
+  fileCount += extraSitemaps.length;
   // docs/dev/search-engine-feed.md — what this build changes live, the feed
   // of the latest changes, and the IndexNow key file. The run that ships the
   // build to production records the changes and announces them.
@@ -1607,7 +1612,7 @@ async function buildSite(
     buildRobotsTxtWithSitemap(
       target.robotsDefault,
       seoSettings.siteBaseUrl,
-      { sitemap: sitemapEmitted, feed: feed !== null },
+      { sitemap: sitemapEmitted, feed: feed !== null, extraSitemaps },
       robotsRules,
     ),
   );
@@ -1911,6 +1916,8 @@ interface BuiltPage {
   bodyDigest: string | null;
   /** #1142 — the trail the page's breadcrumbs showed, for the BreadcrumbList JSON-LD. */
   breadcrumbTrail: readonly string[] | null;
+  /** #1759 — the pages its page queries showed, for an overview's ItemList. */
+  listedPages: readonly string[];
   /** #1257 — page `n` ≥ 2 of a paginated overview, and whether it may be indexed. */
   followUp?: { page: number; indexable: boolean };
   /** #1647 — the modules the composition placed, with their zone (page 1 only). */

@@ -253,7 +253,11 @@ export interface StructuredDataArgs {
   /**
    * The pages the asked pages name through `page` properties and the
    * overview pages of their terms, one level deep: an article's authors,
-   * its reviewer. Not to be answered for.
+   * its reviewer. Published pages only (a draft author is left out, as on
+   * the page). Not to be answered for; they carry no head of their own
+   * here (`description` "", `shareImage` null, `lang` "", `live` false,
+   * `listed` empty): what the page about them says comes from their
+   * properties.
    */
   readonly related: readonly StructuredDataPage[];
   /** The page types of every page above, by slug. */

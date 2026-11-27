@@ -493,13 +493,16 @@ async function releaseAsTarget(args: {
   // patched robots.txt.
   const allFiles = await listVersionFiles(site, sourceVersionId, token);
 
-  const { buildRobotsTxtWithSitemap } = await import("@caelo-cms/static-generator");
+  const { buildRobotsTxtWithSitemap, extraSitemapFiles } = await import(
+    "@caelo-cms/static-generator"
+  );
   const robotsBody = buildRobotsTxtWithSitemap(
     args.target.robotsDefault,
     args.siteBaseUrl,
     {
       sitemap: allFiles.some((f) => f.path === "/sitemap.xml"),
       feed: allFiles.some((f) => f.path === `/${FEED_FILE}`),
+      extraSitemaps: extraSitemapFiles((rel) => allFiles.some((f) => f.path === `/${rel}`)),
     },
     args.robotsRules,
   );

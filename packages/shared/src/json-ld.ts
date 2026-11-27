@@ -86,10 +86,10 @@ export interface CoreGraphInput {
   readonly canonical: string | null;
   /** `site_defaults.site_name`, null = the site has no name yet. */
   readonly siteName: string | null;
-  /** The site's language (WebSite `inLanguage`). */
-  readonly siteLanguage: string;
-  /** The page's document language (WebPage `inLanguage`). */
-  readonly pageLanguage: string;
+  /** The site's language (WebSite `inLanguage`); null only in a preview before it is set. */
+  readonly siteLanguage: string | null;
+  /** The page's document language (WebPage `inLanguage`); null like `siteLanguage`. */
+  readonly pageLanguage: string | null;
   /** The page's own title: the WebPage `name`. */
   readonly pageTitle: string;
   /** The meta description the page renders ("" = none). */
@@ -180,7 +180,7 @@ function coreNodes(core: CoreGraphInput): { nodes: Record<string, unknown>[]; we
     "@id": websiteId,
     ...(core.siteBaseUrl ? { url: siteRoot(core.siteBaseUrl) } : {}),
     ...(core.siteName ? { name: core.siteName } : {}),
-    inLanguage: core.siteLanguage,
+    ...(core.siteLanguage ? { inLanguage: core.siteLanguage } : {}),
     ...(org.name ? { publisher: { "@id": orgId } } : {}),
   });
   const webPage = nodes.length;
@@ -191,7 +191,7 @@ function coreNodes(core: CoreGraphInput): { nodes: Record<string, unknown>[]; we
     name: core.pageTitle,
     ...(core.description ? { description: core.description } : {}),
     ...(core.imageUrl ? { image: core.imageUrl } : {}),
-    inLanguage: core.pageLanguage,
+    ...(core.pageLanguage ? { inLanguage: core.pageLanguage } : {}),
     isPartOf: { "@id": websiteId },
     ...(core.breadcrumbs.length > 0
       ? { breadcrumb: { "@id": pageNodeId(core.canonical, "breadcrumb") } }

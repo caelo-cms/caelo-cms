@@ -58,6 +58,7 @@ import {
   anyEndsOutsideContent,
   applyDocumentLanguage,
   buildMediaUrl,
+  buildPageGraph,
   ComposeError,
   type ComposeFonts,
   collectListModuleRefs,
@@ -79,12 +80,14 @@ import {
   type NestedRenderResolver,
   ok,
   type PaginationRequest,
+  PLUGIN_STRUCTURED_DATA_POINT,
   pagedPath,
   pagedUrl,
   pageFrame,
   pageListOverlayScope,
   paginationMarkers,
   parsePagedPath,
+  pluginValueRefusedMarker,
   type Result,
   renderModuleWithContent,
   renderSeoHead,
@@ -115,6 +118,7 @@ import {
 } from "../../lists/load.js";
 import { PAGE_SEO_COLUMN_DEFAULTS } from "../../seo/page-seo.js";
 import { resolvePageShareImages } from "../../seo/share-image.js";
+import { previewStructuredData } from "../../seo/structured-data-preview.js";
 import { loadSiteView, type SiteView } from "../../site-view.js";
 import { pendingUrlAnnotationPageIds } from "./branch-url-drift.js";
 import { previewBreadcrumbs } from "./preview-breadcrumbs.js";
@@ -797,27 +801,81 @@ async function renderPreview(
           modifiedTime: page.liveChangedAt,
         }
       : null;
+  const pageCanonical =
+    followUp !== null && canonical !== null
+      ? pagedUrl(canonical, followUp, pageUrlStyle)
+      : canonical;
+  const ogImageUrl = shareImages.get(pageId)?.url ?? null;
+  const pageLanguage = resolveDocumentLanguage({
+    contributed: contributions?.lang.get(pageId),
+    siteLanguage: settings.siteLanguage,
+  });
+  // #1753 — the plugins' structured data, asked as the build asks: page 1
+  // with a base URL (the nodes' ids are absolute URLs).
+  const structured =
+    siteBaseUrl && followUp === null
+      ? await previewStructuredData({
+          ctx: chatBranchId ? { ...ctx, chatBranchId } : ctx,
+          reads,
+          page: {
+            pageId,
+            lang: pageLanguage ?? "",
+            description: head.metaDescription.value,
+            shareImage: shareImages.get(pageId)?.assetId ?? null,
+            live: article !== null,
+            listed: lists.listedPages(),
+          },
+          pageTypeProperties: (slug) => {
+            const t = view.pageTypes.find((x) => x.state.slug === slug);
+            return t ? { properties: t.state.definition.properties } : null;
+          },
+          site: { organization: Boolean(organization.name), name: settings.siteName },
+          scope: { siteBaseUrl, pageUrlStyle, ...renderScope },
+        })
+      : null;
+  const graph = buildPageGraph(
+    {
+      siteBaseUrl: siteBaseUrl || null,
+      canonical: pageCanonical,
+      siteName: settings.siteName,
+      siteLanguage: settings.siteLanguage ?? null,
+      pageLanguage,
+      pageTitle: pageRow.title,
+      description: head.metaDescription.value,
+      imageUrl: ogImageUrl,
+      organization,
+      breadcrumbs: siteBaseUrl
+        ? await previewBreadcrumbs(view, lists.breadcrumbTrail(), {
+            siteBaseUrl,
+            pageUrlStyle,
+            renderScope,
+          })
+        : [],
+      // The dates the build gives the page when it records it (see `article`).
+      liveDates: article
+        ? { published: article.publishedTime, modified: article.modifiedTime }
+        : null,
+    },
+    structured?.collected.parts.get(pageId) ?? [],
+    structured?.mediaUrl ?? (() => null),
+  );
+  const structuredMarkers = [
+    ...(structured?.collected.refused.get(pageId) ?? []),
+    ...graph.refusals.map((r) =>
+      pluginValueRefusedMarker(r.plugin, PLUGIN_STRUCTURED_DATA_POINT, r.field, r.rule),
+    ),
+  ];
   const headBlock = renderSeoHead({
     head,
     pageTitle: pageRow.title,
     siteName: settings.siteName,
     article,
-    canonical:
-      followUp !== null && canonical !== null
-        ? pagedUrl(canonical, followUp, pageUrlStyle)
-        : canonical,
-    ogImageUrl: shareImages.get(pageId)?.url ?? null,
-    organization,
+    canonical: pageCanonical,
+    ogImageUrl,
     // The feed link every built page carries (docs/dev/search-engine-feed.md).
     // Without a base URL the build refuses, so there is nothing to show.
     feed: siteBaseUrl ? siteFeedLink(settings.feedEnabled, siteBaseUrl) : null,
-    breadcrumbs: siteBaseUrl
-      ? await previewBreadcrumbs(view, lists.breadcrumbTrail(), {
-          siteBaseUrl,
-          pageUrlStyle,
-          renderScope,
-        })
-      : null,
+    jsonLd: graph.graph,
   });
   const contributedHead = contributions?.head.get(pageId);
   html = injectSeoIntoHead(
@@ -873,6 +931,8 @@ async function renderPreview(
       // #1729 — what core refused from a plugin's head entries, sitemap
       // adjustments or default share image: the page renders without it.
       ...(contributions?.refused.get(pageId) ?? []),
+      // #1753 — what core refused from a plugin's structured data.
+      ...structuredMarkers,
       ...(shareImages.get(pageId)?.refused ? [shareImages.get(pageId)?.refused as string] : []),
       // #1008 — an active plugin this server could not load renders
       // without its contribution; loud here (and Publish live refuses).

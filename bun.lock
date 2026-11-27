@@ -132,6 +132,7 @@
       "dependencies": {
         "@caelo-cms/font-service": "workspace:*",
         "@caelo-cms/plugin-host": "workspace:*",
+        "@caelo-cms/plugin-sdk": "workspace:*",
         "@caelo-cms/query-api": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
         "drizzle-orm": "0.45.4",

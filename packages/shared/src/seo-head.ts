@@ -413,15 +413,31 @@ export const ARTICLE_MODIFIED_TIME_PENDING = "caelo-article-modified-time-pendin
 
 const ARTICLE_MODIFIED_RE = /<meta property="article:modified_time" content="[^"<>]*" \/>/;
 
+/** Core's JSON-LD graph of a page (`renderJsonLdScript`), the first in the document. */
+const GRAPH_RE =
+  /<script type="application\/ld\+json">\{"@context":"https:\/\/schema\.org","@graph":[\s\S]*?<\/script>/;
+
+/** The WebPage's `dateModified`: the first in the graph (Organization and WebSite carry none). */
+const GRAPH_MODIFIED_RE = /"dateModified":"([^"\\]*)"/;
+
 /**
- * Set the `article:modified_time` of a rendered page (the tag
- * `renderSeoHead` wrote): the build once the live comparison dated the
+ * Set the date a rendered page last changed live: its
+ * `article:modified_time` (the tag `renderSeoHead` wrote) and, #1753, every
+ * value of its JSON-LD graph that carries that date — the WebPage's
+ * `dateModified` and the plugin nodes that asked for it (`{live:
+ * "modified"}`). The build calls it once the live comparison dated the
  * page, the plugin-data build when baked data moved its date. A page
- * without the tag (no article) comes back unchanged.
+ * without either comes back unchanged.
  */
 export function setArticleModifiedTime(html: string, iso: string): string {
-  return html.replace(
+  const date = iso.replace(/[&"<>\\]/g, "");
+  const out = html.replace(
     ARTICLE_MODIFIED_RE,
-    `<meta property="article:modified_time" content="${iso.replace(/[&"<>]/g, "")}" />`,
+    `<meta property="article:modified_time" content="${date}" />`,
   );
+  const graph = GRAPH_RE.exec(out);
+  const old = graph ? GRAPH_MODIFIED_RE.exec(graph[0])?.[1] : undefined;
+  if (!graph || old === undefined || old === date) return out;
+  const next = graph[0].split(`"${old}"`).join(`"${date}"`);
+  return out.slice(0, graph.index) + next + out.slice(graph.index + graph[0].length);
 }

@@ -238,6 +238,8 @@ export async function collectSitemapEntries(
               : textRule(news.title, SITEMAP_TITLE_MAX);
           const existing = out.news.get(pageId);
           if (rule) refuse(lp.slug, pageId, "news", rule);
+          // A news sitemap names the publication: the site's name.
+          else if (input.site.name === null) refuse(lp.slug, pageId, "news", "site-name-unset");
           else if (existing && existing.title !== (news as { title: string }).title) {
             refuse(lp.slug, pageId, "news", "news-conflict");
           } else out.news.set(pageId, { title: (news as { title: string }).title });
