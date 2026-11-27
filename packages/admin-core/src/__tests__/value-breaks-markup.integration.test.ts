@@ -393,6 +393,16 @@ describe("#1748 — the write tools refuse a value that breaks the markup where 
     expect(refused.message).toContain(`the shared list "${LIST_SLUG}"`);
     expect(refused.message).toContain("nothing was saved");
   });
+
+  it("a module HTML change that reads a site text by key where it breaks", async () => {
+    const refused = await refusedWrite("modules.update", {
+      moduleId,
+      html: `${TOOL_HTML}<p title="{{site_text.done}}">?</p>`,
+    });
+    expect(refused.refusal).toBe(true);
+    expect(refused.message).toContain('the site text "done"');
+    expect(refused.message).toContain("&quot;");
+  });
 });
 
 describe("#1748 — a breaking value stored before the rule", () => {
