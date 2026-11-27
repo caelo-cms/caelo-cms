@@ -39,6 +39,12 @@ import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
 import { headOverlaySql } from "../../draft.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
 import { fitPageToType, loadVocabularyIndex } from "../../lists/page-fit.js";
+import {
+  incomingPageRefIssue,
+  loadPageRefIndex,
+  type PageRefLookup,
+  type PageRefTarget,
+} from "../../lists/page-refs.js";
 import { replacePageTerms } from "../../lists/page-terms.js";
 import { fitIssueDetails, resolvePageTypeForWrite } from "../../lists/page-type-resolve.js";
 import { loadListEntities } from "../../lists/store.js";
@@ -347,11 +353,14 @@ export const listPagesOp = defineOperation({
     const only = pageSelectionOf(input);
     if (only) {
       const byId = only.ids.length > 0 ? sql`pages.id = ANY(${uuidArray(only.ids)})` : null;
+      // The stored path with or without its trailing slash, as an equality
+      // on the column (#1754): `current_path`'s index answers it, where the
+      // normalising expression it replaced read every page of the site.
       const byPath =
         only.paths.size > 0
-          ? sql`(CASE WHEN length(pages.current_path) > 1
-                      THEN rtrim(pages.current_path, '/') ELSE pages.current_path END)
-                = ANY(${textArray([...only.paths])})`
+          ? sql`pages.current_path = ANY(${textArray(
+              [...only.paths].flatMap((p) => (p === "/" ? [p] : [p, `${p}/`])),
+            )})`
           : null;
       // A chat's pending rename moves the paths of a page and everything
       // below it without touching the rows: on a branch those pages are
@@ -455,6 +464,36 @@ export const listPagesOp = defineOperation({
     });
   },
 });
+
+/**
+ * #1754 — the pages a `page` property names, read through `pages.list`
+ * in the caller's view (a chat's pending renames and deletes included):
+ * exactly these pages, by id and by path, in batches of the op's limit.
+ */
+export function pageRefLookupOf(tx: TransactionRunner, ctx: ExecutionContext): PageRefLookup {
+  return async ({ ids, paths }) => {
+    const out: PageRefTarget[] = [];
+    const batches = Math.max(Math.ceil(ids.length / 1000), Math.ceil(paths.length / 1000));
+    for (let b = 0; b < batches; b += 1) {
+      const pageIds = ids.slice(b * 1000, (b + 1) * 1000);
+      const atPaths = paths.slice(b * 1000, (b + 1) * 1000);
+      const r = await listPagesOp.handler(
+        ctx,
+        {
+          includeDeleted: false,
+          ...(pageIds.length > 0 ? { pageIds: [...pageIds] } : {}),
+          ...(atPaths.length > 0 ? { paths: [...atPaths] } : {}),
+        },
+        tx,
+      );
+      if (!r.ok) throw new OperationAbortError(r.error);
+      for (const p of r.value.pages) {
+        out.push({ id: p.id, path: p.currentPath, pageType: p.pageType });
+      }
+    }
+    return out;
+  };
+}
 
 /**
  * 0263 — the tree half of pages.list for the returned pages: depth, and —
@@ -914,6 +953,7 @@ export const createPageOp = defineOperation({
       resolved.def,
       { templateId, properties: input.properties ?? {}, terms: input.terms ?? [] },
       await loadVocabularyIndex(tx, ctx.chatBranchId ?? null, [resolved.def]),
+      await loadPageRefIndex(pageRefLookupOf(tx, ctx), resolved.def, [input.properties ?? {}]),
     );
     if (fit.issues.length > 0) {
       await recordAudit(tx, {
@@ -1379,6 +1419,12 @@ async function nextTypeBound(
   ctx: ExecutionContext,
   input: z.infer<typeof pageUpdateSchema>,
   base: PageState,
+  /**
+   * #1754 — `base` is the source of a new copy (pages.duplicate), not the
+   * page being changed: pages naming the source keep naming it, so the
+   * copy may take another type, and the copy is not the source.
+   */
+  opts: { readonly copy?: boolean } = {},
 ): Promise<
   | {
       ok: true;
@@ -1408,9 +1454,32 @@ async function nextTypeBound(
       terms: input.terms ?? base.terms,
     },
     await loadVocabularyIndex(tx, ctx.chatBranchId ?? null, [resolved.def]),
+    await loadPageRefIndex(pageRefLookupOf(tx, ctx), resolved.def, [properties]),
+    opts.copy ? null : input.pageId,
   );
   if (fit.issues.length > 0) {
     return { ok: false, details: fitIssueDetails(resolved.def.slug, fit.issues) };
+  }
+  // #1754 — a page another page's `page` property names as a page of its
+  // current type keeps that type while it is named so.
+  if (!opts.copy && resolved.typeId !== base.pageTypeId) {
+    const from = (
+      await loadListEntities(tx, "pageType", ctx.chatBranchId ?? null, {
+        ids: [base.pageTypeId],
+        includeDeleted: true,
+      })
+    )[0]?.state.slug;
+    const named =
+      from === undefined
+        ? null
+        : await incomingPageRefIssue(
+            tx,
+            ctx.chatBranchId ?? null,
+            { id: input.pageId, label: `page "${base.title}" (${input.pageId})` },
+            from,
+            resolved.def.slug,
+          );
+    if (named !== null) return { ok: false, details: [{ path: ["pageType"], message: named }] };
   }
   return {
     ok: true,
@@ -2427,6 +2496,7 @@ export const duplicatePageOp = defineOperation({
         ...(input.pageType !== undefined ? { pageType: input.pageType } : {}),
       },
       sourceState,
+      { copy: true },
     );
     if (!dupType.ok) {
       return err(

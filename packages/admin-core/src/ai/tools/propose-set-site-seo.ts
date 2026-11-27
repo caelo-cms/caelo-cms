@@ -120,7 +120,7 @@ export const proposeSetSiteSeoTool = makeProposeTool({
 export const getSiteSeoTool = makeReadTool<Record<string, never>>({
   name: "get_site_seo",
   description:
-    "Read site-wide SEO settings: `siteBaseUrl` (null = unset, publishing fails), `sitemapEnabled`, `feedEnabled`, `indexNowEnabled`, `organizationJson`, the robots.txt rules with the live file they make, and how the latest WebSub pings / IndexNow submissions went. Change via `propose_set_site_seo`. Per-page SEO: `get_page_seo`; default share image: `set_theme_asset` slot socialShare; site language: `get_site_defaults`.",
+    "Read site-wide SEO settings: `siteBaseUrl` (null = unset, publishing fails), `sitemapEnabled`, `feedEnabled`, `indexNowEnabled`, `organizationJson`, the robots.txt rules with the live file they make, the site's `<title>` template and name, and how the latest WebSub pings / IndexNow submissions went. Change via `propose_set_site_seo`; the title template via `set_page_type_seo_many`. Per-page SEO: `get_page_seo`; default share image: `set_theme_asset` slot socialShare; site language: `get_site_defaults`.",
   opName: "site_defaults.get_seo",
   input: z.object({}).strict(),
   format: (value) => {
@@ -134,6 +134,8 @@ export const getSiteSeoTool = makeReadTool<Record<string, never>>({
       robotsTxt: string | null;
       robotsWarnings: string[];
       robotsNotes: string[];
+      titleTemplate: string;
+      siteName: string | null;
       searchNotifications: {
         channel: string;
         status: string;
@@ -148,6 +150,8 @@ export const getSiteSeoTool = makeReadTool<Record<string, never>>({
       `feedEnabled: ${v.feedEnabled}`,
       `indexNowEnabled: ${v.indexNowEnabled}`,
       `organizationJson: ${JSON.stringify(v.organizationJson)}`,
+      `titleTemplate: \`${v.titleTemplate}\` (pages whose type has none)`,
+      `siteName (og:site_name, {site_name}): ${v.siteName ?? "(not set — set_site_identity)"}`,
       `robotsRules: ${JSON.stringify(v.robotsRules)}`,
       ...v.robotsWarnings.map((w) => `robots WARNING: ${w}`),
       ...v.robotsNotes.map((n) => `robots NOTE: ${n}`),

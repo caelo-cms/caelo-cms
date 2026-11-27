@@ -7,7 +7,8 @@
  *   1. Edit a menu: add entries, nest one, reorder, save — stored tree checked.
  *   2. Edit its structure: add a field; removing a field that holds values
  *      asks first and saves with the confirmation.
- *   3. Page settings: set a page type, a property and terms.
+ *   3. Page settings: set a page type, a property and terms; name two
+ *      author pages in a page property and reorder them (#1754).
  *   4. Live Edit: a reference inside a rendered shared-list entry carries the
  *      entry (`listItem`) into the chat chip.
  *   5. A role without `content.structure` sees Structure read-only (and the
@@ -38,6 +39,9 @@ const NAV_TYPE = `e2e-nav-${ts}`;
 const MENU = `e2e-menu-${ts}`;
 const TOPICS = `e2e-topics-${ts}`;
 const PAGE_TYPE = `e2e-article-${ts}`;
+const AUTHOR_TYPE = `e2e-author-${ts}`;
+const AUTHOR_A = `e2e-anna-${ts}`;
+const AUTHOR_B = `e2e-ben-${ts}`;
 const TPL = `e2e-lists-tpl-${ts}`;
 const MOD = `e2e-lists-mod-${ts}`;
 const PAGE = `e2e-lists-page-${ts}`;
@@ -75,6 +79,9 @@ function ops(body: string, env: Record<string, string> = {}): string {
       MENU,
       TOPICS,
       PAGE_TYPE,
+      AUTHOR_TYPE,
+      AUTHOR_A,
+      AUTHOR_B,
       TPL,
       MOD,
       PAGE,
@@ -100,7 +107,13 @@ function storedMenu(): StoredItem[] {
   return JSON.parse(out) as StoredItem[];
 }
 
-let ids: { templateId: string; pageId: string; topicsId: string; topicIds: string[] };
+let ids: {
+  templateId: string;
+  pageId: string;
+  topicsId: string;
+  topicIds: string[];
+  authorIds: string[];
+};
 
 test.beforeAll(() => {
   clearLoginRateBucket();
@@ -142,9 +155,20 @@ test.beforeAll(() => {
     await op("page_types.upsert_many", { pageTypes: [{
       slug: E.PAGE_TYPE, name: "E2E article", purpose: "Articles of the lists spec.", collection: true,
       templates: [out.templateId], defaultTemplate: out.templateId,
-      properties: [{ name: "author", label: "Author", type: "text" }],
+      properties: [
+        { name: "author", label: "Author", type: "text" },
+        { name: "authors", label: "Authors", type: "page", pageType: E.AUTHOR_TYPE, multiple: true },
+      ],
       vocabularies: [{ list: out.topicsId, cardinality: "many" }],
+    }, {
+      slug: E.AUTHOR_TYPE, name: "E2E author", purpose: "Author pages of the lists spec.", collection: true,
+      templates: [out.templateId], defaultTemplate: out.templateId,
     }] });
+    out.authorIds = [];
+    for (const [slug, title] of [[E.AUTHOR_A, "E2E Anna"], [E.AUTHOR_B, "E2E Ben"]]) {
+      const created = await op("pages.create", { slug, title, pageType: E.AUTHOR_TYPE, templateId: out.templateId, status: "draft" });
+      out.authorIds.push(created.pageId);
+    }
     const menu = (await op("lists.get", { slug: E.MENU })).list;
     const mod = await asSystem((tx) => tx\`
       INSERT INTO modules (slug, display_name, type, html, fields)
@@ -187,11 +211,11 @@ test.afterAll(async () => {
       await tx\`DELETE FROM roles WHERE name = \${"e2e-writer-" + E.MENU}\`;
       await tx\`DELETE FROM page_terms WHERE page_id IN (SELECT id FROM pages WHERE slug = \${E.PAGE})\`;
       await tx\`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug = \${E.PAGE})\`;
-      await tx\`DELETE FROM pages WHERE slug = \${E.PAGE}\`;
+      await tx\`DELETE FROM pages WHERE slug IN (\${E.PAGE}, \${E.AUTHOR_A}, \${E.AUTHOR_B})\`;
       await tx\`DELETE FROM modules WHERE slug = \${E.MOD}\`;
       await tx\`DELETE FROM lists WHERE slug IN (\${E.MENU}, \${E.TOPICS})\`;
       await tx\`DELETE FROM list_types WHERE slug = \${E.NAV_TYPE}\`;
-      await tx\`DELETE FROM page_types WHERE slug = \${E.PAGE_TYPE}\`;
+      await tx\`DELETE FROM page_types WHERE slug IN (\${E.PAGE_TYPE}, \${E.AUTHOR_TYPE})\`;
     });
   `);
 });
@@ -354,6 +378,39 @@ test("page settings: page type, property and terms", async ({ page }) => {
   expect(row.slug).toBe(PAGE_TYPE);
   expect(row.properties).toEqual({ author: "Ada" });
   expect(row.terms).toEqual([ids.topicIds[1]]);
+});
+
+test("page settings: a page property names pages, in order (#1754)", async ({ page }) => {
+  await login(page, "dev-owner@example.com", "dev owner password");
+  await page.goto(`/content/pages/${ids.pageId}`);
+  const card = page.getByTestId("page-type-settings");
+  // The page has the article type since the test before.
+  const refs = card.getByTestId("page-refs-authors");
+  await refs.locator("select").selectOption({ label: `E2E Anna — /${AUTHOR_A}` });
+  await refs.locator("select").selectOption({ label: `E2E Ben — /${AUTHOR_B}` });
+  await expect(refs.getByTestId("page-ref")).toHaveCount(2);
+  // Ben first: the order is the editor's.
+  await refs.getByTestId("page-ref").nth(1).getByRole("button", { name: "Move up" }).click();
+  await expect(refs.getByTestId("page-ref").first()).toContainText("E2E Ben");
+  await save(page, "save-page-type-settings");
+
+  const out = ops(
+    `
+    const rows = await asSystem((tx) => tx\`SELECT properties FROM pages WHERE id = \${E.PAGE_ID}::uuid\`);
+    out = rows[0].properties;
+  `,
+    { PAGE_ID: ids.pageId },
+  );
+  const [anna, ben] = ids.authorIds;
+  expect((JSON.parse(out) as { authors?: string[] }).authors).toEqual([
+    `caelo:page/${ben}`,
+    `caelo:page/${anna}`,
+  ]);
+  // A reload shows them by title, in the stored order.
+  await page.reload();
+  await expect(
+    page.getByTestId("page-type-settings").getByTestId("page-refs-authors").getByTestId("page-ref"),
+  ).toHaveText([/E2E Ben/, /E2E Anna/]);
 });
 
 test("Live Edit: a reference inside a menu entry carries the entry", async ({ page, context }) => {

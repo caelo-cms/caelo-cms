@@ -26,7 +26,8 @@ import {
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { headOverlaySql } from "../../draft.js";
-import { pageSeoViewSql } from "../../seo/page-seo.js";
+import { loadPageSeoViews } from "../../seo/page-seo.js";
+import type { PageSeoState } from "../../snapshots/state.js";
 import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 import { loadActiveThemeForCompose } from "./preview-theme.js";
 import { loadPublishPageUrlStyle } from "./public-urls.js";
@@ -51,6 +52,11 @@ export interface PreviewPageRow {
   slug: string;
   current_path: string;
   title: string;
+  /** #1752 — the short title and page type the page's SEO head resolves with. */
+  short_title: string;
+  page_type_id: string;
+  /** When the page first went live; null = never (`article:published_time`). */
+  first_published_at: Date | string | null;
   template_html: string;
   template_css: string;
   layout_id: string;
@@ -78,11 +84,13 @@ export interface PreviewPageBundle {
   readonly resources: NestedResources;
   readonly theme: ComposeTheme | undefined;
   readonly pageUrlStyle: PageUrlStyle;
-  readonly seo: {
-    readonly metaDescription: string;
-    readonly canonicalUrl: string | null;
-    readonly noindex: boolean;
-  } | null;
+  /** #1156 — the page's SEO in this render's branch; null = none (the column defaults). */
+  readonly seo: PageSeoState | null;
+  /**
+   * #1752 — when what the page shows last changed live (the live page
+   * record, docs/dev/search-engine-feed.md); null while it is not live.
+   */
+  readonly liveChangedAt: string | null;
   /** The page's own image; which image it shows is `resolvePageShareImages`'. */
   readonly ownOgImageAssetId: string | null;
   /** #918 — pages showing each synced instance (only with edit markers). */
@@ -129,6 +137,7 @@ export async function loadPreviewPage(
     : sql`AND p.chat_branch_id IS NULL AND t.chat_branch_id IS NULL AND l.chat_branch_id IS NULL`;
   const pageRows = (await tx.execute(sql`
     SELECT p.id::text AS page_id, p.slug AS slug, p.current_path, p.title AS title,
+           p.short_title, p.page_type_id::text AS page_type_id, p.first_published_at,
            t.html AS template_html, t.css AS template_css,
            l.id::text AS layout_id, l.slug AS layout_slug,
            l.html AS layout_html, l.css AS layout_css
@@ -156,9 +165,16 @@ export async function loadPreviewPage(
       }),
     )) as unknown as { state: unknown }[];
     if (snap[0]?.state) {
-      const s = snap[0].state as { slug?: string; title?: string };
+      const s = snap[0].state as {
+        slug?: string;
+        title?: string;
+        shortTitle?: string;
+        pageTypeId?: string;
+      };
       if (s.slug) pageRow.slug = s.slug;
       if (s.title) pageRow.title = s.title;
+      if (s.shortTitle) pageRow.short_title = s.shortTitle;
+      if (s.pageTypeId) pageRow.page_type_id = s.pageTypeId;
     }
   }
   // P6.7.6 no-fallbacks invariant — the layout must declare a `content`
@@ -378,17 +394,13 @@ export async function loadPreviewPage(
   }
 
   // #1156 — the SEO this render's branch shows (a chat's pending edit).
-  const seoRows = (await tx.execute(sql`
-    SELECT s.meta_description, s.og_image_asset_id::text AS og_image_asset_id,
-           s.canonical_url, s.noindex
-    FROM ${pageSeoViewSql(chatBranchId ?? undefined, [pageId])} s LIMIT 1
-  `)) as unknown as {
-    meta_description: string;
-    og_image_asset_id: string | null;
-    canonical_url: string | null;
-    noindex: boolean;
-  }[];
-  const seoRow = seoRows[0];
+  const seo = (await loadPageSeoViews(tx, [pageId], chatBranchId)).get(pageId)?.state ?? null;
+  // #1752 — the live record's date for the page (article:modified_time).
+  const live = (await tx.execute(sql`
+    SELECT url, changed_at FROM live_page_versions
+     WHERE page_id = ${pageId}::uuid ORDER BY id DESC LIMIT 1
+  `)) as unknown as { url: string | null; changed_at: Date | string }[];
+  const liveRow = live[0];
 
   return {
     pageRow,
@@ -399,14 +411,15 @@ export async function loadPreviewPage(
     resources,
     theme,
     pageUrlStyle,
-    seo: seoRow
-      ? {
-          metaDescription: seoRow.meta_description,
-          canonicalUrl: seoRow.canonical_url,
-          noindex: seoRow.noindex,
-        }
-      : null,
-    ownOgImageAssetId: seoRow?.og_image_asset_id ?? null,
+    seo,
+    liveChangedAt:
+      liveRow && liveRow.url !== null
+        ? (liveRow.changed_at instanceof Date
+            ? liveRow.changed_at
+            : new Date(liveRow.changed_at)
+          ).toISOString()
+        : null,
+    ownOgImageAssetId: seo?.ogImageAssetId ?? null,
     sharedPageCounts,
   };
 }

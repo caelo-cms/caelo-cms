@@ -79,7 +79,8 @@ const SLUGS = [PAGE_SLUG, HIDDEN_SLUG, HOME_SLUG];
 const TAKEN_SLUG = "promote-seo-taken";
 const ALL_SLUGS = [...SLUGS, TAKEN_SLUG];
 
-const ROBOTS_META = /<meta name="robots"[^>]*>/;
+/** A robots meta that keeps a page out of search (#1752: every page carries a robots meta). */
+const ROBOTS_META = /<meta name="robots" content="[^"]*noindex[^"]*"/;
 
 async function wipe(): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
@@ -248,7 +249,9 @@ describe("deploy.promote ships production SEO semantics", () => {
     expect(liveHome).not.toMatch(ROBOTS_META);
     // Page-level noindex is the operator's choice, not the env's.
     const liveHidden = await readFile(join(production, HIDDEN_SLUG, "index.html"), "utf8");
-    expect(liveHidden).toContain('<meta name="robots" content="noindex" />');
+    expect(liveHidden).toContain(
+      '<meta name="robots" content="noindex, max-image-preview:large" />',
+    );
 
     const sitemap = await readFile(join(production, "sitemap.xml"), "utf8");
     expect(sitemap).toContain(PAGE_SLUG);

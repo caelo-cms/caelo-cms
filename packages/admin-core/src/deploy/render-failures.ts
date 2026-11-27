@@ -46,6 +46,7 @@ import {
   parseOgImageFailureMarker,
   parsePagePathUnknown,
   parsePluginValueRefused,
+  parseSeoTitleVariableMarker,
   renderFailureKind,
   renderFailureMarker,
   replacementMediaUrls,
@@ -127,6 +128,8 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   // #1719 — reference images on a page; share images by what is wrong.
   const referencePages = new Set<string>();
   const shareImagePages = { missing: new Set<string>(), reference: new Set<string>() };
+  // #1752 — a title template variable without a value.
+  const titlePages = new Set<string>();
   // #1729 — what a plugin added to a page's head, or its share image.
   const pluginHeadPages = new Set<string>();
   const pluginShareImagePages = new Set<string>();
@@ -139,7 +142,9 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
             renderFailureMarker(f.reason).slice(PLUGIN_VALUE_REFUSED.length + 1),
           ).source
         : null;
-    if (refusedSource === PLUGIN_HEAD_POINT) {
+    if (parseSeoTitleVariableMarker(f.reason) !== null) {
+      titlePages.add(page);
+    } else if (refusedSource === PLUGIN_HEAD_POINT) {
       pluginHeadPages.add(page);
     } else if (refusedSource === PLUGIN_SHARE_IMAGES_POINT) {
       pluginShareImagePages.add(page);
@@ -182,6 +187,10 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   onPages(
     "The image shown when the page is shared is a reference image, which is never published",
     shareImagePages.reference,
+  );
+  onPages(
+    "The page title template uses a value the site does not have yet (the site's name)",
+    titlePages,
   );
   onPages(
     "A plugin added something to the page's head or sitemap that Caelo does not allow, so it was left out",
@@ -310,6 +319,9 @@ function pageValueAnswers(path: string, type: string): string {
   if (type === "term" || type === "list") {
     return `is a list of entries: iterate it with {{#page.${path}}}{{name}}{{/page.${path}}}`;
   }
+  if (type === "page") {
+    return `is a list of the pages it names: iterate it with {{#page.${path}}}<a href="{{link}}">{{title}}</a>{{/page.${path}}}`;
+  }
   const paths = [...new Set(type.split("|").flatMap((t) => PAGE_VALUE_PATHS[t] ?? []))];
   const select = type.split("|").includes("select")
     ? `, or the option flag {{#page.${path}_<option>}}`
@@ -335,6 +347,16 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
   if (reference !== null) return mediaReferenceRepair(reference);
   const og = parseOgImageFailureMarker(marker);
   if (og !== null) return shareImageRepair(og);
+  const variable = parseSeoTitleVariableMarker(marker);
+  if (variable !== null) {
+    return {
+      tool: variable === "site_name" ? "set_site_identity" : "set_page_type_seo_many",
+      hint:
+        variable === "site_name"
+          ? "The title template uses {site_name}, and the site has no name: set it with set_site_identity({siteName}), or drop {site_name} from the template (set_page_type_seo_many; get_page_seo names the template)."
+          : `The title template uses {${variable}}, which has no value on this page: fix the template with set_page_type_seo_many (get_page_seo names it).`,
+    };
+  }
   if (isLinkFailureMarker(marker)) {
     return {
       tool: "check_links",
@@ -363,6 +385,15 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
         tool: "set_content_instance_values_many",
         hint: `The link field ${path} in ${mod} holds no link: set it to a URL or { href, target? } (get_content_instance shows what is stored).`,
       };
+    case "list-missing":
+      // #1754 — a page property names a page that was deleted.
+      if (path.startsWith("page/")) {
+        return {
+          tool: "update_pages_many",
+          hint: `A page property shown by ${mod} names a deleted page (${path.slice("page/".length)}): give the page that holds it another page there, or remove the deleted one from the property (update_pages_many properties).`,
+        };
+      }
+      return { tool: "set_content_instance_values_many", hint: `${REFERENCE_REPAIR}.` };
     case PAGE_PROP_UNKNOWN:
       return {
         tool: "list_page_types",

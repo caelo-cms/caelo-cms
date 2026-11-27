@@ -6,6 +6,10 @@
  * description and social-share values. An SEO change the chat made is
  * marked Pending (button dot, badge per field) while the live row keeps
  * the old value until a Stage.
+ *
+ * #1752 — every value says where it comes from (the page's own text and
+ * who wrote it, or a title template), on the editor's info and on the
+ * page's SEO panel, where a person marks an AI text reviewed.
  */
 
 import { expect, test } from "@playwright/test";
@@ -27,6 +31,9 @@ const PAGE_SLUG = `e2e-seo-info-page-${ts}`;
 
 let chatId: string | null = null;
 
+// One owner, one cleanup after both tests: they run one after the other.
+test.describe.configure({ mode: "serial" });
+
 test.beforeAll(() => {
   clearLoginRateBucket();
   ensureIsolatedOwner(OWNER_EMAIL);
@@ -41,10 +48,10 @@ test.afterAll(() => {
     const sql = new SQL(process.env.ADMIN_DATABASE_URL);
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      await tx\`DELETE FROM pages_seo WHERE page_id IN (SELECT id FROM pages WHERE slug = \${process.env.PAGE_SLUG})\`;
-      await tx\`DELETE FROM pages WHERE slug = \${process.env.PAGE_SLUG}\`;
-      await tx\`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = \${process.env.TPL_SLUG})\`;
-      await tx\`DELETE FROM templates WHERE slug = \${process.env.TPL_SLUG}\`;
+      await tx\`DELETE FROM pages_seo WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE \${process.env.PAGE_SLUG + "%"})\`;
+      await tx\`DELETE FROM pages WHERE slug LIKE \${process.env.PAGE_SLUG + "%"}\`;
+      await tx\`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE \${process.env.TPL_SLUG + "%"})\`;
+      await tx\`DELETE FROM templates WHERE slug LIKE \${process.env.TPL_SLUG + "%"}\`;
     });
     await sql.end();
     `,
@@ -52,8 +59,8 @@ test.afterAll(() => {
   );
 });
 
-/** Seed a page with a live meta description; returns its id. */
-function seedPage(): string {
+/** Seed a page with a live meta description; returns its id. Each test seeds its own. */
+function seedPage(suffix: string): string {
   return runBunInline(
     `
     import { SQL } from "bun";
@@ -77,8 +84,48 @@ function seedPage(): string {
     await sql.end();
     process.stdout.write(pageId);
     `,
-    { TPL_SLUG, PAGE_SLUG },
+    { TPL_SLUG: `${TPL_SLUG}${suffix}`, PAGE_SLUG: `${PAGE_SLUG}${suffix}` },
   ).trim();
+}
+
+/** An AI write outside a chat (the live row), as the AI's set_page_seo_many makes it. */
+function setSeoAsAi(pageId: string, input: Record<string, unknown>): void {
+  runBunInline(
+    `
+    import { DatabaseAdapter, OperationRegistry, execute } from "@caelo-cms/query-api";
+    import { registerAdminOps } from "@caelo-cms/admin-core";
+    const adapter = new DatabaseAdapter({
+      adminDatabaseUrl: process.env.ADMIN_DATABASE_URL,
+      publicDatabaseUrl: process.env.PUBLIC_ADMIN_DATABASE_URL,
+    });
+    const registry = new OperationRegistry();
+    registerAdminOps(registry);
+    const r = await execute(registry, adapter, {
+      actorId: "00000000-0000-0000-0000-00000000ffff", actorKind: "ai", requestId: "e2e-seo-panel",
+    }, "pages_seo.set", { pageId: process.env.PAGE, ...JSON.parse(process.env.INPUT) });
+    await adapter.close();
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    `,
+    { PAGE: pageId, INPUT: JSON.stringify(input) },
+  );
+}
+
+function liveOrigins(pageId: string): Record<string, string> {
+  return JSON.parse(
+    runBunInline(
+      `
+      import { SQL } from "bun";
+      const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+      const o = await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return (await tx\`SELECT value_origins AS o FROM pages_seo WHERE page_id = \${process.env.PAGE}::uuid\`)[0]?.o ?? {};
+      });
+      await sql.end();
+      process.stdout.write(JSON.stringify(o));
+      `,
+      { PAGE: pageId },
+    ),
+  ) as Record<string, string>;
 }
 
 /** The chat's SEO write, exactly as the AI's set_page_seo makes it. */
@@ -128,7 +175,7 @@ function liveDescription(pageId: string): string {
 }
 
 test("the SEO info shows the page's SEO and marks the chat's pending change", async ({ page }) => {
-  const pageId = seedPage();
+  const pageId = seedPage("-info");
 
   await page.goto("/login");
   await page.getByLabel("Email").fill(OWNER_EMAIL);
@@ -146,6 +193,20 @@ test("the SEO info shows the page's SEO and marks the chat's pending change", as
   await expect(popover).toContainText("SEO Info Page");
   await expect(popover).toContainText("LIVE_DESCRIPTION");
   await expect(popover.getByTestId("page-seo-pending")).toHaveCount(0);
+  // #1752 — where each value comes from.
+  const titleRow = popover.locator('[data-testid="page-seo-row"][data-field="title"]');
+  await expect(titleRow.getByTestId("page-seo-origin")).toContainText(
+    "From the site's title template",
+  );
+  const descriptionRow = popover.locator(
+    '[data-testid="page-seo-row"][data-field="metaDescription"]',
+  );
+  await expect(descriptionRow.getByTestId("page-seo-origin")).toContainText(
+    "Written for this page by a person",
+  );
+  await expect(
+    popover.locator('[data-testid="page-seo-row"][data-field="ogDescription"]'),
+  ).toContainText("Same as the meta description");
   await page.keyboard.press("Escape");
 
   // The chat rewrites the description: pending in the editor, not live.
@@ -154,10 +215,43 @@ test("the SEO info shows the page's SEO and marks the chat's pending change", as
   await expect(info).toHaveAttribute("data-pending", "true", { timeout: 15_000 });
   await info.click();
   await expect(popover).toContainText("DRAFT_DESCRIPTION");
+  await expect(descriptionRow.getByTestId("page-seo-origin")).toContainText(
+    "Written by the AI, not reviewed yet",
+  );
   await expect(popover.getByTestId("page-seo-pending-note")).toContainText("next Stage");
   const description = popover.locator('[data-testid="page-seo-row"][data-field="metaDescription"]');
   await expect(description.first().getByTestId("page-seo-pending")).toBeVisible();
   const title = popover.locator('[data-testid="page-seo-row"][data-field="title"]');
   await expect(title.first().getByTestId("page-seo-pending")).toHaveCount(0);
   expect(liveDescription(pageId)).toBe("LIVE_DESCRIPTION");
+});
+
+test("the SEO panel shows each value's origin, saves a person's title and marks an AI text reviewed", async ({
+  page,
+}) => {
+  const pageId = seedPage("-panel");
+  setSeoAsAi(pageId, { ogTitle: "AI_SHARE_TITLE" });
+
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(OWNER_EMAIL);
+  await page.getByLabel("Password").fill(ISOLATED_OWNER_PASSWORD);
+  await page.getByRole("button", { name: /sign in/i }).click();
+  await expect(page).toHaveURL("/edit", { timeout: 15_000 });
+  await page.goto(`/content/pages/${pageId}/seo`);
+
+  const resolved = page.getByTestId("seo-resolved");
+  await expect(resolved).toContainText("SEO Info Page");
+  await expect(resolved).toContainText("From the site's title template");
+  await expect(resolved).toContainText("AI_SHARE_TITLE");
+  await expect(resolved).toContainText("Written by the AI, not reviewed yet");
+
+  // A person writes the SEO title and keeps the AI's share title.
+  await page.getByLabel("SEO title (search results)").fill("PERSON_SEO_TITLE");
+  await page.getByTestId("seo-reviewed-ogTitle").check();
+  await page.getByRole("button", { name: "Save SEO" }).click();
+  await expect(page.getByRole("alert").getByText("Saved.")).toBeVisible();
+  await expect(resolved).toContainText("PERSON_SEO_TITLE");
+  await expect(resolved).toContainText("Written for this page by a person");
+  await expect(resolved).toContainText("Written by the AI, reviewed by a person");
+  expect(liveOrigins(pageId)).toMatchObject({ seoTitle: "human", ogTitle: "reviewed" });
 });

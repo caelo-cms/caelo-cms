@@ -20,6 +20,7 @@ import {
   writePageTranslation,
 } from "./page-translation.js";
 import { alignSlots, buildSlotIndex } from "./translation.js";
+import { NO_HEAD_TEXTS } from "./translation-contract.js";
 
 const ENTRY = "00000000-0000-4000-9000-000000000001";
 const ENTRY2 = "00000000-0000-4000-9000-000000000002";
@@ -214,6 +215,8 @@ describe("writePageTranslation", () => {
       variantTitle: "Demo",
       sourceMetaDescription: "",
       variantMetaDescription: "",
+      sourceHeadTexts: NO_HEAD_TEXTS,
+      variantHeadTexts: NO_HEAD_TEXTS,
       sourceSlots: source.slots,
       variantSlots: variant.slots,
       sourceBases: source.bases,

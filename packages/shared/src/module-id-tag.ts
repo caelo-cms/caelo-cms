@@ -12,6 +12,8 @@
  * it, and the composer already imports the nested renderer.
  */
 
+import { Parser } from "htmlparser2";
+
 /** The attribute every module root carries. */
 export const MODULE_ID_ATTRIBUTE = "data-caelo-module-id";
 
@@ -53,6 +55,62 @@ const STAMP = new RegExp(` ${CONTENT_INSTANCE_ATTRIBUTE}="[0-9a-f-]{36}"`, "g");
 /** The HTML without the observers' content-instance stamps (a fixed-width pattern: linear). */
 export function stripContentInstances(html: string): string {
   return html.includes(CONTENT_INSTANCE_ATTRIBUTE) ? html.replace(STAMP, "") : html;
+}
+
+/** Elements Google reads `data-nosnippet` on. */
+const NOSNIPPET_ROOTS = new Set(["div", "section", "span"]);
+
+/**
+ * The tag of the one element that encloses the whole fragment, or null when
+ * the fragment has several top-level elements or text outside its element
+ * (comments and whitespace aside).
+ */
+function soleRootTag(html: string): string | null {
+  let depth = 0;
+  let roots = 0;
+  let tag: string | null = null;
+  let looseText = false;
+  const parser = new Parser({
+    onopentag(name) {
+      if (depth === 0) {
+        roots += 1;
+        tag = name;
+      }
+      depth += 1;
+    },
+    onclosetag() {
+      depth = Math.max(0, depth - 1);
+    },
+    ontext(text) {
+      if (depth === 0 && text.trim().length > 0) looseText = true;
+    },
+  });
+  parser.write(html);
+  parser.end();
+  return roots === 1 && !looseText ? tag : null;
+}
+
+/**
+ * #1752 — keep a placement's content out of search snippets (and the AI
+ * answers built from them): `data-nosnippet` on its root when one `div`,
+ * `section` or `span` encloses the whole placement, the only elements search
+ * engines read it on; anything else (another root element, several
+ * top-level elements) is wrapped in a `<div data-nosnippet>`, so the whole
+ * placement is covered. Idempotent.
+ *
+ * @example markNosnippet("<section>x</section>") // '<section data-nosnippet="">x</section>'
+ * @example markNosnippet("<article>x</article>") // '<div data-nosnippet=""><article>x</article></div>'
+ */
+export function markNosnippet(html: string): string {
+  const m = /<([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*>/.exec(html);
+  // A placement of text only is wrapped too; an empty one has nothing to hide.
+  if (!m) return html.trim().length === 0 ? html : `<div data-nosnippet="">${html}</div>`;
+  const root = soleRootTag(html);
+  if (root !== null && NOSNIPPET_ROOTS.has(root.toLowerCase())) {
+    // A supported root that already carries it (this wrapper, say) is done.
+    return /\sdata-nosnippet\b/.test(m[0]) ? html : tagRoot(html, "data-nosnippet", "");
+  }
+  return `<div data-nosnippet="">${html}</div>`;
 }
 
 /** `name="value"` on the first opening tag of `html`, unless that tag has `name` already. */

@@ -330,7 +330,7 @@ describe("render dependencies", () => {
     expect(ctx.deps()).toEqual({
       lists: [LIST.header],
       listTypes: ["menu"],
-      queries: [{ pageType: "news", terms: [TERM.event], parent: null }],
+      queries: [{ pageType: "news", terms: [TERM.event], parent: null, refersTo: null }],
       pageTree: true,
       // The breadcrumb trail's pages (home included): their values render as entries.
       pages: [PAGE.home, PAGE.about, PAGE.team].sort(),
@@ -357,7 +357,9 @@ describe("render dependencies", () => {
     const columns = mega[0]?.get("columns");
     if (columns?.kind !== "list") throw new Error("columns");
     columns.entries[1]?.get("items");
-    expect(ctx.deps().queries).toEqual([{ pageType: "news", terms: [], parent: null }]);
+    expect(ctx.deps().queries).toEqual([
+      { pageType: "news", terms: [], parent: null, refersTo: null },
+    ]);
   });
 
   it("term reads record the vocabulary list", () => {

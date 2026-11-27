@@ -393,6 +393,34 @@ describe("describeRenderFailures — the next step of a stopped build (#1718)", 
   });
 });
 
+describe("a title template variable without a value (#1752)", () => {
+  const onPage = (title: string, path: string) =>
+    failure({
+      pageTitle: title,
+      pagePath: path,
+      blockName: null,
+      moduleSlug: null,
+      reason: "seo-title-variable-unset:site_name",
+      line: `page "${title}": its title template uses {site_name}, which has no value`,
+    });
+
+  it("sends the site name to set_site_identity", () => {
+    const r = renderRepairOf({ reason: "seo-title-variable-unset:site_name", moduleSlug: null });
+    expect(r.tool).toBe("set_site_identity");
+    expect(r.hint).toContain("set_page_type_seo_many");
+  });
+
+  it("tells the operator which pages show it, without markers or tool names", () => {
+    const text =
+      stagedRenderReport([onPage("Team", "/team"), onPage("Pricing", "/pricing")], 2)
+        ?.operatorText ?? "";
+    expect(text).toContain(
+      "The page title template uses a value the site does not have yet (the site's name) — on Team (/team), Pricing (/pricing)",
+    );
+    expect(text).not.toMatch(/seo-title|set_|site_name/);
+  });
+});
+
 describe("renderRepairOf — a plugin value the host refused (#1729)", () => {
   it("sends the AI to the plugin, with the rule and the field, within the finding's cut", () => {
     const r = renderRepairOf({

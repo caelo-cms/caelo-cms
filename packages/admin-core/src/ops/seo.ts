@@ -31,18 +31,26 @@ import {
 } from "@caelo-cms/query-api";
 import {
   err,
+  MAX_IMAGE_PREVIEW_VALUES,
+  type MaxImagePreview,
+  OG_DESCRIPTION_HARD_MAX,
+  ogTitleSchema,
   ok,
+  type Result,
   type RobotsRules,
+  robotsMetaContent,
   robotsRuleGroupSchema,
   robotsRulesNotes,
   robotsRulesSchema,
   robotsRulesWarnings,
   robotsTxt,
-  SEO_DESCRIPTION_HARD_MAX,
+  SEO_VALUE_ORIGINS,
   SHARE_IMAGE_SOURCES,
   seoAutofillInputSchema,
   seoOptimizeInputSchema,
+  seoOriginsSchema,
   seoSetInputSchema,
+  seoTitleSchema,
   siteDefaultsSetSeoInputSchema,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -58,8 +66,12 @@ import {
   pageSeoViewSql,
 } from "../seo/page-seo.js";
 import {
+  nosnippetContentOf,
+  nosnippetPlacementsOf,
+  resolvePageSeoHeads,
+} from "../seo/page-seo-head.js";
+import {
   commitPageSeoWrites,
-  type OpenedPageSeo,
   openPageSeoWrite,
   peekPageSeo,
   sameSeo,
@@ -76,10 +88,25 @@ import { recentSearchNotifications, searchNotificationShape } from "./search-not
 
 const seoRowOutput = z.object({
   pageId: z.string(),
+  /** #1752 — the page's own `<title>`; "" = the page type's or site's template. */
+  seoTitle: z.string(),
   metaDescription: z.string(),
+  ogTitle: z.string(),
+  ogDescription: z.string(),
   ogImageAssetId: z.string().nullable(),
   canonicalUrl: z.string().nullable(),
   noindex: z.boolean(),
+  nofollow: z.boolean(),
+  noarchive: z.boolean(),
+  nosnippet: z.boolean(),
+  noimageindex: z.boolean(),
+  maxSnippet: z.number().int().nullable(),
+  maxImagePreview: z.enum(MAX_IMAGE_PREVIEW_VALUES),
+  maxVideoPreview: z.number().int().nullable(),
+  /** #1752 — the placements rendered with `data-nosnippet`, where they sit now. */
+  nosnippetPlacements: z.array(z.object({ blockName: z.string(), position: z.number().int() })),
+  /** #1752 — who wrote each own text (`human` | `ai` | `reviewed`). */
+  origins: seoOriginsSchema,
   changefreq: z.string(),
   priority: z.number(),
   autofilledAt: z.string().nullable(),
@@ -94,22 +121,110 @@ const seoRowOutput = z.object({
 
 type SeoRow = z.infer<typeof seoRowOutput>;
 
+/** A resolved head value as the read ops return it. */
+const resolvedValueOutput = z.object({
+  value: z.string(),
+  origin: z.enum(SEO_VALUE_ORIGINS),
+});
+
+/**
+ * #1752 — the head a build renders for the page in the caller's view: each
+ * value with its origin (`human` | `ai` | `reviewed` = the page's own,
+ * `page_type` / `site` = a template or setting, `inherited` = shared from
+ * another value of the page, `unset` = none).
+ */
+const resolvedHeadOutput = z.object({
+  title: resolvedValueOutput.extend({ template: z.string().nullable() }),
+  metaDescription: resolvedValueOutput,
+  ogTitle: resolvedValueOutput.extend({
+    inheritsFrom: z.enum(["seoTitle", "pageTitle"]).nullable(),
+  }),
+  ogDescription: resolvedValueOutput.extend({
+    inheritsFrom: z.enum(["metaDescription"]).nullable(),
+  }),
+  ogType: resolvedValueOutput,
+  /** The `<meta name="robots">` content. */
+  robots: z.string(),
+  pageType: z.string(),
+  /** Template variables without a value on this page (they stay raw in the title). */
+  unsetVariables: z.array(z.string()),
+});
+
+type ResolvedHeadOut = z.infer<typeof resolvedHeadOutput>;
+
 const isoOpt = (v: Date | string | null): string | null =>
   v === null ? null : v instanceof Date ? v.toISOString() : String(v);
 
-/** The caller's view of these pages' SEO, keyed by page id (absent = no SEO yet). */
+type OpTx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
+
+/** Fields an op changes on a page's SEO state. */
+type SeoPatch = { -readonly [K in keyof PageSeoState]?: PageSeoState[K] };
+
+/** The robots directives an input names (`seoRobotsInputShape`), as a state patch. */
+function robotsPatch(input: {
+  readonly nofollow?: boolean | undefined;
+  readonly noarchive?: boolean | undefined;
+  readonly nosnippet?: boolean | undefined;
+  readonly noimageindex?: boolean | undefined;
+  readonly maxSnippet?: number | null | undefined;
+  readonly maxImagePreview?: MaxImagePreview | undefined;
+  readonly maxVideoPreview?: number | null | undefined;
+}): SeoPatch {
+  return {
+    ...(input.nofollow !== undefined ? { nofollow: input.nofollow } : {}),
+    ...(input.noarchive !== undefined ? { noarchive: input.noarchive } : {}),
+    ...(input.nosnippet !== undefined ? { nosnippet: input.nosnippet } : {}),
+    ...(input.noimageindex !== undefined ? { noimageindex: input.noimageindex } : {}),
+    ...(input.maxSnippet !== undefined ? { maxSnippet: input.maxSnippet } : {}),
+    ...(input.maxImagePreview !== undefined ? { maxImagePreview: input.maxImagePreview } : {}),
+    ...(input.maxVideoPreview !== undefined ? { maxVideoPreview: input.maxVideoPreview } : {}),
+  };
+}
+
+/**
+ * The caller's view of these pages' SEO, keyed by page id (absent = no SEO
+ * yet), with each page's resolved head (`heads`, every visible page;
+ * empty when `withHeads` is false, for a reader that needs the rows only).
+ */
 async function loadSeoRows(
-  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  tx: OpTx,
   pageIds: readonly string[],
   chatBranchId: string | null | undefined,
-): Promise<Map<string, SeoRow>> {
+  withHeads = true,
+): Promise<{ rows: Map<string, SeoRow>; heads: Map<string, ResolvedHeadOut> }> {
   const views = await loadPageSeoViews(tx, pageIds, chatBranchId);
-  return new Map(
-    [...views].map(([pageId, v]) => [
+  const rows = new Map<string, SeoRow>();
+  for (const [pageId, v] of views) {
+    const { nosnippetContent, ...state } = v.state;
+    rows.set(pageId, {
       pageId,
-      { pageId, ...v.state, updatedAt: v.updatedAt, pendingFields: [...v.pendingFields] },
-    ]),
+      ...state,
+      nosnippetPlacements: await nosnippetPlacementsOf(tx, pageId, nosnippetContent, chatBranchId),
+      updatedAt: v.updatedAt,
+      pendingFields: [...v.pendingFields],
+    });
+  }
+  if (!withHeads) return { rows, heads: new Map() };
+  const resolved = await resolvePageSeoHeads(
+    tx,
+    pageIds,
+    new Map([...views].map(([id, v]) => [id, v.state])),
+    chatBranchId,
   );
+  const heads = new Map<string, ResolvedHeadOut>();
+  for (const [pageId, r] of resolved) {
+    heads.set(pageId, {
+      title: r.head.title,
+      metaDescription: r.head.metaDescription,
+      ogTitle: r.head.ogTitle,
+      ogDescription: r.head.ogDescription,
+      ogType: r.head.ogType,
+      robots: robotsMetaContent(r.head.robots),
+      pageType: r.pageTypeSlug,
+      unsetVariables: [...r.head.unsetVariables],
+    });
+  }
+  return { rows, heads };
 }
 
 const shareImageOutput = z.object({
@@ -164,12 +279,19 @@ export const pagesSeoGetOp = defineOperation({
   actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z.object({ pageId: z.string().uuid() }).strict(),
-  output: z.object({ seo: seoRowOutput.nullable() }),
+  output: z.object({
+    seo: seoRowOutput.nullable(),
+    /** #1752 — the head a build renders; null when the caller cannot see the page. */
+    resolved: resolvedHeadOutput.nullable(),
+  }),
   handler: async (ctx, input, tx) => {
-    const rows = await loadSeoRows(tx, [input.pageId], ctx.chatBranchId);
+    const { rows, heads } = await loadSeoRows(tx, [pageKey(input.pageId)], ctx.chatBranchId);
     // The chat has now seen this page's draft state (a conflict's re-read).
     await observeDraftReads(tx, ctx, "page", [pageKey(input.pageId)]);
-    return ok({ seo: rows.get(pageKey(input.pageId)) ?? null });
+    return ok({
+      seo: rows.get(pageKey(input.pageId)) ?? null,
+      resolved: heads.get(pageKey(input.pageId)) ?? null,
+    });
   },
 });
 
@@ -198,7 +320,9 @@ export const pagesSeoShareImagesOp = defineReadOperation({
   handler: async (ctx, input, reads) => {
     const pageIds = input.pageIds.map(pageKey);
     const read: ShortRead = (fn) => reads.read(fn);
-    const seo = await read((tx) => loadSeoRows(tx, pageIds, ctx.chatBranchId));
+    const seo = await read(
+      async (tx) => (await loadSeoRows(tx, pageIds, ctx.chatBranchId, false)).rows,
+    );
     const { images, warnings } = await loadShareImages(
       read,
       pageIds.map((pageId) => ({ pageId, seo: seo.get(pageId) ?? null })),
@@ -243,6 +367,8 @@ export const pagesSeoGetManyOp = defineOperation({
         title: z.string(),
         path: z.string(),
         seo: seoRowOutput.nullable(),
+        /** #1752 — the head a build renders, each value with its origin. */
+        resolved: resolvedHeadOutput,
         /** #1452 — the image this page really gets, and from where. */
         shareImage: shareImageOutput,
         contentText: z.string(),
@@ -260,8 +386,14 @@ export const pagesSeoGetManyOp = defineOperation({
         input.pageIds.map(pageKey),
         ctx.chatBranchId ?? null,
       );
-      if (texts.missing.length > 0) return { texts, seoByPage: new Map<string, SeoRow>() };
-      const seoByPage = await loadSeoRows(
+      if (texts.missing.length > 0) {
+        return {
+          texts,
+          seoByPage: new Map<string, SeoRow>(),
+          heads: new Map<string, ResolvedHeadOut>(),
+        };
+      }
+      const { rows: seoByPage, heads } = await loadSeoRows(
         t,
         texts.pages.map((p) => p.pageId),
         ctx.chatBranchId,
@@ -273,9 +405,9 @@ export const pagesSeoGetManyOp = defineOperation({
         "page",
         texts.pages.map((p) => p.pageId),
       );
-      return { texts, seoByPage };
+      return { texts, seoByPage, heads };
     });
-    const { texts, seoByPage } = loaded;
+    const { texts, seoByPage, heads } = loaded;
     if (texts.missing.length > 0) {
       return err({
         kind: "HandlerError",
@@ -285,7 +417,11 @@ export const pagesSeoGetManyOp = defineOperation({
           "(or the Stage-readiness note) and call again.",
       });
     }
-    const pages = texts.pages.map((p) => ({ ...p, seo: seoByPage.get(p.pageId) ?? null }));
+    const pages = texts.pages.map((p) => {
+      const resolved = heads.get(p.pageId);
+      if (!resolved) throw new Error(`pages_seo.get_many: no resolved head for ${p.pageId}`);
+      return { ...p, seo: seoByPage.get(p.pageId) ?? null, resolved };
+    });
     const { images, warnings } = await loadShareImages(
       (fn) => tx.transaction(fn),
       pages,
@@ -314,28 +450,96 @@ export const pagesSeoSetOp = defineOperation({
   input: seoSetInputSchema,
   output: z.object({}),
   handler: async (ctx, input, tx) => {
-    const patch: Partial<PageSeoState> = {
+    const op = "pages_seo.set";
+    if (input.reviewed !== undefined && input.reviewed.length > 0 && ctx.actorKind !== "human") {
+      return err({
+        kind: "HandlerError",
+        operation: op,
+        message:
+          "only a person marks an AI-written SEO text as reviewed (the SEO panel); leave `reviewed` out. Nothing was written.",
+      });
+    }
+    const fixed: SeoPatch = {
+      ...(input.seoTitle !== undefined ? { seoTitle: input.seoTitle } : {}),
       ...(input.metaDescription !== undefined ? { metaDescription: input.metaDescription } : {}),
+      ...(input.ogTitle !== undefined ? { ogTitle: input.ogTitle } : {}),
+      ...(input.ogDescription !== undefined ? { ogDescription: input.ogDescription } : {}),
       ...(input.ogImageAssetId !== undefined
         ? { ogImageAssetId: assetKey(input.ogImageAssetId) }
         : {}),
       ...(input.canonicalUrl !== undefined ? { canonicalUrl: input.canonicalUrl } : {}),
       ...(input.noindex !== undefined ? { noindex: input.noindex } : {}),
+      ...robotsPatch(input),
       ...(input.changefreq !== undefined ? { changefreq: input.changefreq } : {}),
       ...(input.priority !== undefined ? { priority: input.priority } : {}),
     };
-    const fieldCount = Object.keys(patch).length;
+    if (input.nosnippetPlacements !== undefined) {
+      const content = await nosnippetContentOf(
+        tx,
+        pageKey(input.pageId),
+        input.nosnippetPlacements,
+        ctx.chatBranchId,
+      );
+      if (!content.ok) {
+        return err({ kind: "HandlerError", operation: op, message: content.message });
+      }
+      // The stored form (sorted, once each), so an unchanged list is no write.
+      fixed.nosnippetContent = [...new Set(content.ids)].sort();
+    }
+    const reviewed = input.reviewed ?? [];
+    const fieldCount = Object.keys(fixed).length + (reviewed.length > 0 ? 1 : 0);
     if (fieldCount === 0) return ok({});
+    const nextOf = (current: PageSeoState): Result<PageSeoState, QueryError> => {
+      const next = { ...current, ...fixed };
+      const empty = reviewed.filter((f) => next[f].length === 0);
+      if (empty.length > 0) {
+        return err({
+          kind: "HandlerError",
+          operation: op,
+          message: `${empty.join(", ")}: the page has no own text there, so there is nothing to mark reviewed. Nothing was written.`,
+        });
+      }
+      const origins = { ...next.origins };
+      for (const f of reviewed) {
+        // A text this write changes is the person's own now; only an
+        // unchanged AI text becomes `reviewed`.
+        if (next[f] === current[f] && current.origins[f] === "ai") origins[f] = "reviewed";
+      }
+      return ok({ ...next, origins });
+    };
 
     // Peek first: a set that changes nothing takes no lock (no takeover of
     // another chat's pending change for a no-op).
-    const peek = await peekPageSeo(ctx, tx, "pages_seo.set", input.pageId);
+    const peek = await peekPageSeo(ctx, tx, op, input.pageId);
     if (!peek.ok) return peek;
-    const opened = sameSeo(peek.value.current, { ...peek.value.current, ...patch })
+    const peeked = nextOf(peek.value.current);
+    if (!peeked.ok) return peeked;
+    const opened = sameSeo(peek.value.current, peeked.value)
       ? peek
-      : await openPageSeoWrite(ctx, tx, "pages_seo.set", input.pageId);
+      : await openPageSeoWrite(ctx, tx, op, input.pageId);
     if (!opened.ok) return opened;
-    const next = { ...opened.value.current, ...patch };
+    if (opened !== peek && input.nosnippetPlacements !== undefined) {
+      // The lock may have taken another chat's pending layout of the page
+      // over (a replaced or forked placement): the placements resolve again
+      // against it. A refusal now throws, rolling the takeover back.
+      const content = await nosnippetContentOf(
+        tx,
+        pageKey(input.pageId),
+        input.nosnippetPlacements,
+        ctx.chatBranchId,
+      );
+      if (!content.ok) {
+        throw new OperationAbortError({
+          kind: "HandlerError",
+          operation: op,
+          message: content.message,
+        });
+      }
+      fixed.nosnippetContent = [...new Set(content.ids)].sort();
+    }
+    const planned = nextOf(opened.value.current);
+    if (!planned.ok) throw new OperationAbortError(planned.error);
+    const next = planned.value;
     if (!sameSeo(opened.value.current, next)) {
       await commitPageSeoWrites(
         ctx,
@@ -382,6 +586,86 @@ function alreadyAutofilled(target: PageSeoState, metaDescription: string): Query
   };
 }
 
+/** The #1752 own texts autofill and optimize write besides the description. */
+const HEAD_TEXT_FIELDS = ["seoTitle", "ogTitle", "ogDescription"] as const;
+
+/** The head text in words the AI and the operator use. */
+const HEAD_TEXT_LABEL: Readonly<Record<(typeof HEAD_TEXT_FIELDS)[number], string>> = {
+  seoTitle: "SEO title (<title>)",
+  ogTitle: "og:title",
+  ogDescription: "og:description",
+};
+
+/** True once the page was published live (`pages.first_published_at`). */
+async function wasPublishedLive(tx: OpTx, pageId: string): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    SELECT first_published_at IS NOT NULL AS live FROM pages WHERE id = ${pageKey(pageId)}::uuid
+  `)) as unknown as { live: boolean }[];
+  return rows[0]?.live === true;
+}
+
+/** What one autofill does to a page's SEO. */
+type AutofillPlan =
+  | { readonly kind: "refuse"; readonly error: QueryError }
+  | { readonly kind: "unchanged" }
+  | { readonly kind: "write"; readonly next: PageSeoState };
+
+/**
+ * Fill-once (CLAUDE.md §2) for every text autofill writes. The meta
+ * description keeps its rule: the first autofill writes it, a later one
+ * with a different text is refused ({@link alreadyAutofilled}). #1752 —
+ * the SEO title and Open Graph texts are filled per field: only while
+ * empty and while the page was never published live (an empty one there
+ * is no gap: the template and the shared texts render), never over a
+ * stored value; the same text again is a no-op.
+ */
+function planAutofill(
+  current: PageSeoState,
+  input: z.infer<typeof seoAutofillInputSchema>,
+  live: boolean,
+): AutofillPlan {
+  const changes: SeoPatch = {};
+  if (current.autofilledAt !== null) {
+    const refusal = alreadyAutofilled(current, input.metaDescription);
+    if (refusal) return { kind: "refuse", error: refusal };
+  } else {
+    changes.metaDescription = input.metaDescription;
+    if (input.ogImageAssetId !== undefined) changes.ogImageAssetId = assetKey(input.ogImageAssetId);
+  }
+  for (const f of HEAD_TEXT_FIELDS) {
+    const wanted = input[f];
+    if (wanted === undefined || current[f] === wanted) continue;
+    if (current[f].length > 0) {
+      return {
+        kind: "refuse",
+        error: {
+          kind: "HandlerError",
+          operation: "pages_seo.autofill",
+          message: `AlreadyFilled: this page's ${HEAD_TEXT_LABEL[f]} is already "${current[f]}" (${current.origins[f] ?? "unknown"}); autofill never overwrites. Leave ${f} out, or change it on purpose with bulk_optimize_seo (with the user's context) or set_page_seo_many (an exact text the operator dictated).`,
+        },
+      };
+    }
+    if (live) {
+      return {
+        kind: "refuse",
+        error: {
+          kind: "HandlerError",
+          operation: "pages_seo.autofill",
+          message: `this page is live and shows its ${HEAD_TEXT_LABEL[f]} from ${f === "seoTitle" ? "its title template" : "its other SEO texts"}: an own ${f} would change what is live, which autofill never does. Leave ${f} out; give it one on purpose with bulk_optimize_seo when the user asks.`,
+        },
+      };
+    }
+    changes[f] = wanted;
+  }
+  if (Object.keys(changes).length === 0) return { kind: "unchanged" };
+  const next = { ...current, ...changes };
+  if (sameSeo(current, next) && current.autofilledAt !== null) return { kind: "unchanged" };
+  return {
+    kind: "write",
+    next: { ...next, autofilledAt: current.autofilledAt ?? new Date().toISOString() },
+  };
+}
+
 // ---------------------------------------------------------------------
 // pages_seo.autofill — fill-once. Refuses on already-filled.
 // ---------------------------------------------------------------------
@@ -401,13 +685,14 @@ export const pagesSeoAutofillOp = defineOperation({
     alreadyFilled: z.boolean(),
   }),
   handler: async (ctx, input, tx) => {
+    const live = await wasPublishedLive(tx, input.pageId);
     // Fill-once is decided on the peek, BEFORE the lock: a refused (or
     // no-op) autofill must not take over another chat's pending change.
     const peek = await peekPageSeo(ctx, tx, "pages_seo.autofill", input.pageId);
     if (!peek.ok) return peek;
-    if (peek.value.current.autofilledAt !== null) {
-      const refusal = alreadyAutofilled(peek.value.current, input.metaDescription);
-      if (refusal) return err(refusal);
+    const peeked = planAutofill(peek.value.current, input, live);
+    if (peeked.kind === "refuse") return err(peeked.error);
+    if (peeked.kind === "unchanged") {
       await recordAudit(tx, {
         actorId: ctx.actorId,
         requestId: ctx.requestId,
@@ -421,34 +706,26 @@ export const pagesSeoAutofillOp = defineOperation({
     }
     // Under the lock a takeover may bring in a fill: refused then (thrown,
     // so the takeover rolls back), even for the same text.
-    const opened = await openPageSeoWrite(ctx, tx, "pages_seo.autofill", input.pageId, (o) =>
-      o.current.autofilledAt !== null
-        ? (alreadyAutofilled(o.current, input.metaDescription) ?? {
+    const opened = await openPageSeoWrite(ctx, tx, "pages_seo.autofill", input.pageId, (o) => {
+      const plan = planAutofill(o.current, input, live);
+      if (plan.kind === "refuse") return plan.error;
+      return plan.kind === "unchanged"
+        ? {
             kind: "HandlerError",
             operation: "pages_seo.autofill",
             message:
               "AlreadyAutofilled: another chat's first fill of this page was just adopted into this chat — read it with get_page_seo; nothing is missing for a Stage.",
-          })
-        : null,
-    );
+          }
+        : null;
+    });
     if (!opened.ok) return opened;
-    const target = opened.value.current;
+    const plan = planAutofill(opened.value.current, input, live);
+    if (plan.kind !== "write")
+      throw new Error("pages_seo.autofill: the plan changed under the lock");
     await commitPageSeoWrites(
       ctx,
       tx,
-      [
-        {
-          opened: opened.value,
-          next: {
-            ...target,
-            metaDescription: input.metaDescription,
-            ...(input.ogImageAssetId !== undefined
-              ? { ogImageAssetId: assetKey(input.ogImageAssetId) }
-              : {}),
-            autofilledAt: new Date().toISOString(),
-          },
-        },
-      ],
+      [{ opened: opened.value, next: plan.next }],
       "pages_seo.autofill",
       `pages_seo.autofill slug=${opened.value.page.slug}`,
     );
@@ -492,7 +769,8 @@ export const pagesSeoOptimizeOp = defineOperation({
       operation: "pages_seo.optimize",
       input: {
         pageId: input.pageId,
-        descLen: input.metaDescription.length,
+        descLen: input.metaDescription?.length ?? 0,
+        fields: optimizedFields(input),
         contextLen: input.context?.length ?? 0,
       },
       succeeded: true,
@@ -506,105 +784,36 @@ export const pagesSeoOptimizeOp = defineOperation({
 /** The SEO a re-optimization leaves: new description (and OG image when given), fresh `optimizedAt`. */
 function optimizedSeo(
   current: PageSeoState,
-  u: { metaDescription: string; ogImageAssetId?: string | null },
+  u: {
+    metaDescription?: string | undefined;
+    seoTitle?: string | undefined;
+    ogTitle?: string | undefined;
+    ogDescription?: string | undefined;
+    ogImageAssetId?: string | null | undefined;
+  },
 ): PageSeoState {
   return {
     ...current,
-    metaDescription: u.metaDescription,
+    ...(u.metaDescription !== undefined ? { metaDescription: u.metaDescription } : {}),
+    ...(u.seoTitle !== undefined ? { seoTitle: u.seoTitle } : {}),
+    ...(u.ogTitle !== undefined ? { ogTitle: u.ogTitle } : {}),
+    ...(u.ogDescription !== undefined ? { ogDescription: u.ogDescription } : {}),
     ...(u.ogImageAssetId !== undefined ? { ogImageAssetId: assetKey(u.ogImageAssetId) } : {}),
     optimizedAt: new Date().toISOString(),
   };
 }
 
-// ---------------------------------------------------------------------
-// pages_seo.apply_translation — the SEO fill-once rule for a translated
-// page (#591).
-// ---------------------------------------------------------------------
-
-/**
- * A translation flow hands over the translated meta description of a
- * page (international-site's translate_variant). The fill-once rule
- * (CLAUDE.md §2) is decided HERE, where SEO is owned, not in the plugin:
- *
- *  - empty description, or a page that is not live: fill it (the first
- *    translation of a variant; a draft re-translated before publish);
- *  - a LIVE page whose description is already set: never overwrite.
- *    Clear `optimized_at` instead, which puts the page on the existing
- *    stale-SEO surface (`pages_seo.list_stale`), so the AI/editor
- *    re-optimizes explicitly through `pages_seo.optimize` (seo-optimize).
- *
- * OG texts need no separate handling: og:title is the page title and
- * og:description the meta description (see `renderSeoHead`).
- */
-export const pagesSeoApplyTranslationOp = defineOperation({
-  name: "pages_seo.apply_translation",
-  pluginAccess: "write",
-  readScope: "request",
-  // Why system-only: the write half of a translation flow (plugins run
-  // it from translate_variant). The AI fills SEO through
-  // pages_seo.autofill and re-optimizes through pages_seo.optimize, which
-  // carry the same rule as explicit, separate steps.
-  actorScope: ["plugin", "system"],
-  database: "cms_admin",
-  input: z
-    .object({
-      pageId: z.string().uuid(),
-      metaDescription: z.string().min(1).max(SEO_DESCRIPTION_HARD_MAX),
-    })
-    .strict(),
-  output: z.object({ outcome: z.enum(["filled", "unchanged", "marked_stale"]) }),
-  handler: async (ctx, input, tx) => {
-    const notFound = {
-      kind: "HandlerError" as const,
-      operation: "pages_seo.apply_translation",
-      message: `page ${input.pageId} not found or deleted — re-read the variant group and retry`,
-    };
-    const plan = (o: OpenedPageSeo) => {
-      const { current, page } = o;
-      if (current.metaDescription === input.metaDescription) {
-        return { outcome: "unchanged" as const, next: null };
-      }
-      if (current.metaDescription !== "" && page.status === "published") {
-        return { outcome: "marked_stale" as const, next: { ...current, optimizedAt: null } };
-      }
-      const next: PageSeoState = {
-        ...current,
-        metaDescription: input.metaDescription,
-        autofilledAt: current.autofilledAt ?? new Date().toISOString(),
-      };
-      return { outcome: "filled" as const, next };
-    };
-    // Decided on the peek first: a call that writes nothing takes no lock
-    // (no takeover of another chat's pending change for a no-op).
-    const peek = await peekPageSeo(ctx, tx, "pages_seo.apply_translation", input.pageId);
-    if (!peek.ok) return err(notFound);
-    let { outcome, next } = plan(peek.value);
-    if (next && !sameSeo(peek.value.current, next)) {
-      const opened = await openPageSeoWrite(ctx, tx, "pages_seo.apply_translation", input.pageId);
-      if (!opened.ok) return err(notFound);
-      ({ outcome, next } = plan(opened.value));
-      if (next && !sameSeo(opened.value.current, next)) {
-        await commitPageSeoWrites(
-          ctx,
-          tx,
-          [{ opened: opened.value, next }],
-          "pages_seo.apply_translation",
-          `pages_seo.apply_translation slug=${opened.value.page.slug} outcome=${outcome}`,
-        );
-      }
-    }
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: "pages_seo.apply_translation",
-      input: { pageId: input.pageId, descLen: input.metaDescription.length },
-      succeeded: true,
-      entityId: input.pageId,
-      resultSummary: outcome,
-    });
-    return ok({ outcome });
-  },
-});
+/** The own texts an optimize input rewrites, for the audit. */
+function optimizedFields(u: {
+  metaDescription?: string | undefined;
+  seoTitle?: string | undefined;
+  ogTitle?: string | undefined;
+  ogDescription?: string | undefined;
+}): string[] {
+  return (["seoTitle", "metaDescription", "ogTitle", "ogDescription"] as const).filter(
+    (f) => u[f] !== undefined,
+  );
+}
 
 // ---------------------------------------------------------------------
 // pages_seo.list_stale — feeds the dashboard tile.
@@ -776,11 +985,18 @@ export const siteDefaultsGetSeoOp = defineOperation({
     robotsWarnings: z.array(z.string()),
     /** #1758 — what its preference lines (training token, Content-Signal) do and do not do. */
     robotsNotes: z.array(z.string()),
+    /**
+     * #1752 — the `<title>` template of pages without their own SEO title
+     * whose page type has none (`set_page_type_seo_many` sets it).
+     */
+    titleTemplate: z.string(),
+    /** `og:site_name` and `{site_name}`; null = not set (`set_site_identity`). */
+    siteName: z.string().nullable(),
   }),
   handler: async (_ctx, _input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT site_base_url, sitemap_enabled, feed_enabled, indexnow_enabled, indexnow_key,
-             organization_json, robots_rules
+             organization_json, robots_rules, seo_title_template, site_name
       FROM site_defaults WHERE id = 1
       LIMIT 1
     `)) as unknown as {
@@ -791,6 +1007,8 @@ export const siteDefaultsGetSeoOp = defineOperation({
       indexnow_key: string;
       organization_json: Record<string, unknown>;
       robots_rules: unknown;
+      seo_title_template: string;
+      site_name: string | null;
     }[];
     const r = rows[0];
     if (!r) {
@@ -822,6 +1040,8 @@ export const siteDefaultsGetSeoOp = defineOperation({
             }),
       robotsWarnings: robotsRulesWarnings(robotsRules),
       robotsNotes: robotsRulesNotes(robotsRules),
+      titleTemplate: r.seo_title_template,
+      siteName: r.site_name,
     });
   },
 });
@@ -891,10 +1111,18 @@ export const pagesSeoOptimizeManyOp = defineOperation({
           z
             .object({
               pageId: z.string().uuid(),
-              metaDescription: z.string().min(1).max(320),
+              metaDescription: z.string().min(1).max(320).optional(),
+              /** #1752 — re-optimized own texts; "" removes the page's own value. */
+              seoTitle: seoTitleSchema.optional(),
+              ogTitle: ogTitleSchema.optional(),
+              ogDescription: z.string().trim().max(OG_DESCRIPTION_HARD_MAX).optional(),
               ogImageAssetId: z.string().uuid().nullable().optional(),
             })
-            .strict(),
+            .strict()
+            .refine(
+              (u) => optimizedFields(u).length > 0,
+              "pass at least one of `metaDescription`, `seoTitle`, `ogTitle`, `ogDescription`",
+            ),
         )
         .min(1)
         .max(200),

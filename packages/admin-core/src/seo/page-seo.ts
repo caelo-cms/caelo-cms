@@ -29,16 +29,20 @@
  */
 
 import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
+import { completeSeoOrigins, MAX_IMAGE_PREVIEW_VALUES, seoOriginsSchema } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
+import { z } from "zod";
 import { headOverlaySql } from "../draft.js";
 import type { PageSeoState } from "../snapshots/state.js";
+import { PAGE_SEO_HEAD_COLUMN_DEFAULTS } from "../snapshots/state-schemas.js";
 
 /**
- * The `pages_seo` column defaults (migration 0027), i.e. what a page
+ * The `pages_seo` column defaults (migrations 0027, 0894), i.e. what a page
  * without a row reads as. Stored data's own shape, not a substitute value:
  * `INSERT INTO pages_seo (page_id)` produces exactly this.
  */
 export const PAGE_SEO_COLUMN_DEFAULTS: PageSeoState = Object.freeze({
+  ...PAGE_SEO_HEAD_COLUMN_DEFAULTS,
   metaDescription: "",
   ogImageAssetId: null,
   canonicalUrl: null,
@@ -49,15 +53,48 @@ export const PAGE_SEO_COLUMN_DEFAULTS: PageSeoState = Object.freeze({
   optimizedAt: null,
 });
 
-/** The fields a pending SEO change can differ in, as `PageSeoState` keys. */
+/**
+ * The fields a pending SEO change can differ in, as `PageSeoState` keys:
+ * what reaches the page. `origins` (who wrote a text) and the fill-once
+ * markers are bookkeeping and never listed.
+ */
 export const PAGE_SEO_FIELDS = [
+  "seoTitle",
   "metaDescription",
+  "ogTitle",
+  "ogDescription",
   "ogImageAssetId",
   "canonicalUrl",
   "noindex",
+  "nofollow",
+  "noarchive",
+  "nosnippet",
+  "noimageindex",
+  "maxSnippet",
+  "maxImagePreview",
+  "maxVideoPreview",
+  "nosnippetContent",
   "changefreq",
   "priority",
 ] as const satisfies readonly (keyof PageSeoState)[];
+
+/** Two values of one `PageSeoState` key are the same (arrays and `origins` by content). */
+export function sameSeoValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  return stableJson(a) === stableJson(b);
+}
+
+function stableJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(",")}]`;
+  if (v !== null && typeof v === "object") {
+    return `{${Object.keys(v)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${stableJson((v as Record<string, unknown>)[k])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(v);
+}
 
 /**
  * The canonical form of a uuid in this module: Postgres prints uuids
@@ -92,10 +129,22 @@ export interface PageSeoView {
 
 interface SeoViewRow {
   page_id: string;
+  seo_title: string;
   meta_description: string;
+  og_title: string;
+  og_description: string;
   og_image_asset_id: string | null;
   canonical_url: string | null;
   noindex: boolean;
+  nofollow: boolean;
+  noarchive: boolean;
+  nosnippet: boolean;
+  noimageindex: boolean;
+  max_snippet: number | string | null;
+  max_image_preview: string;
+  max_video_preview: number | string | null;
+  nosnippet_content: unknown;
+  value_origins: unknown;
   changefreq: string;
   priority: number | string;
   autofilled_at: Date | string | null;
@@ -105,30 +154,70 @@ interface SeoViewRow {
 
 const iso = (v: Date | string): string => (v instanceof Date ? v.toISOString() : String(v));
 const isoOpt = (v: Date | string | null): string | null => (v === null ? null : iso(v));
+const intOpt = (v: number | string | null): number | null => (v === null ? null : Number(v));
 
+const contentIdsSchema = z.array(z.string().uuid());
+const maxImagePreviewSchema = z.enum(MAX_IMAGE_PREVIEW_VALUES);
+
+/**
+ * A row (or an overlaid pending state) as a `PageSeoState`. Its jsonb and
+ * enum columns are validated: every write checks them, so a value that
+ * fails here was written past the ops and is refused loudly, never read as
+ * empty.
+ */
 function rowToState(r: SeoViewRow): PageSeoState {
-  return {
+  const content = contentIdsSchema.safeParse(r.nosnippet_content);
+  const origins = seoOriginsSchema.safeParse(r.value_origins);
+  const preview = maxImagePreviewSchema.safeParse(r.max_image_preview);
+  if (!content.success || !origins.success || !preview.success) {
+    throw new Error(
+      `pages_seo of page ${r.page_id} holds values no op could have written (nosnippet_content, value_origins or max_image_preview) — set the page's SEO again with set_page_seo_many`,
+    );
+  }
+  const texts = {
+    seoTitle: r.seo_title,
     metaDescription: r.meta_description,
+    ogTitle: r.og_title,
+    ogDescription: r.og_description,
+  };
+  const autofilledAt = isoOpt(r.autofilled_at);
+  const optimizedAt = isoOpt(r.optimized_at);
+  return {
+    ...texts,
     ogImageAssetId: r.og_image_asset_id,
     canonicalUrl: r.canonical_url,
     noindex: r.noindex,
+    nofollow: r.nofollow,
+    noarchive: r.noarchive,
+    nosnippet: r.nosnippet,
+    noimageindex: r.noimageindex,
+    maxSnippet: intOpt(r.max_snippet),
+    maxImagePreview: preview.data,
+    maxVideoPreview: intOpt(r.max_video_preview),
+    nosnippetContent: [...content.data].sort(),
+    origins: completeSeoOrigins({ ...texts, origins: origins.data, autofilledAt, optimizedAt }),
     changefreq: r.changefreq,
     priority: Number(r.priority),
-    autofilledAt: isoOpt(r.autofilled_at),
-    optimizedAt: isoOpt(r.optimized_at),
+    autofilledAt,
+    optimizedAt,
   };
 }
 
 const idFilter = (column: string, pageIds: readonly string[] | undefined): SQL =>
   pageIds === undefined ? sql`` : sql` AND ${sql.raw(column)} = ANY(${uuidArray(pageIds)})`;
 
+/** The live `pages_seo` columns every view row carries, in this order. */
+const LIVE_COLUMNS = sql.raw(`s.page_id, s.seo_title, s.meta_description, s.og_title,
+    s.og_description, s.og_image_asset_id, s.canonical_url, s.noindex, s.nofollow, s.noarchive,
+    s.nosnippet, s.noimageindex, s.max_snippet, s.max_image_preview, s.max_video_preview,
+    s.nosnippet_content, s.value_origins, s.changefreq, s.priority, s.autofilled_at,
+    s.optimized_at, s.updated_at`);
+
 /**
  * A subquery with one row per page that has SEO in the caller's view —
- * the live `pages_seo` columns (`page_id`, `meta_description`,
- * `og_image_asset_id`, `canonical_url`, `noindex`, `changefreq`,
- * `priority`, `autofilled_at`, `optimized_at`, `updated_at`) with the
- * branch's pending SEO laid over them. Join it like the table it replaces;
- * a page without a row in it reads as {@link PAGE_SEO_COLUMN_DEFAULTS}.
+ * the live `pages_seo` columns ({@link LIVE_COLUMNS}) with the branch's
+ * pending SEO laid over them. Join it like the table it replaces; a page
+ * without a row in it reads as {@link PAGE_SEO_COLUMN_DEFAULTS}.
  *
  * @param pageIds restrict both sides to these pages (an empty list matches
  *   nothing); omit for every page.
@@ -140,10 +229,8 @@ export function pageSeoViewSql(
   if (pageIds !== undefined && pageIds.length === 0) {
     return sql`(SELECT s.* FROM pages_seo s WHERE false)`;
   }
-  const liveColumns = sql`s.page_id, s.meta_description, s.og_image_asset_id, s.canonical_url,
-    s.noindex, s.changefreq, s.priority, s.autofilled_at, s.optimized_at, s.updated_at`;
   if (!chatBranchId) {
-    return sql`(SELECT ${liveColumns} FROM pages_seo s WHERE true${idFilter("s.page_id", pageIds)})`;
+    return sql`(SELECT ${LIVE_COLUMNS} FROM pages_seo s WHERE true${idFilter("s.page_id", pageIds)})`;
   }
   // `o.seo IS NULL` covers both "no pending snapshot" (no `o` row) and "the
   // latest pending snapshot predates SEO on the page" — the live row stands.
@@ -151,18 +238,41 @@ export function pageSeoViewSql(
     sql.raw(
       `CASE WHEN o.seo IS NULL THEN s.${column} ELSE (o.seo->>'${field}')${cast} END AS ${column}`,
     );
+  // #1752 — a pending state written before 0894 lacks the head fields: it
+  // reads as their column defaults, exactly as its snapshot parse does
+  // (PAGE_SEO_HEAD_COLUMN_DEFAULTS).
+  const pickHead = (field: string, column: string, cast: string, absent: string): SQL =>
+    sql.raw(
+      `CASE WHEN o.seo IS NULL THEN s.${column} WHEN NOT (o.seo ? '${field}') THEN ${absent} ELSE (o.seo->>'${field}')${cast} END AS ${column}`,
+    );
+  const pickJson = (field: string, column: string, absent: string): SQL =>
+    sql.raw(
+      `CASE WHEN o.seo IS NULL THEN s.${column} ELSE COALESCE(o.seo->'${field}', '${absent}'::jsonb) END AS ${column}`,
+    );
   return sql`(
     SELECT COALESCE(s.page_id, o.page_id) AS page_id,
+      ${pickHead("seoTitle", "seo_title", "", "''")},
       ${pick("metaDescription", "meta_description", "")},
+      ${pickHead("ogTitle", "og_title", "", "''")},
+      ${pickHead("ogDescription", "og_description", "", "''")},
       ${pick("ogImageAssetId", "og_image_asset_id", "::uuid")},
       ${pick("canonicalUrl", "canonical_url", "")},
       ${pick("noindex", "noindex", "::boolean")},
+      ${pickHead("nofollow", "nofollow", "::boolean", "false")},
+      ${pickHead("noarchive", "noarchive", "::boolean", "false")},
+      ${pickHead("nosnippet", "nosnippet", "::boolean", "false")},
+      ${pickHead("noimageindex", "noimageindex", "::boolean", "false")},
+      ${pickHead("maxSnippet", "max_snippet", "::integer", "NULL::integer")},
+      ${pickHead("maxImagePreview", "max_image_preview", "", "'large'")},
+      ${pickHead("maxVideoPreview", "max_video_preview", "::integer", "NULL::integer")},
+      ${pickJson("nosnippetContent", "nosnippet_content", "[]")},
+      ${pickJson("origins", "value_origins", "{}")},
       ${pick("changefreq", "changefreq", "")},
       ${pick("priority", "priority", "::numeric")},
       ${pick("autofilledAt", "autofilled_at", "::timestamptz")},
       ${pick("optimizedAt", "optimized_at", "::timestamptz")},
       CASE WHEN o.seo IS NULL THEN s.updated_at ELSE o.changed_at END AS updated_at
-    FROM (SELECT ${liveColumns} FROM pages_seo s WHERE true${idFilter("s.page_id", pageIds)}) s
+    FROM (SELECT ${LIVE_COLUMNS} FROM pages_seo s WHERE true${idFilter("s.page_id", pageIds)}) s
     FULL JOIN (
       SELECT h.entity_id::uuid AS page_id, h.seo, h.changed_at FROM (${headOverlaySql({
         kind: "page",
@@ -181,8 +291,10 @@ async function selectSeo(
   from: SQL,
 ): Promise<Map<string, { state: PageSeoState; updatedAt: string }>> {
   const rows = (await tx.execute(sql`
-    SELECT v.page_id::text AS page_id, v.meta_description,
-           v.og_image_asset_id::text AS og_image_asset_id, v.canonical_url, v.noindex,
+    SELECT v.page_id::text AS page_id, v.seo_title, v.meta_description, v.og_title,
+           v.og_description, v.og_image_asset_id::text AS og_image_asset_id, v.canonical_url,
+           v.noindex, v.nofollow, v.noarchive, v.nosnippet, v.noimageindex, v.max_snippet,
+           v.max_image_preview, v.max_video_preview, v.nosnippet_content, v.value_origins,
            v.changefreq, v.priority, v.autofilled_at, v.optimized_at, v.updated_at
     FROM ${from} v
   `)) as unknown as SeoViewRow[];
@@ -227,7 +339,7 @@ export async function loadPageSeoViews(
 /** The SEO fields `next` changes against `base` (a missing row = the defaults). */
 function changedSeoFields(base: PageSeoState | undefined, next: PageSeoState): PageSeoField[] {
   const from = base ?? PAGE_SEO_COLUMN_DEFAULTS;
-  return PAGE_SEO_FIELDS.filter((f) => from[f] !== next[f]);
+  return PAGE_SEO_FIELDS.filter((f) => !sameSeoValue(from[f], next[f]));
 }
 
 /**
@@ -241,22 +353,41 @@ export async function applyPageSeoState(
   seo: PageSeoState,
   actorId: string,
 ): Promise<void> {
+  const jsonb = (v: unknown): SQL => sql`(${JSON.stringify(v)}::text)::jsonb`;
   await tx.execute(sql`
-    INSERT INTO pages_seo (page_id, meta_description, og_image_asset_id, canonical_url, noindex,
-                           changefreq, priority, autofilled_at, optimized_at, updated_at, updated_by)
+    INSERT INTO pages_seo (page_id, seo_title, meta_description, og_title, og_description,
+                           og_image_asset_id, canonical_url, noindex, nofollow, noarchive,
+                           nosnippet, noimageindex, max_snippet, max_image_preview,
+                           max_video_preview, nosnippet_content, value_origins, changefreq,
+                           priority, autofilled_at, optimized_at, updated_at, updated_by)
     VALUES (
-      ${pageId}::uuid, ${seo.metaDescription},
+      ${pageId}::uuid, ${seo.seoTitle}, ${seo.metaDescription}, ${seo.ogTitle},
+      ${seo.ogDescription},
       ${seo.ogImageAssetId === null ? null : sql`${seo.ogImageAssetId}::uuid`},
-      ${seo.canonicalUrl}, ${seo.noindex}, ${seo.changefreq}, ${seo.priority},
+      ${seo.canonicalUrl}, ${seo.noindex}, ${seo.nofollow}, ${seo.noarchive}, ${seo.nosnippet},
+      ${seo.noimageindex}, ${seo.maxSnippet}, ${seo.maxImagePreview}, ${seo.maxVideoPreview},
+      ${jsonb(seo.nosnippetContent)}, ${jsonb(seo.origins)}, ${seo.changefreq}, ${seo.priority},
       ${seo.autofilledAt === null ? null : sql`${seo.autofilledAt}::timestamptz`},
       ${seo.optimizedAt === null ? null : sql`${seo.optimizedAt}::timestamptz`},
       now(), ${actorId}::uuid
     )
     ON CONFLICT (page_id) DO UPDATE SET
+      seo_title         = EXCLUDED.seo_title,
       meta_description  = EXCLUDED.meta_description,
+      og_title          = EXCLUDED.og_title,
+      og_description    = EXCLUDED.og_description,
       og_image_asset_id = EXCLUDED.og_image_asset_id,
       canonical_url     = EXCLUDED.canonical_url,
       noindex           = EXCLUDED.noindex,
+      nofollow          = EXCLUDED.nofollow,
+      noarchive         = EXCLUDED.noarchive,
+      nosnippet         = EXCLUDED.nosnippet,
+      noimageindex      = EXCLUDED.noimageindex,
+      max_snippet       = EXCLUDED.max_snippet,
+      max_image_preview = EXCLUDED.max_image_preview,
+      max_video_preview = EXCLUDED.max_video_preview,
+      nosnippet_content = EXCLUDED.nosnippet_content,
+      value_origins     = EXCLUDED.value_origins,
       changefreq        = EXCLUDED.changefreq,
       priority          = EXCLUDED.priority,
       autofilled_at     = EXCLUDED.autofilled_at,

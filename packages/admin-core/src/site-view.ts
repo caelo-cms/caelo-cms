@@ -50,6 +50,10 @@ export interface SiteViewSettings {
   readonly feedEnabled: boolean;
   readonly organizationJson: string | null;
   readonly siteLanguage: string | null;
+  /** #1752 — `og:site_name` and `{site_name}`; null = not set. */
+  readonly siteName: string | null;
+  /** #1752 — the `<title>` template of pages whose page type has none. */
+  readonly seoTitleTemplate: string;
   readonly homePageId: string | null;
 }
 

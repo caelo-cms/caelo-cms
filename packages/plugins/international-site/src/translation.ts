@@ -19,6 +19,10 @@
  */
 
 import {
+  HEAD_TEXT_KEYS,
+  HEAD_TEXT_LABEL,
+  type HeadTexts,
+  NO_HEAD_TEXTS,
   slotIdOf,
   slotKeyOf,
   translationContractOf,
@@ -187,8 +191,12 @@ export interface TranslationResultPayload {
   readonly title?: string;
   /** #1142 — the translated short title (breadcrumb / menu label). */
   readonly shortTitle?: string;
-  /** #591 — the translated meta description (also the og:description). */
+  /** #591 — the translated meta description. */
   readonly metaDescription?: string;
+  /** #1752 — the page's own head texts, translated (only those the source has). */
+  readonly seoTitle?: string;
+  readonly ogTitle?: string;
+  readonly ogDescription?: string;
   readonly slots: ReadonlyArray<{
     /** The opaque slot id from the prompt, copied verbatim. */
     readonly slot: string;
@@ -259,6 +267,8 @@ export interface FullPromptInput {
   sourceShortTitle: string;
   /** The source page's meta description; "" when it has none (#591). */
   sourceMetaDescription: string;
+  /** #1752 — the source page's own head texts; none when omitted. */
+  sourceHeadTexts?: HeadTexts;
   sourceSlots: readonly ContentSlot[];
   glossary: readonly GlossaryEntry[];
   styleGuide: string | null;
@@ -275,7 +285,7 @@ export function buildFullTranslationPrompt(input: FullPromptInput): {
     `Source locale: ${input.sourceLocale}.`,
     `Target locale: ${input.targetLocale} (${targetLabel}).`,
     "",
-    `STRUCTURAL LOCK — the page's module layout (block names + positions) is identical across locales. You may NOT add, remove, or reorder modules. Translate ONLY the content fields of each existing module, plus the page title and its short title (the label in breadcrumbs and menus — keep it as short as the source's)${input.sourceMetaDescription.length > 0 ? " and the meta description (write it as a search-result snippet in the target language, not a word-for-word rendering)" : ""}.`,
+    `STRUCTURAL LOCK — the page's module layout (block names + positions) is identical across locales. You may NOT add, remove, or reorder modules. Translate ONLY the content fields of each existing module, plus the page title and its short title (the label in breadcrumbs and menus — keep it as short as the source's)${input.sourceMetaDescription.length > 0 ? " and the meta description (write it as a search-result snippet in the target language, not a word-for-word rendering)" : ""}${headTextsRule(input.sourceHeadTexts ?? NO_HEAD_TEXTS)}.`,
     "",
     `${translationContractText(
       translationContractOf({
@@ -284,6 +294,7 @@ export function buildFullTranslationPrompt(input: FullPromptInput): {
         alignment: [],
         sourceMetaDescription: input.sourceMetaDescription,
         variantMetaDescription: "",
+        ...(input.sourceHeadTexts ? { sourceHeadTexts: input.sourceHeadTexts } : {}),
       }),
     )} Return ONE entry per slot listed below.`,
     renderGlossaryBlock(input.glossary),
@@ -297,6 +308,7 @@ export function buildFullTranslationPrompt(input: FullPromptInput): {
     `Title: ${input.sourceTitle}`,
     `Short title: ${input.sourceShortTitle}`,
     ...metaDescriptionLines(input.sourceMetaDescription),
+    ...headTextLines(input.sourceHeadTexts ?? NO_HEAD_TEXTS),
     "",
     renderSlots(input.sourceSlots, bySourceOrder),
   ].join("\n");
@@ -308,6 +320,8 @@ export interface UpdatePromptInput extends FullPromptInput {
   variantShortTitle: string;
   /** The variant's current meta description; "" when it has none. */
   variantMetaDescription: string;
+  /** #1752 — the variant's own head texts; none when omitted. */
+  variantHeadTexts?: HeadTexts;
   variantSlots: readonly ContentSlot[];
   alignment: readonly SlotAlignment[];
 }
@@ -333,6 +347,8 @@ export function buildUpdateTranslationPrompt(input: UpdatePromptInput): {
         alignment: input.alignment,
         sourceMetaDescription: input.sourceMetaDescription,
         variantMetaDescription: input.variantMetaDescription,
+        ...(input.sourceHeadTexts ? { sourceHeadTexts: input.sourceHeadTexts } : {}),
+        ...(input.variantHeadTexts ? { variantHeadTexts: input.variantHeadTexts } : {}),
       }),
     )} Return entries ONLY for slots you re-translated — do NOT include unchanged slots.`,
     renderGlossaryBlock(input.glossary),
@@ -355,6 +371,7 @@ export function buildUpdateTranslationPrompt(input: UpdatePromptInput): {
     `Title: ${input.sourceTitle}`,
     `Short title: ${input.sourceShortTitle}`,
     ...metaDescriptionLines(input.sourceMetaDescription),
+    ...headTextLines(input.sourceHeadTexts ?? NO_HEAD_TEXTS),
     "",
     renderSlots(input.sourceSlots, bySourceOrder),
     "",
@@ -365,6 +382,10 @@ export function buildUpdateTranslationPrompt(input: UpdatePromptInput): {
     ...(input.variantMetaDescription.length === 0 && input.sourceMetaDescription.length > 0
       ? ["Meta description: (none yet — translate the source's into metaDescription)"]
       : metaDescriptionLines(input.variantMetaDescription)),
+    ...variantHeadTextLines(
+      input.sourceHeadTexts ?? NO_HEAD_TEXTS,
+      input.variantHeadTexts ?? NO_HEAD_TEXTS,
+    ),
     "",
     renderSlots(input.variantSlots, (slot) => {
       const source = sourceKeyOfVariant.get(slotKeyOf(slot));
@@ -403,6 +424,34 @@ function updateMetaRule(input: UpdatePromptInput): string {
   return " The same goes for the meta description: re-translate it only when the existing one no longer reflects the source, otherwise answer null for it.";
 }
 
+/**
+ * #1752 — the head texts the source has, for the STRUCTURAL LOCK sentence;
+ * nothing when it has none (their keys are not in the contract then).
+ */
+function headTextsRule(source: HeadTexts): string {
+  const have = HEAD_TEXT_KEYS.filter((k) => source[k].length > 0);
+  if (have.length === 0) return "";
+  return `, and its own ${have.map((k) => HEAD_TEXT_LABEL[k]).join(", ")} (written for the target language's searchers and readers, not word for word)`;
+}
+
+/** #1752 — each head text the page has, fenced like the meta description. */
+function headTextLines(texts: HeadTexts): string[] {
+  return HEAD_TEXT_KEYS.flatMap((k) =>
+    texts[k].length === 0 ? [] : [`${HEAD_TEXT_LABEL[k]} (${k}):`, "```", texts[k], "```"],
+  );
+}
+
+/** The variant's head texts; one the source has and the variant lacks is named as missing. */
+function variantHeadTextLines(source: HeadTexts, variant: HeadTexts): string[] {
+  return HEAD_TEXT_KEYS.flatMap((k) =>
+    variant[k].length > 0
+      ? [`${HEAD_TEXT_LABEL[k]} (${k}):`, "```", variant[k], "```"]
+      : source[k].length > 0
+        ? [`${HEAD_TEXT_LABEL[k]} (${k}): (none yet — translate the source's into ${k})`]
+        : [],
+  );
+}
+
 /** The meta description under the title, fenced like a slot field; no
  *  line at all when the page has none, so the model is not invited to
  *  invent one. */
@@ -437,6 +486,34 @@ export function validateMetaDescription(
     throw new Error(
       `translation response is missing metaDescription (${mode === "full" ? "full mode translates" : "the variant has none yet, so the update must translate"} the source page's meta description)`,
     );
+  }
+}
+
+/**
+ * #1752 — the head texts' half of the contract, the meta description's rule
+ * per text: one the source has must be translated in full mode (and in an
+ * update while the variant has none); one the source lacks is refused.
+ */
+export function validateHeadTexts(
+  payload: TranslationResultPayload,
+  mode: "full" | "update",
+  source: HeadTexts,
+  variant: HeadTexts,
+): void {
+  for (const k of HEAD_TEXT_KEYS) {
+    if (source[k].length === 0) {
+      if (payload[k] !== undefined) {
+        throw new Error(
+          `translation response carries ${k}, but the source page has none — refusing to apply invented SEO text`,
+        );
+      }
+      continue;
+    }
+    if ((mode === "full" || variant[k].length === 0) && payload[k] === undefined) {
+      throw new Error(
+        `translation response is missing ${k} (${mode === "full" ? "full mode translates" : "the variant has none yet, so the update must translate"} the source page's ${HEAD_TEXT_LABEL[k]})`,
+      );
+    }
   }
 }
 
