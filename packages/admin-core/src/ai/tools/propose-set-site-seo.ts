@@ -21,6 +21,13 @@ export const proposeSetSiteSeoTool = makeProposeTool({
   opName: "site_defaults.propose_set_seo",
   pendingQueuePath: "/settings/seo",
   approvalPreviewOp: "site_defaults.preview_set_seo",
+  // Epic #1751 — a plugin that knows crawlers (seo: which token serves
+  // which purpose, which ones ignore robots.txt) adds its caveats to the card.
+  pluginWrites: (args) => {
+    const parsed = siteSeoProposalInputSchema.safeParse(args);
+    const rules = parsed.success ? parsed.data.robotsRules : undefined;
+    return rules === undefined ? [] : [{ kind: "robots_rules", rules }];
+  },
   when:
     "Set site-wide SEO settings. Read current values with `get_site_seo` first.\n" +
     "USE FOR: site status `Site URL: not configured`; publish failed with `Site base URL is not configured`; preview flags `site-base-url-unset`; operator names the site's domain or asks for sitemap / feed / IndexNow / organization changes; operator wants pages or crawlers kept out of robots.txt (a search results page, an AI crawler).\n" +

@@ -18,10 +18,12 @@
  *  - Errors describe the underlying op + the original message.
  */
 
+import type { PluginWrite } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import type { z } from "zod";
 import type { CredentialKind } from "../../ops/credential_handoffs.js";
 import { describeError, toolError } from "./_describe-error.js";
+import { pluginWriteHintsSuffix } from "./_plugin-write-hints.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export interface MakeProposeToolArgs<I> {
@@ -61,6 +63,8 @@ export interface MakeProposeToolArgs<I> {
   readonly producesCredential?: CredentialKind;
   /** What the approval card shows — see GatedToolSpec.approvalPreviewOp. */
   readonly approvalPreviewOp?: string;
+  /** The writes the plugins' hints are asked about — see GatedToolSpec.pluginWrites. */
+  readonly pluginWrites?: (args: unknown) => readonly PluginWrite[];
 }
 
 /**
@@ -97,6 +101,7 @@ export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinition
       ...(args.afterApply ? { afterApply: args.afterApply } : {}),
       ...(args.producesCredential ? { producesCredential: args.producesCredential } : {}),
       ...(args.approvalPreviewOp ? { approvalPreviewOp: args.approvalPreviewOp } : {}),
+      ...(args.pluginWrites ? { pluginWrites: args.pluginWrites } : {}),
     },
     // Fallback handler — NOT used on the gated (SDK-executed) path, kept so the
     // registered tool stays a valid ToolDefinitionWithHandler. If ever reached
@@ -107,11 +112,16 @@ export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinition
         return toolError(r.error, `${args.opName} failed: ${describeError(r.error)}`);
       }
       const v = r.value as { proposalId: string; preview: Record<string, unknown> };
+      // The plugins' word on the proposal reaches the agent, which tells the
+      // operator (the in-chat card shows it itself, approval-preflight.ts).
+      const hints = args.pluginWrites
+        ? await pluginWriteHintsSuffix(ctx, args.pluginWrites(input))
+        : "";
       return {
         ok: true,
         // Reached on the Power-MCP surface, which has no in-chat Approve
         // card: name the queue where the Owner approves the pending row.
-        content: `Queued proposal ${v.proposalId}: ${args.summarize(input, v.preview)}. Not applied yet — the Owner approves it at ${args.pendingQueuePath}.`,
+        content: `Queued proposal ${v.proposalId}: ${args.summarize(input, v.preview)}. Not applied yet — the Owner approves it at ${args.pendingQueuePath}.${hints}`,
       };
     },
   };

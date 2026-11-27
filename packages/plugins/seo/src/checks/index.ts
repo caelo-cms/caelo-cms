@@ -30,6 +30,7 @@ import {
   type PluginContextTier1,
   z,
 } from "@caelo-cms/plugin-sdk";
+import { CRAWLER_POLICY_AUDIT_RULE } from "../crawlers/operations.js";
 
 type Ctx = PluginContextTier1;
 
@@ -67,7 +68,7 @@ export interface SeoAuditRule {
  * Every rule family the audit runs, in report order. A new family is a file
  * under `checks/` and one entry here.
  */
-export const SEO_AUDIT_RULES: readonly SeoAuditRule[] = [];
+export const SEO_AUDIT_RULES: readonly SeoAuditRule[] = [CRAWLER_POLICY_AUDIT_RULE];
 
 /** Most findings one answer may carry (the SDK contract). */
 const MAX_FINDINGS_PER_ANSWER = 499;

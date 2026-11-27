@@ -26,7 +26,7 @@
  * module and ONLY this module — the validator enforces it.
  */
 
-import type { FontMetadata, FontRef, PageUrlStyle } from "@caelo-cms/shared";
+import type { FontMetadata, FontRef, PageUrlStyle, RobotsRules } from "@caelo-cms/shared";
 // The list model only (Zod underneath): the SDK is bundled into the
 // plugin sandbox with everything it imports at runtime.
 import {
@@ -1133,8 +1133,30 @@ export interface PluginAuditFindingsArgs {
 }
 
 /**
+ * The kinds of write a `writeHintsOperation` can be shown
+ * ({@link PluginWrite}). A plugin receives `module` and `values` unless it
+ * names its kinds in `writeHintsKinds` (epic #1751), so a new kind never
+ * reaches a plugin that does not read it.
+ */
+export const PLUGIN_WRITE_KINDS = [
+  "module",
+  "values",
+  "page_seo",
+  "media_alt",
+  "robots_rules",
+] as const;
+
+/** One of {@link PLUGIN_WRITE_KINDS}. */
+export type PluginWriteKind = (typeof PLUGIN_WRITE_KINDS)[number];
+
+/** The kinds a plugin that names none in `writeHintsKinds` is shown. */
+export const DEFAULT_PLUGIN_WRITE_KINDS: readonly PluginWriteKind[] = ["module", "values"];
+
+/**
  * One write a plugin's `writeHintsOperation` is shown: module markup the
- * AI wrote (with the module's fields), or content values it stored.
+ * AI wrote (with the module's fields), content values it stored, and
+ * (epic #1751, for plugins that name these kinds) a page's SEO texts, an
+ * image's alt text, or the robots.txt rules it proposes.
  */
 export type PluginWrite =
   | {
@@ -1148,6 +1170,30 @@ export type PluginWrite =
       readonly kind: "values";
       readonly moduleId: string | null;
       readonly values: Readonly<Record<string, unknown>>;
+    }
+  | {
+      /** The SEO texts the AI set on a page, as stored; a text it left alone is absent. */
+      readonly kind: "page_seo";
+      readonly pageId: string;
+      readonly seoTitle?: string;
+      readonly metaDescription?: string;
+      readonly ogTitle?: string;
+      readonly ogDescription?: string;
+    }
+  | {
+      /** The alt text the AI set on a library image. */
+      readonly kind: "media_alt";
+      readonly assetId: string;
+      readonly alt: string;
+    }
+  | {
+      /**
+       * The robots.txt rules a proposal would put live, whole (they replace
+       * the list): shown before the Owner approves, and the hints land on the
+       * approval card next to the file the rules make.
+       */
+      readonly kind: "robots_rules";
+      readonly rules: RobotsRules;
     };
 
 /** What a `writeHintsOperation` is called with. */
@@ -1549,6 +1595,13 @@ export const pluginManifest = z
      *  `operations`. Needs no capability: it reads like a render and only
      *  adds sentences to the AI's tool result. */
     writeHintsOperation: z.string().min(1).max(120).optional(),
+    /** See `PluginDefinition.writeHintsKinds` (epic #1751). Only with
+     *  `writeHintsOperation`; absent = `module` and `values`. */
+    writeHintsKinds: z
+      .array(z.enum(PLUGIN_WRITE_KINDS))
+      .min(1)
+      .max(PLUGIN_WRITE_KINDS.length)
+      .optional(),
     /** See `PluginDefinition.changeConsumer` (#1267). Its operations must
      *  be in `operations`; it needs `change_journal`, and each core kind
      *  the `cms_admin` read grant. */
@@ -1877,6 +1930,20 @@ export const pluginManifest = z
         code: "custom",
         path: ["writeHintsOperation"],
         message: `writeHintsOperation "${m.writeHintsOperation}" is not one of the plugin's operations`,
+      });
+    }
+    if (m.writeHintsKinds !== undefined && m.writeHintsOperation === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["writeHintsKinds"],
+        message: "writeHintsKinds names the writes a writeHintsOperation is shown; set the operation too",
+      });
+    }
+    if (m.writeHintsKinds !== undefined && new Set(m.writeHintsKinds).size !== m.writeHintsKinds.length) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["writeHintsKinds"],
+        message: "writeHintsKinds names a kind twice",
       });
     }
     // #635 — the projection can only name what private storage declares.
@@ -2748,7 +2815,7 @@ export interface PluginFonts {
     input: FontRef & { offset: number; length: number },
   ): Promise<{ dataBase64: string; sizeBytes: number; eof: boolean }>;
 }
-export type { FontMetadata, FontRef, PageUrlStyle } from "@caelo-cms/shared";
+export type { FontMetadata, FontRef, PageUrlStyle, RobotsRules } from "@caelo-cms/shared";
 
 export interface PluginContextTier1 extends PluginContext {
   readonly fonts?: PluginFonts;
@@ -3333,6 +3400,17 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly writeHintsOperation?: string;
   /**
+   * Epic #1751 — the kinds of write the `writeHintsOperation` is shown
+   * ({@link PLUGIN_WRITE_KINDS}); absent = `module` and `values`. Name a
+   * kind only when the operation reads it: `page_seo` (after the AI set a
+   * page's SEO texts), `media_alt` (an image's alt text), `robots_rules`
+   * (a robots.txt proposal: the hints are also shown on its approval card).
+   *
+   * @example
+   *   writeHintsKinds: ["module", "values", "page_seo"],
+   */
+  readonly writeHintsKinds?: ReadonlyArray<PluginWriteKind>;
+  /**
    * Issue #1267 — what this plugin reacts to from the change journal
    * ({@link PluginChangeConsumerSpec}). Replaces the domain-event outbox
    * (`ctx.events`) and the module-change push: one mechanism, gated per
@@ -3543,6 +3621,7 @@ export function manifestFromDefinition(def: {
   readonly shareImagesOperation?: string;
   readonly auditFindingsOperation?: string;
   readonly writeHintsOperation?: string;
+  readonly writeHintsKinds?: ReadonlyArray<PluginWriteKind>;
   readonly changeConsumer?: PluginChangeConsumerSpec;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   readonly capabilityReasons?: PluginManifest["capabilityReasons"];
@@ -3632,6 +3711,7 @@ export function manifestFromDefinition(def: {
     hasListResolve: Boolean(def.listResolveOperation),
     ...(def.auditFindingsOperation ? { auditFindingsOperation: def.auditFindingsOperation } : {}),
     ...(def.writeHintsOperation ? { writeHintsOperation: def.writeHintsOperation } : {}),
+    ...(def.writeHintsKinds ? { writeHintsKinds: [...def.writeHintsKinds] } : {}),
     ...(def.changeConsumer ? { changeConsumer: def.changeConsumer } : {}),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
     ...(def.capabilityReasons ? { capabilityReasons: def.capabilityReasons } : {}),

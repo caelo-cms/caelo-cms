@@ -8,6 +8,10 @@
 
 import type { PluginContextTier1, PluginOperation } from "@caelo-cms/plugin-sdk";
 import { seoAudit } from "./checks/index.js";
+import {
+  PLAN_CRAWLER_POLICY_OPERATION,
+  planCrawlerPolicyOperation,
+} from "./crawlers/operations.js";
 import { seoWriteHints } from "./hints/index.js";
 
 /** The operation core calls at every Stage audit (`auditFindingsOperation`). */
@@ -20,4 +24,5 @@ export const WRITE_HINTS_OPERATION = "write_hints";
 export const SEO_OPERATIONS: Readonly<Record<string, PluginOperation<PluginContextTier1>>> = {
   [AUDIT_OPERATION]: (ctx, args) => seoAudit(ctx, args),
   [WRITE_HINTS_OPERATION]: (ctx, args) => seoWriteHints(ctx, args),
+  [PLAN_CRAWLER_POLICY_OPERATION]: (ctx, args) => planCrawlerPolicyOperation(ctx, args),
 };

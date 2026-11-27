@@ -14,6 +14,7 @@
  */
 
 import { type PluginContextTier1, type PluginWrite, z } from "@caelo-cms/plugin-sdk";
+import { CRAWLER_POLICY_HINT_RULE } from "../crawlers/operations.js";
 
 type Ctx = PluginContextTier1;
 
@@ -25,10 +26,10 @@ export interface SeoWriteHintRule {
 }
 
 /** Every hint family, in the order their sentences are shown. */
-export const SEO_WRITE_HINT_RULES: readonly SeoWriteHintRule[] = [];
+export const SEO_WRITE_HINT_RULES: readonly SeoWriteHintRule[] = [CRAWLER_POLICY_HINT_RULE];
 
-/** Most hints one write gets: more would bury the tool result. */
-const MAX_HINTS = 8;
+/** Most hints one answer may carry (the SDK's `pluginWriteHints`: five). */
+const MAX_HINTS = 5;
 
 const writeHintArgs = z
   .object({
@@ -49,6 +50,13 @@ const writeHintArgs = z
             values: z.record(z.string(), z.unknown()),
           })
           .strict(),
+        // #1758 — a robots rules proposal (core checked the rules).
+        z
+          .object({
+            kind: z.literal("robots_rules"),
+            rules: z.array(z.record(z.string(), z.unknown())),
+          })
+          .strict(),
       ]),
     ),
   })
@@ -63,7 +71,9 @@ export async function seoWriteHints(
   rawArgs: unknown,
   rules: readonly SeoWriteHintRule[] = SEO_WRITE_HINT_RULES,
 ): Promise<{ hints: string[] }> {
-  const { writes } = writeHintArgs.parse(rawArgs);
+  // The parse checks the kinds and their keys; core built the values (the
+  // robots rules it checked with robotsRulesSchema), so the SDK type holds.
+  const writes = writeHintArgs.parse(rawArgs).writes as unknown as readonly PluginWrite[];
   const hints: string[] = [];
   for (const rule of rules) {
     for (const hint of await rule.hints(ctx, writes)) {

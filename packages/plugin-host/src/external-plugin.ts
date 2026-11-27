@@ -222,6 +222,7 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
     // #1155 — reviewed manifest data, carried like the panels.
     ...(manifest.bakedData ? { bakedData: manifest.bakedData } : {}),
     ...(manifest.writeHintsOperation ? { writeHintsOperation: manifest.writeHintsOperation } : {}),
+    ...(manifest.writeHintsKinds ? { writeHintsKinds: manifest.writeHintsKinds } : {}),
     ...(manifest.changeConsumer ? { changeConsumer: manifest.changeConsumer } : {}),
     // Epic #1644 — reviewed manifest data: an installed plugin keeps
     // configuration, collections, page output and batch jobs like a shipped

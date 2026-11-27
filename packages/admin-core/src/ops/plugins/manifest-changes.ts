@@ -48,6 +48,7 @@ const AREAS: Readonly<Record<Exclude<keyof PluginManifest, NotCompared>, string>
   hasShareImages: "Default social-share images",
   auditFindingsOperation: "Stage audit findings",
   writeHintsOperation: "Hints to the AI",
+  writeHintsKinds: "Writes it gives hints on",
   changeConsumer: "Followed site changes",
   requestedCapabilities: "Permissions it asks for",
   capabilityReasons: "Its reasons for its permissions",

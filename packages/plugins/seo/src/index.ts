@@ -46,6 +46,8 @@ export default definePlugin<PluginContextTier1>({
   config: SEO_CONFIG,
   auditFindingsOperation: AUDIT_OPERATION,
   writeHintsOperation: WRITE_HINTS_OPERATION,
+  // #1757, #1758 — the SEO texts, alt texts and robots.txt proposals the AI writes too.
+  writeHintsKinds: ["module", "values", "robots_rules"],
   tools: SEO_TOOLS,
   skills: SEO_SKILLS,
   operations: SEO_OPERATIONS,
