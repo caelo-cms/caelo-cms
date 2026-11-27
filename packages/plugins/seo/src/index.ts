@@ -48,7 +48,7 @@ export default definePlugin<PluginContextTier1>({
   auditFindingsOperation: AUDIT_OPERATION,
   writeHintsOperation: WRITE_HINTS_OPERATION,
   // #1757, #1758 — the SEO texts, alt texts and robots.txt proposals the AI writes too.
-  writeHintsKinds: ["module", "values", "robots_rules"],
+  writeHintsKinds: ["module", "values", "media_alt", "page_seo", "robots_rules"],
   // #1763 — the llms.txt switch; core writes the file.
   agentFilesOperation: AGENT_FILES_OPERATION,
   tools: SEO_TOOLS,

@@ -67,6 +67,27 @@ export async function storedModuleWrites(
 }
 
 /**
+ * Epic #1751 — wrap a tool whose writes are given by its input (an alt
+ * text, a page's SEO texts): a successful write carries the plugins' hints
+ * on the writes `writesOf` names. Only plugins that name the kind in
+ * `writeHintsKinds` see them.
+ */
+export function withPluginWrites<T>(
+  tool: ToolDefinitionWithHandler<T>,
+  writesOf: (input: T) => readonly PluginWrite[],
+): ToolDefinitionWithHandler<T> {
+  return {
+    ...tool,
+    handler: async (ctx, input, toolCtx) => {
+      const result = await tool.handler(ctx, input, toolCtx);
+      if (!result.ok) return result;
+      const suffix = await pluginWriteHintsSuffix(ctx, writesOf(input));
+      return suffix ? { ...result, content: `${result.content}${suffix}` } : result;
+    },
+  };
+}
+
+/**
  * Wrap a module-writing tool: a successful write carries the plugins'
  * hints on the modules `moduleIdsOf` names.
  */
