@@ -20,6 +20,7 @@
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import {
+  goneStatusOnProvider,
   moduleUpdateSchema,
   pageUpdateSchema,
   redirectTargetPathSchema,
@@ -57,7 +58,7 @@ const uuid = z.string().uuid();
 const deletionItem = z
   .object({
     pageId: uuid,
-    disposition: z.enum(["404", "redirect"]),
+    disposition: z.enum(["404", "redirect", "410"]),
     redirectTo: redirectTargetPathSchema.optional(),
     children: z.enum(["refuse", "move-up", "delete"]).optional(),
   })
@@ -87,6 +88,17 @@ type DeleteInput = z.infer<typeof deleteInput>;
  * floor.
  */
 const DELETE_PAGES_MANY_APPROVAL_THRESHOLD = 5;
+
+/**
+ * #1762 — what this install's hosting answers for a 410 rule: a host that
+ * cannot send a bare 410 answers 404 (docs/dev/gone-pages.md), and the AI
+ * says so instead of promising a 410.
+ */
+function goneAnswerNote(): string {
+  return goneStatusOnProvider(process.env.CAELO_PROVIDER) === 410
+    ? ""
+    : " (this hosting answers it with 404: it cannot send a bare 410; search engines drop a 404 too, only more slowly)";
+}
 
 /**
  * Pages a delete_pages_many call removes: the listed pages plus, for
@@ -154,8 +166,9 @@ export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
             pageId: { type: "string", format: "uuid" },
             disposition: {
               type: "string",
-              enum: ["404", "redirect"],
-              description: "`redirect` = 301 to `redirectTo`.",
+              enum: ["404", "redirect", "410"],
+              description:
+                "`redirect` = 301 to `redirectTo` (content moved) | `410` = removed on purpose, no successor (search engines drop it sooner; a redirect already at the address is kept) | `404`.",
             },
             redirectTo: {
               type: "string",
@@ -187,15 +200,23 @@ export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
       alreadyDeleted: number;
       notFound: number;
       refused: { pageId: string; reason: string }[];
+      keptRedirects: { pageId: string; fromPath: string; toPath: string; statusCode: number }[];
     };
     const redirected = input.items.filter((d) => d.disposition === "redirect").length;
+    const gone = input.items.filter((d) => d.disposition === "410").length - v.keptRedirects.length;
     const refused =
       v.refused.length > 0
         ? `\nNot deleted:\n${v.refused.map((f) => `- ${f.pageId}: ${f.reason}`).join("\n")}`
         : "";
+    const kept =
+      v.keptRedirects.length > 0
+        ? `\nKept their redirect instead of a 410 (the address already leads somewhere):\n${v.keptRedirects
+            .map((k) => `- ${k.fromPath} → ${k.toPath} (${k.statusCode})`)
+            .join("\n")}`
+        : "";
     return {
       ok: true,
-      content: `Deleted ${v.deleted} pages (alreadyDeleted=${v.alreadyDeleted}, notFound=${v.notFound}); ${redirected} got a 301, the rest 404. Use \`propose_revert_site\` to undo if needed.${refused}`,
+      content: `Deleted ${v.deleted} pages (alreadyDeleted=${v.alreadyDeleted}, notFound=${v.notFound}); ${redirected} got a 301${gone > 0 ? `, ${gone} a 410 Gone rule${goneAnswerNote()}` : ""}, the rest 404 — each live with the Publish live that ships the delete. Use \`propose_revert_site\` to undo if needed.${kept}${refused}`,
     };
   },
 };

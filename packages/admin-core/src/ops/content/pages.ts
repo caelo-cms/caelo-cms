@@ -66,6 +66,7 @@ import {
   recomputeCurrentPathsWithMoves,
   renderScopeOf,
 } from "./current-path.js";
+import { writeGoneRule } from "./page-gone.js";
 import { planPageMoves } from "./page-move-plan.js";
 import { executePageMoves } from "./page-moves.js";
 import { ancestorIdsOf, loadPageChains, loadScopedTree, loadSubtreeIds } from "./page-tree.js";
@@ -1984,16 +1985,37 @@ export const setPageModulesOp = defineOperation({
  */
 const pageDeleteChildrenSchema = z.enum(["refuse", "move-up", "delete"]);
 
+/**
+ * What a deleted page's URL does: `404` (nothing), `redirect` (a 301 to
+ * `redirectTo`) or `410` (#1762: removed on purpose, a 410 Gone rule;
+ * page-gone.ts).
+ */
+const pageDeleteDispositionSchema = z.enum(["404", "redirect", "410"]);
+
 const deletePageInputSchema = z
   .object({
     pageId: z.string().uuid(),
-    disposition: z.enum(["404", "redirect"]).optional(),
+    disposition: pageDeleteDispositionSchema.optional(),
     redirectTo: redirectTargetPathSchema.optional(),
     children: pageDeleteChildrenSchema.optional(),
   })
   .refine((v) => v.disposition !== "redirect" || !!v.redirectTo, {
     message: "disposition 'redirect' requires redirectTo",
   });
+
+/** A redirect a page deleted with disposition `410` kept at its address (page-gone.ts). */
+const keptRedirectSchema = z.object({
+  pageId: z.string(),
+  fromPath: z.string(),
+  toPath: z.string(),
+  statusCode: z.number().int(),
+  state: z.enum(["live", "pending"]),
+});
+
+/** What a page delete did beyond the delete: the redirects `410` kept. */
+interface PageDeleteResult {
+  readonly keptRedirects: z.infer<typeof keptRedirectSchema>[];
+}
 
 /**
  * pages.delete's body — a named function with an explicit return type so
@@ -2003,7 +2025,8 @@ async function deletePageHandler(
   ctx: ExecutionContext,
   input: z.infer<typeof deletePageInputSchema>,
   tx: TransactionRunner,
-): Promise<Result<Record<string, never>, QueryError>> {
+): Promise<Result<PageDeleteResult, QueryError>> {
+  const keptRedirects: PageDeleteResult["keptRedirects"] = [];
   const deleteLock = await checkAndAcquireEntityLock(tx, {
     kind: "page",
     entityId: input.pageId,
@@ -2035,7 +2058,7 @@ async function deletePageHandler(
       entityId: input.pageId,
       resultSummary: "already-deleted",
     });
-    return ok({});
+    return ok({ keptRedirects });
   }
   // 0263 — a page with child pages: their URLs hang off this one.
   // Refuse by default (the operator decides what happens to them), or
@@ -2077,6 +2100,7 @@ async function deletePageHandler(
         // Earlier siblings may already be deleted on this tx: a plain
         // err would commit that partial subtree delete. Abort it whole.
         if (!r.ok) throw new OperationAbortError(r.error);
+        keptRedirects.push(...r.value.keptRedirects);
       }
     }
   }
@@ -2175,7 +2199,17 @@ async function deletePageHandler(
       causeSnapshotId: snapshot?.siteSnapshotId ?? null,
     });
   }
-  return ok({});
+  // #1762 — removed on purpose: a 410 rule at the address, the same way
+  // (Staged, Undo takes it back), unless a redirect already sits there.
+  if (
+    input.disposition === "410" &&
+    state &&
+    !(await branchOnlyPageIds(tx, [input.pageId])).has(input.pageId)
+  ) {
+    const kept = await writeGoneRule(tx, ctx, input.pageId, snapshot?.siteSnapshotId ?? null);
+    if (kept) keptRedirects.push({ pageId: input.pageId, ...kept });
+  }
+  return ok({ keptRedirects });
 }
 
 export const deletePageOp = defineOperation({
@@ -2189,11 +2223,13 @@ export const deletePageOp = defineOperation({
   // and the bulk path silently produced none (every bulk-deleted page left a
   // dead URL with no redirect). `disposition` is optional because the human UI
   // + translation-variant deletes are plain soft-deletes; the AI-facing tool
-  // requires it so the AI can never silently strand a dead URL.
+  // requires it so the AI can never silently strand a dead URL. '410' (#1762)
+  // = a 410 Gone rule, unless the address already has a redirect
+  // (`keptRedirects` names it).
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: deletePageInputSchema,
-  output: z.object({}),
+  output: z.object({ keptRedirects: z.array(keptRedirectSchema) }),
   handler: (ctx, input, tx) => deletePageHandler(ctx, input, tx),
 });
 
@@ -2765,7 +2801,7 @@ export const deletePagesManyOp = defineOperation({
           z
             .object({
               pageId: z.string().uuid(),
-              disposition: z.enum(["404", "redirect"]).optional(),
+              disposition: pageDeleteDispositionSchema.optional(),
               redirectTo: redirectTargetPathSchema.optional(),
               children: pageDeleteChildrenSchema.optional(),
             })
@@ -2784,6 +2820,8 @@ export const deletePagesManyOp = defineOperation({
     /** Pages not deleted, with the reason + next step (e.g. it has
      *  child pages and no `children` decision was given). */
     refused: z.array(z.object({ pageId: z.string(), reason: z.string() })),
+    /** #1762 — addresses a `410` deletion left with the redirect they had. */
+    keptRedirects: z.array(keptRedirectSchema),
   }),
   handler: async (ctx, input, tx) => {
     // v0.5.7 — delegate to deletePageOp per row so bulk delete picks up
@@ -2795,6 +2833,7 @@ export const deletePagesManyOp = defineOperation({
     let alreadyDeleted = 0;
     let notFound = 0;
     const refused: { pageId: string; reason: string }[] = [];
+    const keptRedirects: PageDeleteResult["keptRedirects"] = [];
     // 0263 — deepest pages first, so a batch that deletes a page AND all
     // its children needs no `children` decision: by the time the parent
     // comes up, its children are gone.
@@ -2831,8 +2870,10 @@ export const deletePagesManyOp = defineOperation({
         },
         tx,
       );
-      if (r.ok) deleted += 1;
-      else
+      if (r.ok) {
+        deleted += 1;
+        keptRedirects.push(...r.value.keptRedirects);
+      } else
         refused.push({ pageId: id, reason: "message" in r.error ? r.error.message : r.error.kind });
       // Any other error (Locked etc) falls through to the bulk caller
       // via the audit row + non-OK return on the next iteration. For
@@ -2847,7 +2888,7 @@ export const deletePagesManyOp = defineOperation({
       succeeded: true,
       resultSummary: `deleted=${deleted},alreadyDeleted=${alreadyDeleted},notFound=${notFound},refused=${refused.length}`,
     });
-    return ok({ deleted, alreadyDeleted, notFound, refused });
+    return ok({ deleted, alreadyDeleted, notFound, refused, keptRedirects });
   },
 });
 
