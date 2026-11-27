@@ -6,11 +6,14 @@
  *
  *   Google Cloud  the project's Cloud Run CPU quota in the region, minus
  *                 what the services keep ({@link SERVICE_RESERVE_VCPU}).
- *   self-hosted   the machine's cores minus one for the admin: the jobs run
- *                 inside the admin's process there, on the same machine.
+ *   self-hosted   no limit: the jobs run inside the admin's process, and its
+ *                 lines already run one job of each kind at a time
+ *                 (reporting-jobs/in-line.ts). A CPU budget on top would
+ *                 count a job waiting in its line as running and hold back
+ *                 the other kinds for nothing; the ledger still records what
+ *                 runs, for the Owner's card.
  */
 
-import { availableParallelism } from "node:os";
 import {
   MAX_JOB_TASKS,
   MAX_LIGHTHOUSE_TASKS,
@@ -50,13 +53,13 @@ export function quotaBudget(q: QuotaReading): CapacityReading {
   };
 }
 
-/** The budget of a self-hosted machine: its cores, one left to the admin. */
-export function machineBudget(cores: number = availableParallelism()): CapacityReading {
+/** The budget of jobs inside the admin's process (self-hosted, development): no limit. */
+export function inProcessBudget(): CapacityReading {
   return {
     source: "machine",
-    budgetVcpu: Math.max(1, cores - 1),
+    budgetVcpu: null,
     quotaVcpu: null,
-    reserveVcpu: 1,
+    reserveVcpu: 0,
     projectId: null,
     region: null,
   };

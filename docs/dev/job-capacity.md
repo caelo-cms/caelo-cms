@@ -23,7 +23,7 @@ Cloud Run has one CPU quota per project and region, shared by the services and e
 | Install | Budget |
 |---|---|
 | Google Cloud | the project's Cloud Run CPU quota in the region, minus `SERVICE_RESERVE_VCPU` (6: the admin's up to 4 instances of 1 vCPU and one instance each of the live and the staging gateway). The services scale on their own and book nothing. |
-| Self-hosted | the machine's cores minus one for the admin. The jobs run inside the admin's process there, and elastic work runs on its lead alone. |
+| Self-hosted | no limit. The jobs run inside the admin's process, whose lines run one job of each kind at a time (`reporting-jobs/in-line.ts`); a CPU budget on top would count a job waiting in its line as running and hold back the other kinds for nothing. The ledger still records what runs, for the Owner's card, and elastic work runs on its lead alone. |
 | AWS, Azure | none yet: their jobs do not exist (#749, #750). |
 
 A start of a job that may wait reads the budget again (on Google Cloud through Service Usage, `roles/serviceusage.serviceUsageViewer`, #1764) and records it in `job_capacity_budget`. A raised quota counts from that start on. The claims of running work use the recorded value, so a claim never calls Google.
@@ -41,7 +41,7 @@ A start of a job that may wait reads the budget again (on Google Cloud through S
 3. Elastic work (a search index, a plugin batch in pieces) runs its lead task and gets helpers while CPU is free, up to what it wants (its unfinished pieces, capped by its `maxTasks`). Helpers leave the headroom. When the budget is over, or a waiting job of a higher class needs room, helpers stop after their current piece: lowest class and newest work first.
 4. Widening happens only above the headroom and cutting only below zero, so a short capture does not stop and restart helpers.
 5. A background job that cannot give CPU back (a batch without pieces) starts only if a quality check still fits after it: its runner and one Lighthouse run (`CHECK_MINIMUM_VCPU`, 3). Room for a check at full width would keep a large job from ever starting on a small quota; the check then runs its batch in more rounds.
-6. Nothing waits for good: a job that needs more than the whole budget (a small self-hosted machine, a tiny quota) starts once nothing else holds any of it. On a 4-core machine (3 for the jobs) a batch without pieces would otherwise need 6.
+6. Nothing waits for good: a job that needs more than the whole budget (a tiny quota) starts once nothing else holds any of it. On a budget of 3 vCPU a batch without pieces would otherwise need 6.
 
 On a new project's 20 vCPU (14 for the jobs) a Stage runs the check (1 + 10 vCPU) and one index task (2); once the check ends, the index widens to 6 tasks (12, plus the headroom). The next Stage's check makes the helpers stop after their piece.
 

@@ -25,7 +25,7 @@
 --     start to its end.
 --
 -- job_capacity_budget: the last budget read (one row): the project's Cloud
--- Run CPU quota and the vCPU it leaves the jobs, or the machine's cores on a
+-- Run CPU quota and the vCPU it leaves the jobs, or no limit (NULL) on a
 -- self-hosted install. Every start that can wait reads it again, so a raised
 -- quota counts from the next start on; the claims of running work use it.
 --
@@ -96,7 +96,7 @@ CREATE INDEX IF NOT EXISTS job_capacity_bookings_lease_idx
 
 CREATE TABLE IF NOT EXISTS job_capacity_budget (
   id           smallint PRIMARY KEY CHECK (id = 1),
-  -- 'quota': a Cloud Run CPU quota; 'machine': the cores of a self-hosted admin.
+  -- 'quota': a Cloud Run CPU quota; 'machine': jobs inside a self-hosted admin (no limit).
   source       text NOT NULL CHECK (source IN ('quota', 'machine')),
   -- The vCPU the jobs may use; NULL when Google sets no limit.
   budget_vcpu  integer NULL CHECK (budget_vcpu >= 0),

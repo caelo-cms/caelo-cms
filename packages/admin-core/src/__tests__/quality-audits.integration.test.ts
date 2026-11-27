@@ -29,7 +29,7 @@ import {
   listQualityAcceptancesTool,
   listQualityAuditsTool,
 } from "../ai/tools/quality-audit-tools.js";
-import { machineBudget } from "../job-capacity/budget.js";
+import { inProcessBudget } from "../job-capacity/budget.js";
 import { buildReferenceGate } from "../ops/content/link-integrity.js";
 import { recordedRuns, sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
 import { reportedCheckSources, runQualityAuditJob } from "../quality/audit-job.js";
@@ -1038,8 +1038,8 @@ describe("the audit's job: lease, restart and give-up (#1359)", () => {
       orders,
       launcher: {
         label: "the test",
-        // A machine with room for every check (#1776).
-        capacity: async () => machineBudget(64),
+        // No CPU budget, as inside the admin (#1776).
+        capacity: async () => inProcessBudget(),
         launch: async (order: JobOrder) => {
           orders.push(order);
           await run(order);
@@ -1166,7 +1166,7 @@ describe("the audit's job: lease, restart and give-up (#1359)", () => {
     try {
       const failing = {
         label: "Cloud Run job caelo-production-audit-run",
-        capacity: async () => machineBudget(64),
+        capacity: async () => inProcessBudget(),
         launch: async (): Promise<string> => {
           throw new Error("PERMISSION_DENIED: run.jobs.runWithOverrides");
         },

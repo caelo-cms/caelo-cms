@@ -14,7 +14,7 @@
  */
 
 import { hostname } from "node:os";
-import { machineBudget } from "../job-capacity/budget.js";
+import { inProcessBudget } from "../job-capacity/budget.js";
 import { handleJobReport } from "./dispatch.js";
 import { createLines } from "./in-line.js";
 import { JOB_MAINS } from "./job-mains.js";
@@ -79,9 +79,9 @@ export function inProcessJobLauncher(deps: AdminJobDeps, kind: ReportingJobKind)
   const oneAtATime = reportingJobKind(kind).inProcess === "in-line";
   return {
     label: "the admin process",
-    // #1776 — the jobs share this machine with the admin: its cores are the
-    // budget, and elastic work runs on its lead alone (no maxTasks).
-    capacity: async () => machineBudget(),
+    // #1776 — no CPU budget here: this process's lines run one job of each
+    // kind at a time, and elastic work runs on its lead alone (no maxTasks).
+    capacity: async () => inProcessBudget(),
     async launch(order) {
       if (order.kind !== kind)
         throw new Error(`a ${kind} launcher was handed a ${order.kind} order`);

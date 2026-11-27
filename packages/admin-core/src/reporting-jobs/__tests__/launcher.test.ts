@@ -8,7 +8,7 @@
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
-import { machineBudget } from "../../job-capacity/budget.js";
+import { inProcessBudget } from "../../job-capacity/budget.js";
 import type { GoogleDeps } from "../../security/operator-access/google-iam.js";
 import { reportingJobKind } from "../kinds.js";
 import { gcpReportingJobLauncher, launcherFor, setInProcessJobLauncher } from "../launcher.js";
@@ -32,7 +32,7 @@ describe("launcherFor", () => {
     expect(launcherFor(def, {}).kind).toBe("none");
     setInProcessJobLauncher((kind) => ({
       label: `in-process ${kind}`,
-      capacity: async () => machineBudget(4),
+      capacity: async () => inProcessBudget(),
       launch: async () => "x",
     }));
     const chosen = launcherFor(def, { CAELO_PROVIDER: "self-hosted" });
@@ -43,7 +43,7 @@ describe("launcherFor", () => {
   it("a cloud install never runs a job in the admin, even when in-process is registered", () => {
     setInProcessJobLauncher(() => ({
       label: "in-process",
-      capacity: async () => machineBudget(4),
+      capacity: async () => inProcessBudget(),
       launch: async () => "x",
     }));
     const chosen = launcherFor(def, {

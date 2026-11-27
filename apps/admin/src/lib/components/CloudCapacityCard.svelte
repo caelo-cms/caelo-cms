@@ -41,8 +41,8 @@
             index, then plugin jobs. Google Cloud sets it with project <code>{r.projectId}</code>'s
             Cloud Run CPU quota in <code>{r.region}</code>, read just now.
           {:else}
-            Caelo shares this machine's cores among its jobs: quality checks first, then the
-            search index, then plugin jobs.
+            Caelo runs its jobs inside the admin on this machine, one job of each kind at a
+            time.
           {/if}
         </CardDescription>
       </CardHeader>
@@ -51,13 +51,11 @@
           <dt class="text-muted-foreground">{r.source === "quota" ? "CPU quota" : "This machine"}</dt>
           <dd data-testid="cloud-capacity-quota">
             {#if r.budgetVcpu === null}
-              no limit
+              {r.source === "quota" ? "no limit" : "no CPU budget: one job of each kind at a time"}
             {:else if r.source === "quota"}
               {n(r.quotaVcpu ?? 0)} vCPU: {r.reserveVcpu} stay free for the admin and the site, {n(
                 r.budgetVcpu,
               )} for the jobs
-            {:else}
-              {n(r.budgetVcpu)} core{r.budgetVcpu === 1 ? "" : "s"} for the jobs, one for the admin
             {/if}
           </dd>
           <dt class="text-muted-foreground">Quality check</dt>

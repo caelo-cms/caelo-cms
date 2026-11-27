@@ -7,7 +7,7 @@
  * Every execution Caelo starts books its vCPU first (ledger.ts): every
  * reporting-job kind, every Lighthouse batch, every capture. The budget is
  * what the project's Cloud Run CPU quota leaves after the services (on
- * Google Cloud), or the machine's cores minus the admin's (self-hosted).
+ * Google Cloud); inside the admin's process (self-hosted) there is none.
  * Cloud Run does not arbitrate between our jobs and the services that
  * share its quota, so Caelo does it here, and it can: the admin starts
  * every execution itself.

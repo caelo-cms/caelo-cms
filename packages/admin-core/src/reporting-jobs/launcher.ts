@@ -62,7 +62,7 @@ export interface JobLauncher {
   readonly maxTasks?: number;
   /**
    * The vCPU the jobs may use now (job-capacity/budget.ts): the project's
-   * Cloud Run quota minus the services, or the machine's cores. Read at
+   * Cloud Run quota minus the services, or no limit inside the admin. Read at
    * every start of a job that may wait, so a raised quota counts from the
    * next one.
    */

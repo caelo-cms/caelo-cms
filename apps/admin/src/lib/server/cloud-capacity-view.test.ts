@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { type CapacityBooking, machineBudget, quotaBudget } from "@caelo-cms/admin-core";
+import { type CapacityBooking, inProcessBudget, quotaBudget } from "@caelo-cms/admin-core";
 import { cloudCapacityView, jobLines, loadCloudCapacity } from "./cloud-capacity-view.js";
 
 /** A new project's 20 vCPU. */
@@ -48,12 +48,12 @@ describe("cloudCapacityView", () => {
     expect(view).toMatchObject({ state: "ok", limited: false, checkRounds: 1, indexTasks: 32 });
   });
 
-  it("shows a self-hosted machine's cores, never as a quota to raise", () => {
-    expect(cloudCapacityView(machineBudget(4), [])).toMatchObject({
+  it("shows a self-hosted install's jobs, never as a quota to raise", () => {
+    expect(cloudCapacityView(inProcessBudget(), [])).toMatchObject({
       state: "ok",
       limited: false,
       consoleUrl: null,
-      lighthouseRuns: 1,
+      lighthouseRuns: 15,
     });
   });
 

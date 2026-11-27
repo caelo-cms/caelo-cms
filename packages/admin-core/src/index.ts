@@ -134,7 +134,7 @@ export {
   CHECK_FULL_SPEED_VCPU,
   FULL_SPEED_VCPU,
   indexTasksAlone,
-  machineBudget,
+  inProcessBudget,
   quotaBudget,
 } from "./job-capacity/budget.js";
 export { lighthouseRunsFor } from "./job-capacity/plan.js";

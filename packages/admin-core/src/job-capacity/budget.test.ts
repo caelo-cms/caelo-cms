@@ -6,7 +6,7 @@ import {
   CHECK_FULL_SPEED_VCPU,
   FULL_SPEED_VCPU,
   indexTasksAlone,
-  machineBudget,
+  inProcessBudget,
   quotaBudget,
   quotaForIndexTasks,
 } from "./budget.js";
@@ -24,9 +24,12 @@ describe("the jobs' budget", () => {
     expect(quotaBudget({ ...q, quotaVcpu: null }).budgetVcpu).toBeNull();
   });
 
-  it("on a machine is its cores, one left to the admin", () => {
-    expect(machineBudget(8)).toMatchObject({ source: "machine", budgetVcpu: 7, quotaVcpu: null });
-    expect(machineBudget(1).budgetVcpu).toBe(1);
+  it("inside the admin's process sets no limit: its lines run one job of each kind at a time", () => {
+    expect(inProcessBudget()).toMatchObject({
+      source: "machine",
+      budgetVcpu: null,
+      quotaVcpu: null,
+    });
   });
 });
 

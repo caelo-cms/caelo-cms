@@ -3,10 +3,10 @@
 /**
  * #1764, #1776 — Settings → Deployments' Job capacity card: the CPU the
  * jobs of this install may use (on Google Cloud the project's Cloud Run CPU
- * quota, read live: a raised quota shows on the next page load; on a
- * self-hosted install the machine's cores), what that lets each kind of job
- * run, which jobs run and wait right now, and how an Owner makes them
- * faster.
+ * quota, read live: a raised quota shows on the next page load; a
+ * self-hosted install runs one job of each kind at a time in the admin),
+ * what that lets each kind of job run, which jobs run and wait right now,
+ * and how an Owner makes them faster.
  */
 
 import {
@@ -15,10 +15,10 @@ import {
   CHECK_FULL_SPEED_VCPU,
   FULL_SPEED_VCPU,
   indexTasksAlone,
+  inProcessBudget,
   lighthouseRunsFor,
   MAX_JOB_TASKS,
   MAX_LIGHTHOUSE_TASKS,
-  machineBudget,
   quotaBudget,
   quotaConsoleUrl,
   readInstallRunQuota,
@@ -126,7 +126,7 @@ export function cloudCapacityView(
 /** This install's budget: the quota on Google Cloud, the machine self-hosted, none elsewhere. */
 async function installReading(): Promise<CapacityReading | null> {
   const provider = process.env.CAELO_PROVIDER ?? "";
-  if (provider === "" || provider === "self-hosted") return machineBudget();
+  if (provider === "" || provider === "self-hosted") return inProcessBudget();
   const quota = await readInstallRunQuota();
   return quota === null ? null : quotaBudget(quota);
 }
