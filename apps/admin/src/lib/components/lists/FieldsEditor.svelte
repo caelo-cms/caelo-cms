@@ -3,10 +3,10 @@
 
   /** The field list of a node kind or a page type (epic #1107). */
 
-  import { type FieldDef, LIST_FIELD_TYPES, type ListFieldType } from "@caelo-cms/shared";
+  import type { FieldDef, ListFieldType } from "@caelo-cms/shared";
   import { Button } from "#lib/components/ui/button/index.js";
   import type { FieldEditorContext } from "#lib/lists/field-context.js";
-  import { newField } from "#lib/lists/type-editor.js";
+  import { ENTRY_FIELD_TYPES, newField } from "#lib/lists/type-editor.js";
   import FieldDefEditor from "./FieldDefEditor.svelte";
 
   interface Props {
@@ -22,7 +22,7 @@
   let {
     fields,
     savedNames,
-    types = LIST_FIELD_TYPES,
+    types = ENTRY_FIELD_TYPES,
     ctx,
     idPrefix,
     addLabel = "Add field",

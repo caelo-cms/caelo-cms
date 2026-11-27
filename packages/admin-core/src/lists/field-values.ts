@@ -22,6 +22,7 @@
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext, ListItem, ListTypeDef } from "@caelo-cms/shared";
 import {
+  canonicaliseQueryRefs,
   describeLinkIssues,
   listPaginationSchema,
   pageQueryPartialSchema,
@@ -191,8 +192,17 @@ async function normaliseOne(
     }
     return { ok: true, value: overrides };
   }
-  // query source: knob overrides.
-  const parsed = pageQueryPartialSchema.safeParse(value);
+  // query source: knob overrides. Reads show its page references as paths
+  // (`parent`, `refers_to.page`), so a write of what a read returned
+  // stores them as references again.
+  const canon = await canonicaliseLinksForWrite(
+    tx,
+    ctx,
+    (run) => canonicaliseQueryRefs(value, run, where),
+    { previous },
+  );
+  if (!canon.ok) return { ok: false, message: canon.message };
+  const parsed = pageQueryPartialSchema.safeParse(canon.value);
   if (!parsed.success) {
     return {
       ok: false,

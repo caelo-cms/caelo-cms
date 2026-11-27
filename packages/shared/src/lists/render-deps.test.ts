@@ -29,13 +29,16 @@ const deps = mergeRenderDeps(
         ...NONE,
         lists: [LIST_A],
         listTypes: ["menu"],
-        queries: [{ pageType: "news", terms: [], parent: null }],
+        queries: [{ pageType: "news", terms: [], parent: null, refersTo: null }],
       },
     ],
     // About shows breadcrumbs.
     [PAGE.about, { ...NONE, pageTree: true }],
     // Team shows "related: events".
-    [PAGE.team, { ...NONE, queries: [{ pageType: null, terms: [TERM.event], parent: null }] }],
+    [
+      PAGE.team,
+      { ...NONE, queries: [{ pageType: null, terms: [TERM.event], parent: null, refersTo: null }] },
+    ],
     [PAGE.news, NONE],
   ]),
   PAGES,

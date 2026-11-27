@@ -466,7 +466,7 @@ export const pluginListSourceSpec = z
       });
     }
     for (const [i, f] of spec.node.fields.entries()) {
-      if (f.type === "module" || f.type === "term") {
+      if (f.type === "module" || f.type === "term" || f.type === "page") {
         ctx.addIssue({
           code: "custom",
           path: ["node", "fields", i],

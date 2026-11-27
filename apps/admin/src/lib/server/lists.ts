@@ -273,8 +273,14 @@ export async function saveListType(ctx: ExecutionContext, slug: string, form: Fo
 
 /** Pickers' data a type editor needs (term fields name vocabularies; defaults may link pages). */
 export async function loadTypeEditorContext(ctx: ExecutionContext) {
-  const [vocabularies, pages] = await Promise.all([loadVocabularies(ctx), loadPagePicks(ctx)]);
-  return { vocabularies, pages };
+  const [vocabularies, pages, types] = await Promise.all([
+    loadVocabularies(ctx),
+    loadPagePicks(ctx),
+    run<{ pageTypes: PageTypeRow[] }>(ctx, "page_types.list", {}),
+  ]);
+  // #1754 — a `page` property names the page type its pages must have.
+  const pageTypes = types.pageTypes.map((t) => ({ slug: t.slug, name: t.name }));
+  return { vocabularies, pages, pageTypes };
 }
 
 /** Templates for page-type template pickers. */
