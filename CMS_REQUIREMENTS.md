@@ -428,8 +428,10 @@ Handled by the pre-built, hardened **Authentication Plugin**:
 - **Explicit "Optimize SEO" action:** the Owner/Editor can ask the AI to (re-)optimize SEO for one or many pages at any time via the `seo-optimize` skill. The request carries user-supplied context — for example *"here is a keyword analysis for these 5 t-shirt pages, optimize titles and descriptions"* — and the AI produces a cross-page preview batched in the Publish pill for one-shot confirm
 - No per-field override flag is exposed; the model is simply: AI writes the initial value, the user (or the AI via an explicit optimize request) rewrites it, and it stays written until someone rewrites it again
 - Fields rendered into static HTML `<head>` by the static generator at deploy time
-- Sitemap.xml auto-generated at deploy from all published pages; language variants + hreflang are plugin contributions (§7.1)
-- robots.txt generated from admin settings (staging always noindexed, enforced at the provisioning layer via `X-Robots-Tag: noindex` on the staging vhost)
+- Sitemap.xml auto-generated at deploy from all published pages; language variants + hreflang are plugin contributions (§7.1). Each URL lists the library images the page shows (`<image:image>`, never media used only by reference, #1762)
+- robots.txt generated from admin settings (staging always noindexed, enforced at the provisioning layer via `X-Robots-Tag: noindex` on the staging vhost). The Owner's rules may carry the AI training preference token and Cloudflare's Content-Signal line, strictly validated; the `seo` plugin turns a choice per purpose (search, AI answers, training, user fetch) into such rules, proposed through the same gated card (#1758, `docs/dev/robots-rules.md`)
+- A page removed on purpose answers 410 Gone where the hosting provider can serve it without compute, else a clean 404; a removed page that has a redirect keeps it (#1762, `docs/dev/gone-pages.md`)
+- `llms.txt` is optional, off by default: core builds it at the Stage from the indexing state (published, indexable, self-canonical pages, grouped by page type, title, URL and description) when the `seo` plugin's setting asks for it; no Markdown versions of pages (#1763, `docs/dev/llms-txt.md`)
 
 ---
 

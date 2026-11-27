@@ -42,9 +42,26 @@ test("Owner adds robots.txt rules, sees the live file, and a broken line is refu
   await rules.fill("User-agent: *\nSitemap: https://elsewhere.example/sitemap.xml");
   await save.click();
   await expect(
-    page.getByRole("alert").getByText(/only User-agent, Allow and Disallow/),
+    page.getByRole("alert").getByText(/only User-agent, Content-Signal, Allow and Disallow/),
   ).toBeVisible();
   await expect(rules).toHaveValue("User-agent: *\nSitemap: https://elsewhere.example/sitemap.xml");
+
+  // #1758 — the training preference token and a Content-Signal are taken,
+  // shown in the live file, and noted as preferences.
+  await rules.fill(
+    "User-agent: *\nContent-Signal: search=yes, ai-train=no\nAllow: /\n\nUser-agent: __usage_ai-training\nDisallow: /",
+  );
+  await save.click();
+  await expect(page.getByRole("alert").getByText(/robots\.txt rules saved/)).toBeVisible();
+  await page.reload();
+  expect(await page.getByTestId("robots-txt-preview").textContent()).toContain(
+    "User-agent: *\nContent-Signal: search=yes, ai-train=no\nAllow: /\n\nUser-agent: __usage_ai-training\nDisallow: /",
+  );
+  await expect(page.getByTestId("robots-note").first()).toContainText("keeps no crawler out");
+  // A signal with a word it does not know is refused with its line.
+  await rules.fill("User-agent: *\nContent-Signal: train=no\nAllow: /");
+  await save.click();
+  await expect(page.getByRole("alert").getByText(/line 2: Content-Signal names/)).toBeVisible();
 
   // A rule that takes the whole site out of search is said so.
   await rules.fill("User-agent: *\nDisallow: /");

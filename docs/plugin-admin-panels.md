@@ -27,7 +27,7 @@ A panel has a `slug`, `title`, `description`, `icon` (from a fixed set), a
 
 | Kind | What it does |
 |---|---|
-| `table` | Rows from an operation (`rowsKey`), declared `columns` (formats: text, multiline, code, datetime, number, badge, list, json), select `filters`, cursor `paging`, `rowActions` (optional `when` conditions and an optional `review` step), `bulkActions` on selected rows, toolbar `actions`, and a CSV `download`. |
+| `table` | Rows from an operation (`rowsKey`), declared `columns` (formats: text, multiline, code, datetime, number, badge, list, json, and `page`: a page id shown as a link that opens it in the editor), select `filters` (fixed `options`, or an `optionsOperation` whose answer `{ options: [{ value, label }] }`, at most 50, the admin reads on every load, with an `allLabel` for the unfiltered choice: the seo plugin's page types), cursor `paging`, `rowActions` (optional `when` conditions and an optional `review` step), `bulkActions` on selected rows, toolbar `actions`, and a CSV `download`. |
 | `stats` | Labelled numbers, either named `items` or `{label, value}` entries the operation labels itself. |
 | `form` | A blank form submitted once to an operation (e.g. "draft a campaign"). |
 | `settings` | A form pre-filled by `readOperation` and saved by `writeOperation`. |

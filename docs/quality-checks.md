@@ -37,7 +37,32 @@ Every fact has a cap per page, `AUDIT_FACT_LIMITS` in the plugin SDK (links 1,00
 - *The page list crosses once per audit.* A first answer with `batchPages: "own"` (plugin SDK `pluginAuditFindings`) makes every batch call carry only its own pages; the admin adds the audit run's id (`auditRunId`), by which the plugin reads the other pages its rules name through `quality_audits.staged_pages` (by id or by path, at most 1,000 of each per call). The run is the handle: the op derives the answer from the run's state, the published pages of main the way `quality_audits.claim` lists them, and refuses once the run is no longer running; nothing is stored for it and nothing expires. A plugin that does not answer `"own"` gets every page on every batch call, as before. Without it a batch call at 50,000 pages carried about 3.7 MB of page list on top of its facts, sent in upload parts.
 - *Up to `PLUGIN_AUDIT_BATCH_CONCURRENCY` (4) batch calls at once.* The findings are filed in batch order however the calls interleave, and with several failing batches the lowest one's failure is reported, so the result does not depend on the concurrency. A batch call must therefore not depend on another one. Why 4: measured on the scale-gate fixture at 50,000 pages with a 100 ms round trip per report (`scripts/scale-gate/audit-check.ts`, docs/dev/scale-gate.md), the check took 224 s one call at a time, 142 s with 2, 127 s with 4 and 172 s with 8: past 4 the admin answers reports busy (429) and the job sends them again, and on a db-f1-micro (a fifth of a core) more parallel reads only queue next to the editors and agents a Stage does not stop.
 
-**Write hints.** The same plugins can say something earlier: a `writeHintsOperation` (plugin SDK `PluginWriteHintsArgs`) sees every module the AI writes (stored html and fields, read after the write) and every content value it writes, and returns at most five sentences that core appends to the tool result (`ai/tools/_plugin-write-hints.ts`, `plugin-host/src/write-hints.ts`). It runs read-only in the writing chat's scope. A failing plugin is named in the result; the write already happened.
+**Facts on the sandbox wire (epic #1751).** A sandboxed (runtime-installed) plugin gets each call as one message of at most 1 MB (`SANDBOX_MESSAGE_BYTES`), and the caps bound a page, not a batch of 200. So the host cuts a batch call whose facts take more into consecutive calls that each fit (`plugin-host/src/audit-fact-wire.ts`, 64 KB left for the rest of the message), in the order the plugin asked for the pages, each carrying its own pages under `batchPages: "own"`. A page whose facts alone do not fit is cut the way the caps cut it: its largest list loses entries from the end and is named in `truncatedFacts`. A call whose page list alone does not fit is refused with the next step (answer `batchPages: "own"`). An in-process (shipped) plugin has no wire and keeps its batches whole.
+
+**Write hints.** The same plugins can say something earlier: a `writeHintsOperation` (plugin SDK `PluginWriteHintsArgs`) sees every module the AI writes (stored html and fields, read after the write) and every content value it writes, and returns at most five sentences that core appends to the tool result (`ai/tools/_plugin-write-hints.ts`, `plugin-host/src/write-hints.ts`). It runs read-only in the writing chat's scope. A failing plugin is named in the result; the write already happened. Since epic #1751 a plugin may name more kinds of write in `writeHintsKinds` (default `module` and `values`, so a kind core adds later reaches no plugin that does not read it): `page_seo` (the SEO texts `set_page_seo_many`, `autofill_page_seo_many` and `bulk_optimize_seo` set), `media_alt` (`set_media_alt_many`) and `robots_rules` (a robots rules proposal: a gated tool names the writes it proposes in `GatedToolSpec.pluginWrites`, and the plugins' sentences land on the in-chat approval card under their slug).
+
+## The seo plugin's checks (epic #1751, #1757)
+
+Only objective rules are findings; rules of thumb are write hints (maintainer decision 2026-11-26). Every finding is an `error` with a fix tool, filed as `plugin.seo/<rule>` (`packages/plugins/seo/src/rules/`):
+
+| Rule | What it finds | Fix tool |
+|---|---|---|
+| `h1-count` | not exactly one `<h1>` (a cut heading list proves two, never none) | `update_modules_many` |
+| `heading-level-skipped` | a heading more than one level below the one before it (axe `heading-order`) | `update_modules_many` |
+| `heading-empty` | a heading that shows nothing | `update_modules_many` |
+| `image-alt-missing` | an `<img>` without `alt` that is not decorative | `patch_page_module_fields` |
+| `image-alt-filename` | an `alt` that is a file name (`IMG_0042.jpg`) | `patch_page_module_fields` |
+| `link-text-empty` | a link with no text, label or image alt | `update_modules_many` |
+| `link-text-generic` | "click here", "mehr" and the like, as Lighthouse's SEO audit judges link texts | `update_modules_many` |
+| `placeholder-text` | lorem ipsum, a `TODO:` note, `[TBD]`, in the body, the title or the description | `set_page_module_content_many` |
+| `share-image-missing`, `share-image-format` | an indexable page without `og:image`, or with one that is no JPEG or PNG (LinkedIn shows no WebP; core ships a JPEG or PNG original of up to 5 MB as it is) | `set_page_seo_many` |
+| `duplicate-title`, `duplicate-description` | indexable, self-canonical pages that share their `<title>` or meta description (read for all staged pages on the first call, `pages_seo.overview`) | `bulk_optimize_seo` |
+| `noindex-blocked` | a noindex page robots.txt keeps search engines from fetching, so they never read the noindex | `propose_set_site_seo` |
+| `crawler-policy-contradiction` | robots.txt refuses a use (the training token, a `*` Content-Signal) and still lets crawlers of it in (`docs/dev/robots-rules.md`) | `plan_crawler_policy` |
+
+Write hints of the seo plugin, never findings: the `<title>` and description as a result list cuts them (pixel width, Arial at 20 / 14 px, about 580 / 920 px on a desktop), a page unchanged for a year, another page with a similar title, alt text style ("image of", length, two images sharing one alt). The structured data rules (#1756) come with the schema mapping.
+
+Every Stage runs them, a Stage whose changes touch only SEO texts too: the findings checks read every page of every staged build, and only Lighthouse waits for a change that can alter how pages render or perform (`ops/quality/lifecycle.ts`, #727).
 
 The international-site plugin's rules (hreflang, canonical, sitemap, language links, page language, untranslated text, coverage) are listed in its README (`packages/plugins/international-site/README.md`).
 
