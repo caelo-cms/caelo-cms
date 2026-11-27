@@ -140,9 +140,12 @@ part lists the chat's changes in two halves (`chat.list_pending_changes`):
 unstaged (the chat's draft head) and staged, which is what the chat's
 Stages merged at or after the start of the staging build live was copied
 from (`site_snapshots.staged_at`, `notLiveSince` in
-`deploy/release-runs.ts`), read by the chat's own tasks. A Stage takes its
-snapshots out of the draft head, so before #1750 a staged change vanished
-from the chat's list although no Publish live had shipped it.
+`deploy/release-runs.ts`). It lists the newest 100 staged snapshot headers
+and says when older ones are not listed; migration 0915 indexes the read by
+the chat's tasks (shared draft) and by branch (isolated chats), so it costs
+the page it lists. A Stage takes its snapshots out of the draft head, so
+before #1750 a staged change vanished from the chat's list although no
+Publish live had shipped it.
 
 Publish live from the pages list, Settings → Deployments and the
 approval card of `propose_deploy_promote` does not show the review yet

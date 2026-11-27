@@ -22,6 +22,7 @@ import { type ExecutionContext, ok } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { z } from "zod";
 import { listUnpublishedChangesTool } from "../ai/tools/history-tools.js";
+import { STAGED_HEADERS_LISTED } from "../ops/chat/stage.js";
 import type { PublishPreview } from "../ops/deploy-publish-preview.js";
 import { computeRenderFingerprint } from "../ops/quality/render-fingerprint.js";
 import { registerAdminOps } from "../register.js";
@@ -324,5 +325,30 @@ describe("#1750 a staged section script before Publish live", () => {
     expect(p.live?.stagedRunId).toBe(before);
     expect(p.pages.changed.items.map((i) => i.pageId)).toEqual([pages.other]);
     expect(await unpublished(d)).toContain(`staged global module ${PFX}Single`);
+  });
+
+  it("lists the newest staged changes and says when older ones are not listed", async () => {
+    const e = await chat("many-stages");
+    await op(e.ctx, "modules.update", {
+      moduleId: single,
+      js: "/* single, oldest of this Stage */",
+    });
+    for (let i = 0; i < STAGED_HEADERS_LISTED; i += 1) {
+      await op(e.ctx, "modules.update", { moduleId: detection, js: `/* detection v${i + 2} */` });
+    }
+    await stage(e);
+    const newest = await seedModule("newest", "Newest");
+    await op(e.ctx, "modules.update", { moduleId: newest, js: "/* newest */" });
+    await stage(e);
+
+    const v = await op<{
+      staged: { globals: { kind: string; entityId: string }[] };
+      olderStagedNotListed: boolean;
+    }>(SYS, "chat.list_pending_changes", { chatSessionId: e.id });
+    // The newest staged headers: the later Stage's module and the renderer's
+    // edits; the Single edit is older than the page the list reads.
+    expect(v.olderStagedNotListed).toBe(true);
+    expect(v.staged.globals.map((g) => g.entityId).sort()).toEqual([detection, newest].sort());
+    expect(await unpublished(e)).toContain("older changes of this chat are not listed");
   });
 });

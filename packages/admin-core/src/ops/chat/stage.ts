@@ -118,7 +118,10 @@ export const listPendingChangesOp = defineOperation({
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ chatSessionId: z.string().uuid() }).strict(),
-  output: pendingChangesSchema,
+  output: pendingChangesSchema.extend({
+    /** More of the chat's staged changes ship with the next Publish live than `staged` lists. */
+    olderStagedNotListed: z.boolean(),
+  }),
   handler: async (_ctx, input, tx) => {
     const binding = await loadChatBinding(tx, input.chatSessionId);
     if (!binding) {
@@ -134,10 +137,11 @@ export const listPendingChangesOp = defineOperation({
     return ok({
       pending: changes.pending,
       staged: {
-        pages: [...changes.staged.pages, ...staged.staged.pages],
-        globals: [...changes.staged.globals, ...staged.staged.globals],
-        lists: [...changes.staged.lists, ...staged.staged.lists],
+        pages: [...changes.staged.pages, ...staged.changes.staged.pages],
+        globals: [...changes.staged.globals, ...staged.changes.staged.globals],
+        lists: [...changes.staged.lists, ...staged.changes.staged.lists],
       },
+      olderStagedNotListed: staged.olderNotListed,
     });
   },
 });
@@ -418,29 +422,58 @@ const STAGED_ROW_SOURCES: readonly {
   },
 ];
 
+/** Staged snapshot headers a chat's list reads at most, newest first. */
+export const STAGED_HEADERS_LISTED = 100;
+
 /**
- * The `h` CTE (see {@link labelledRowsSql}) of what a chat's Stages merged
- * that live does not serve yet: the chat's headers with `staged_at` at or
- * after `since` (null: nothing is live, every staged header counts), one
- * row per entity at its newest staged state. On the shared draft only the
- * chat's own headers (and its subagents', `caelo_chat_owner`), found by
- * the chat's tasks; an isolated branch belongs to its chat and is read by
- * the branch. Either way the cost is what this chat changed, never the
- * draft's history.
+ * The newest staged headers of a chat that live does not serve yet: those
+ * with `staged_at` at or after `since` (null: nothing is live, every
+ * staged header counts), at most `limit`, newest staged first (one Stage
+ * stamps all its headers with one time; the newer write first). On the
+ * shared draft only the chat's own headers (and its subagents',
+ * `caelo_chat_owner`), found per task; an isolated branch belongs to its
+ * chat and is read by the branch. Both walk an index of migration 0915 in
+ * `staged_at` order and stop at `limit`, so the read costs the page it
+ * lists, never the chat's history or the draft's.
  */
-function stagedNotLiveSql(binding: HeadChat, since: string | null): SQL {
+function stagedHeadersSql(binding: HeadChat, since: string | null, limit: number): SQL {
   const chat = sql`${binding.chatSessionId}::uuid`;
   const notLive = since === null ? sql`` : sql`AND ss.staged_at >= ${since}::timestamptz`;
+  if (binding.kind !== "draft") {
+    return sql`
+      SELECT ss.id::text AS id FROM site_snapshots ss
+       WHERE ss.chat_branch_id = ${binding.branchId}::uuid
+         AND ss.staged_at IS NOT NULL AND ss.undone_at IS NULL ${notLive}
+       ORDER BY ss.staged_at DESC, ss.created_at DESC, ss.id DESC LIMIT ${limit}`;
+  }
   // A draft chat and its subagents write only on the draft, so its tasks
-  // name its headers; the branch column is left out of this arm because
-  // its index would read every chat's history of the shared draft.
-  const mine =
-    binding.kind === "draft"
-      ? sql`ss.chat_task_id IN (
-              SELECT ${chat} UNION ALL
-              SELECT cs.id FROM chat_sessions cs WHERE cs.parent_chat_session_id = ${chat})
-            AND caelo_chat_owner(ss.chat_task_id) = ${chat}`
-      : sql`ss.chat_branch_id = ${binding.branchId}::uuid`;
+  // name its headers; the draft branch's own index would read every
+  // chat's history of the shared draft. The owner is checked per task, not
+  // per header: a per-row function filter makes the planner expect a few
+  // rows and read every staged header of the task instead of the page.
+  return sql`
+    SELECT s.id::text AS id FROM (
+      SELECT t.task FROM (
+        SELECT ${chat} AS task UNION ALL
+        SELECT cs.id FROM chat_sessions cs WHERE cs.parent_chat_session_id = ${chat}
+      ) t
+       WHERE caelo_chat_owner(t.task) = ${chat}
+    ) t
+    CROSS JOIN LATERAL (
+      SELECT ss.id, ss.staged_at, ss.created_at FROM site_snapshots ss
+       WHERE ss.chat_task_id = t.task AND ss.staged_at IS NOT NULL AND ss.undone_at IS NULL
+         ${notLive}
+       ORDER BY ss.staged_at DESC, ss.created_at DESC LIMIT ${limit}
+    ) s
+    ORDER BY s.staged_at DESC, s.created_at DESC, s.id DESC LIMIT ${limit}`;
+}
+
+/**
+ * The `h` CTE (see {@link labelledRowsSql}) of the staged headers
+ * `headerIds` of a chat: one row per entity at its newest staged state.
+ */
+function stagedEntitiesSql(binding: HeadChat, headerIds: readonly string[]): SQL {
+  const chat = sql`${binding.chatSessionId}::uuid`;
   const rows = STAGED_ROW_SOURCES.map(
     (t) => sql`
       SELECT ${t.kind}::text AS kind, x.${sql.raw(t.key)} AS entity_id,
@@ -455,7 +488,7 @@ function stagedNotLiveSql(binding: HeadChat, since: string | null): SQL {
   return sql`
     hd AS (
       SELECT ss.id, ss.op_kind, ss.created_at FROM site_snapshots ss
-       WHERE ${mine} AND ss.staged_at IS NOT NULL AND ss.undone_at IS NULL ${notLive}
+       WHERE ss.id = ANY(${uuidArray(headerIds)})
     ),
     r AS (
       ${sql.join(rows, sql` UNION ALL `)}
@@ -480,18 +513,31 @@ function stagedNotLiveSql(binding: HeadChat, since: string | null): SQL {
  * ships: the `staged` bucket of `chat.list_pending_changes`. A Stage marks
  * the snapshots it merged staged (`site_snapshots.staged_at`), which takes
  * them out of the draft head, so without this a chat's staged change
- * vanished from its own list long before Publish live.
+ * vanished from its own list long before Publish live. The newest
+ * {@link STAGED_HEADERS_LISTED} staged headers are listed;
+ * `olderNotListed` says there are more.
  */
 export async function loadStagedNotLive(
   tx: TransactionRunner,
   binding: HeadChat,
-): Promise<PendingChanges> {
+): Promise<{ changes: PendingChanges; olderNotListed: boolean }> {
   const out = new Map([[binding.chatSessionId, emptyPendingChanges()]]);
-  const rows = (await tx.execute(
-    labelledRowsSql(stagedNotLiveSql(binding, await notLiveSince(tx)), sql`'staged'`),
-  )) as unknown as LabelledRow[];
-  addToBuckets(out, rows);
-  return out.get(binding.chatSessionId) ?? emptyPendingChanges();
+  const headers = (
+    (await tx.execute(
+      stagedHeadersSql(binding, await notLiveSince(tx), STAGED_HEADERS_LISTED + 1),
+    )) as unknown as { id: string }[]
+  ).map((h) => h.id);
+  const listed = headers.slice(0, STAGED_HEADERS_LISTED);
+  if (listed.length > 0) {
+    const rows = (await tx.execute(
+      labelledRowsSql(stagedEntitiesSql(binding, listed), sql`'staged'`),
+    )) as unknown as LabelledRow[];
+    addToBuckets(out, rows);
+  }
+  return {
+    changes: out.get(binding.chatSessionId) ?? emptyPendingChanges(),
+    olderNotListed: headers.length > STAGED_HEADERS_LISTED,
+  };
 }
 
 function toRef(r: LabelledRow): EntityRef {
