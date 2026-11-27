@@ -9,9 +9,16 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { pluginValue } from "./lists/plugin-values.js";
+import { fixtureData, INSTANCE, ITEM, LIST, MODULE, PAGE } from "./lists/list-fixtures.test.js";
+import { pluginLocalList, pluginValue } from "./lists/plugin-values.js";
+import { createListRenderContext } from "./lists/resolve.js";
 import type { NestedRenderResolver } from "./nested-module-render.js";
-import { frameReading, OPEN_MARKUP_RULE, SLOT_PLACEMENT_RULE } from "./page-reading.js";
+import {
+  frameReading,
+  OPEN_MARKUP_RULE,
+  SLOT_PLACEMENT_RULE,
+  templateEndsInContent,
+} from "./page-reading.js";
 import { composePagePreview, composePageWithLayout } from "./preview-compose.js";
 
 const ESCAPE = '<p title="</noscript><img src=x onerror=alert(1)>">Bitte JavaScript aktivieren</p>';
@@ -147,5 +154,158 @@ describe("slots and the page's open parts (#1732 review, round 3)", () => {
     );
     expect(reasons(out)).toEqual([]);
     expect(out.html).toContain("<p>core</p>");
+  });
+});
+
+/**
+ * #1732 review, round 4 — how a module ends is read from where the reading
+ * stands at its end, held against every way a render can differ from that
+ * reading; the refusal of the module's own later values stays as it was.
+ */
+describe("where a module ends (#1732 review, round 4)", () => {
+  // Shapes real modules use: each ends in plain content.
+  const inContent: Record<string, string> = {
+    unquotedAlt: `<img src="{{img}}" alt={{alt}} loading="lazy">`,
+    unquotedClass: `<div class={{variant}}>{{x}}</div>`,
+    commentInComment: `<div><!-- {{! note }} --><p>{{x}}</p></div>`,
+    twoUnquoted: `<img alt={{a}} class={{b}} src="x.png">`,
+    faq: `<section class="faq"><h2>{{heading}}</h2>{{#items}}<details><summary>{{question}}</summary><div>{{answer}}</div></details>{{/items}}</section>`,
+    pricing: `<table class="pricing"><thead><tr><th>Plan</th><th>Preis</th></tr></thead><tbody>{{#plans}}<tr><td>{{name}}</td><td>{{price}}</td></tr>{{/plans}}</tbody></table>`,
+    svgIcon: `<a class="cta" href="{{cta.href}}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg> {{label}}</a>`,
+    svgThenText: `<span><svg viewBox="0 0 24 24"><path d="M5 12h14"></svg>Weiter</span>`,
+    unclosedP: `<p class="lead">{{intro}}`,
+    unclosedLi: `<ul>{{#items}}<li>{{label}}{{/items}}`,
+    selectActive: `<select aria-label="Sprache">{{#langs}}<option value="{{code}}"{{#active}} selected{{/active}}>{{name}}</option>{{/langs}}</select>`,
+    iframe: `<div class="video"><iframe src="https://www.youtube-nocookie.com/embed/{{video_id}}" title="{{title}}" allowfullscreen></iframe></div>`,
+    form: `<form class="newsletter" action="/api/x"><label>E-Mail <input type="email" name="email" placeholder="{{placeholder}}"></label><button>{{button}}</button></form>`,
+    trailingComment: `<div>{{x}}</div><!-- end of hero -->`,
+    trailingScript: `<div id="c">{{x}}</div><script>document.getElementById('c').dataset.ready='1'</script>`,
+    sectionAttributes: `<a href="{{link}}" {{#external}}target="_blank" rel="noopener"{{/external}}>{{label}}</a>`,
+    math: `<p>Formel: <math><mi>x</mi><mo>=</mo><mn>{{n}}</mn></math></p>`,
+    dialog: `<dialog id="d"><p>{{text}}</p><form method="dialog"><button>OK</button></form></dialog>`,
+    picture: `<picture><source srcset="{{img}} 1x"><img src="{{img}}" alt="{{alt}}"></picture>`,
+    video: `<video controls poster="{{poster}}"><source src="{{src}}" type="video/mp4"></video>`,
+    template: `<template id="row"><li>{{label}}</li></template><ul></ul>`,
+    noscriptImg: `<noscript><img src="{{pixel}}" alt=""></noscript>`,
+    textarea: `<textarea name="msg" placeholder="{{ph}}"></textarea>`,
+    mustacheComment: `<div>{{! layout hint }}<p>{{x}}</p></div>`,
+    tableNoTbody: `<table><tr><td>{{a}}</td></tr></table><p>{{b}}</p>`,
+    partial: `<div class="wrap">{{>teaser}}</div>`,
+    hN: `<h{{n}}>{{x}}</h{{n}}>`,
+  };
+  // Each ends outside content, in this reading or in a render.
+  const outside: Record<string, string> = {
+    svgOpen: `<div><svg viewBox="0 0 10 10"><circle r="4"/>`,
+    // Empty, `class=` takes `title="a` and the tag ends at its `>`.
+    emptyValueMovesTagEnd: `<div class={{v}} title="a ><noscript>">x</div>`,
+    emptyValueMovesTagEndSingle: `<img alt={{a}} data-x='p >'><textarea>`,
+    sectionLeavesOpen: `<textarea>{{#a}}</textarea>{{/a}}`,
+    partialInRawText: `<textarea>{{>c}}<noscript></textarea>`,
+    endTagValue: `<textarea></{{e}}><noscript></textarea>`,
+    startTagValue: `<{{t}}>x</{{t}}>`,
+    delimiters: `{{=<% %>=}}<p><%x%></p>`,
+    unclosedSection: `{{#a}}<p>x</p>`,
+    // No tag at all: a browser keeps the `<noscript>` in the `<select>`.
+    selectWithoutTags: `<select><div><noscript></select>`,
+  };
+
+  it("1: reads every shape real modules use as ending in content", () => {
+    const wrong = Object.entries(inContent).filter(([, html]) => !templateEndsInContent(html));
+    expect(wrong.map(([name]) => name)).toEqual([]);
+  });
+
+  it("1: still reads a module that ends, or may end, outside content as open", () => {
+    const wrong = Object.entries(outside).filter(([, html]) => templateEndsInContent(html));
+    expect(wrong.map(([name]) => name)).toEqual([]);
+  });
+
+  it("1: an unquoted value refuses its own module's later plugin values, not the page's", () => {
+    const layout =
+      '<main><caelo-slot name="content"></caelo-slot></main><footer><caelo-slot name="foot"></caelo-slot></footer>';
+    const image = {
+      ...notice(owned("Titel", "text"), "m-img", '<img src="/a.png" alt={{alt}} title="{{body}}">'),
+      fields: [
+        { name: "alt", kind: "text" as const },
+        { name: "body", kind: "text" as const },
+      ],
+      contentValues: { alt: "Bild", body: owned("Titel", "text") },
+    };
+    const out = page(
+      layout,
+      [{ blockName: "foot", modules: [notice(owned("<p>Fuß</p>"))] }],
+      image,
+    );
+    expect(reasons(out)).toEqual([refused("context-conditional-markup")]);
+    expect(out.html).toContain("<p>Fuß</p>");
+  });
+
+  // The teaser a mega menu's promo entry embeds ends in an open <noscript>.
+  const teaser: NestedRenderResolver = {
+    getModule: (moduleId) =>
+      moduleId === MODULE.teaser
+        ? {
+            moduleId,
+            slug: "teaser",
+            html: '<div class="teaser"><noscript>Bitte JS aktivieren',
+            css: "",
+            js: "",
+            fields: [],
+          }
+        : null,
+    getContentInstance: (id) =>
+      id === INSTANCE.teaser ? { id, moduleId: MODULE.teaser, values: {}, deletedAt: null } : null,
+  };
+  const navWith = (field: Record<string, unknown>, value?: unknown) => ({
+    ...notice(owned(ESCAPE), "m-nav"),
+    html: '<nav>{{#mega}}{{#columns}}{{>teaser}}{{/columns}}{{/mega}}</nav><div class="hint">{{body}}</div>',
+    fields: [
+      { name: "mega", kind: "list" as const, listType: "mega-menu", ...field },
+      { name: "body", kind: "richtext" as const },
+    ],
+    contentValues: { body: owned(ESCAPE), ...(value === undefined ? {} : { mega: value }) },
+  });
+  const composeNav = (module: ReturnType<typeof navWith>) =>
+    composePageWithLayout({
+      layoutHtml: '<main><caelo-slot name="content"></caelo-slot></main>',
+      layoutCss: "",
+      layoutBlocks: [],
+      templateHtml: '<caelo-slot name="content"></caelo-slot>',
+      templateCss: "",
+      blocks: [{ blockName: "content", modules: [module] as ReturnType<typeof notice>[] }],
+      lists: createListRenderContext(fixtureData()).forPage(PAGE.home, {}),
+      nestedModules: teaser,
+    });
+
+  it("2: a module a shared list entry embeds is read too", () => {
+    const out = composeNav(navWith({ bind: "shared", list: `caelo:list/${LIST.mega}` }));
+    expect(out.html).toContain("<noscript>Bitte JS aktivieren");
+    expect(reasons(out)).toContain(refused(OPEN_MARKUP_RULE));
+    expect(out.html).not.toContain("onerror=alert(1)>");
+    expect(out.openMarkup).toBe(true);
+  });
+
+  it("2: so is one a content variant's local list embeds", () => {
+    const entries = [
+      {
+        id: ITEM.products,
+        node: "entry",
+        values: { label: "Produkte" },
+        children: [
+          {
+            id: ITEM.promo,
+            node: "promo",
+            values: {
+              title: "Neu",
+              teaser: { moduleId: MODULE.teaser, contentInstanceId: INSTANCE.teaser },
+            },
+          },
+        ],
+      },
+    ];
+    const variant = pluginLocalList({ plugin: "evil", address: "page:content:0/mega" }, entries);
+    const out = composeNav(navWith({}, variant));
+    expect(out.html).toContain("<noscript>Bitte JS aktivieren");
+    expect(reasons(out)).toContain(refused(OPEN_MARKUP_RULE));
+    expect(out.html).not.toContain("onerror=alert(1)>");
   });
 });

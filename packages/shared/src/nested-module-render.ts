@@ -568,37 +568,6 @@ export function renderPlacedModule(
 }
 
 /**
- * #1729 — the templates of every module nested (at any depth) in a module
- * with these values, found through `resolver` before rendering: what
- * `page-reading.ts` needs to know whether one of them ends outside content.
- * Every reference in the values counts, rendered or not (the wider set is
- * the safe one).
- */
-export function nestedModuleTemplates(
-  values: Readonly<Record<string, unknown>>,
-  resolver: NestedRenderResolver,
-): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  const queue: { readonly values: Readonly<Record<string, unknown>>; readonly depth: number }[] = [
-    { values, depth: 0 },
-  ];
-  for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-    if (next.depth >= MAX_RECURSION_DEPTH) continue;
-    for (const ref of collectNestedRefs(next.values)) {
-      const key = `${ref.moduleId}/${ref.contentInstanceId}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const mod = resolver.getModule(ref.moduleId);
-      if (mod) out.push(mod.html);
-      const ci = resolver.getContentInstance(ref.contentInstanceId);
-      if (ci) queue.push({ values: ci.values, depth: next.depth + 1 });
-    }
-  }
-  return out;
-}
-
-/**
  * Walk a content_instance's values to find every nested-module reference
  * it carries: `module` / `module-list` values and the `module` fields of
  * local list entries at any depth (`{ id, node, values, children }`).

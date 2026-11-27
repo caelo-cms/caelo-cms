@@ -55,6 +55,7 @@ import {
   uuidArray,
 } from "@caelo-cms/query-api";
 import {
+  anyEndsOutsideContent,
   applyDocumentLanguage,
   buildMediaUrl,
   ComposeError,
@@ -76,13 +77,12 @@ import {
   listThemeCssVarNames,
   type NestedModuleResource,
   type NestedRenderResolver,
-  nestedModuleTemplates,
   ok,
   type PaginationRequest,
   pagedPath,
   pagedUrl,
+  pageFrame,
   pageListOverlayScope,
-  pagePlacement,
   paginationMarkers,
   parsePagedPath,
   type Result,
@@ -496,7 +496,17 @@ async function renderPreview(
   // #1257 — one render of the page body. A paginated overview may render
   // twice (the pager came before the list, or a follow-up page is asked
   // for): see `renderFirstPage` in shared `lists/paginated-render.ts`.
-  const renderBody = async (pagination?: PaginationRequest) => {
+  const renderBody = async (
+    pagination?: PaginationRequest,
+    /** #1729 — part of the page ends outside content: refuse every plugin value. */
+    refuseAll = false,
+  ): Promise<{
+    lists: ReturnType<typeof listContext.forPage>;
+    composed: ReturnType<typeof composePageWithLayout>;
+    pageLinkMarkers: string[];
+    pageListMarkers: string[];
+    fieldPathMarkers: string[];
+  }> => {
     const lists = listContext.forPage(pageId, {
       linkResolver,
       pluginSources: resolvedSources.get(pageId) ?? {},
@@ -514,26 +524,15 @@ async function renderPreview(
     const fieldPathMarkers: string[] = [];
     // #1729 — where the page's modules stand, for their plugins' values:
     // a slot outside plain content, or a part of the page that ends
-    // outside it, refuses them (shared page-reading.ts). The composer
-    // renders the layout modules under the same verdict.
-    const placedHtml: string[] = [];
-    for (const m of modRows) {
-      const binding = placementBindings.get(`${m.block_name}#${m.position}`);
-      if (!binding) continue;
-      const mod = moduleByIdResource.get(m.module_id);
-      if (mod) placedHtml.push(mod.html);
-      const ci = instanceByIdResource.get(binding.contentInstanceId);
-      if (ci) placedHtml.push(...nestedModuleTemplates(ci.values, resolver));
-    }
-    for (const lm of layoutBlocks.flatMap((b) => b.modules)) {
-      placedHtml.push(lm.html);
-      if (lm.contentValues) placedHtml.push(...nestedModuleTemplates(lm.contentValues, resolver));
-    }
-    const placement = pagePlacement({
+    // outside it, refuses them (shared page-reading.ts). The templates the
+    // render used are the renderer's own (every module it touched, through
+    // any field or list entry); the composer does the same for the layout's.
+    const frame = pageFrame({
       templateHtml: pageRow.template_html,
       layoutHtml: pageRow.layout_html,
-      moduleHtml: placedHtml,
     });
+    const open = refuseAll || frame.open;
+    const pageTemplates: string[] = [];
     for (const m of modRows) {
       const key = `${m.block_name}#${m.position}`;
       const binding = placementBindings.get(key);
@@ -549,8 +548,12 @@ async function renderPreview(
         renderThemeAssets,
         lists,
         linkResolver,
-        placement.refusalFor(m.block_name, false),
+        frame.refusalFor(m.block_name, false, open),
       );
+      for (const id of result.touchedModuleIds) {
+        const used = resolver.getModule(id);
+        if (used) pageTemplates.push(used.html);
+      }
       const html = markers
         ? finalizeEditMarkers(
             result.html,
@@ -662,8 +665,11 @@ async function renderPreview(
       layoutBlocks,
       layoutSlug: pageRow.layout_slug,
       linkResolver,
-      refusePluginValues: placement.refuseAll,
+      refusePluginValues: open || anyEndsOutsideContent(pageTemplates),
     });
+    // A layout module, or a page module, ends outside content: render the
+    // page modules again, refusing their plugin values too.
+    if (!open && composed.openMarkup) return renderBody(pagination, true);
     return { lists, composed, pageLinkMarkers, pageListMarkers, fieldPathMarkers };
   };
   let body = await renderBody();

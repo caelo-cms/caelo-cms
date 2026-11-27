@@ -116,53 +116,56 @@ function slotsOutside(html: string): Set<string> {
 }
 
 /**
- * The refusal a page's plugin values get, if any: a part of the page that
- * ends outside content refuses all of them, a slot outside content the
- * ones of the modules it holds.
+ * Where a page's frame (its layout and template) puts the modules, for
+ * their plugins' values.
  */
-export interface PagePlacement {
-  /** Every plugin value on the page is refused with {@link OPEN_MARKUP_RULE}. */
-  readonly refuseAll: boolean;
-  /** The rule for a module in `block` (a template block, or a layout block when `inLayout`), or undefined. */
-  refusalFor(block: string, inLayout: boolean): string | undefined;
+export interface PageFrame {
+  /**
+   * The template ends outside plain content inside the layout, so the
+   * layout's later parts read otherwise: every plugin value on the page is
+   * refused.
+   */
+  readonly open: boolean;
+  /**
+   * The rule a module in `block` (a template block, or a layout block when
+   * `inLayout`) refuses its plugin values with, or undefined. `open`: a
+   * part of the page ends outside content, so every module refuses them.
+   */
+  refusalFor(block: string, inLayout: boolean, open: boolean): string | undefined;
 }
 
-/**
- * What the page's frame and its modules' templates say about where the
- * modules' plugin values may stand.
- *
- * @param moduleHtml the html of every module the page places (a template,
- *   or an already rendered module's output), its nested modules' included
- *   when they are known.
- * @param refuseAll set when the caller already knows the page ends outside
- *   content somewhere (a nested module found open after a first render).
- */
-export function pagePlacement(input: {
+/** How the page's layout (when it has one) and template place its modules. */
+export function pageFrame(input: {
   readonly templateHtml: string;
   readonly layoutHtml?: string;
-  readonly moduleHtml: Iterable<string>;
-  readonly refuseAll?: boolean;
-}): PagePlacement {
+}): PageFrame {
   const template = frameReading(input.templateHtml);
   const layout = input.layoutHtml !== undefined ? frameReading(input.layoutHtml) : null;
-  let refuseAll = input.refuseAll === true || (layout !== null && !template.endsInContent);
-  if (!refuseAll) {
-    for (const html of input.moduleHtml) {
-      if (!templateEndsInContent(html)) {
-        refuseAll = true;
-        break;
-      }
-    }
-  }
   const contentOutside = layout?.slotsOutside.has("content") ?? false;
+  const frameOpen = layout !== null && !template.endsInContent;
   return {
-    refuseAll,
-    refusalFor(block, inLayout) {
-      if (refuseAll) return OPEN_MARKUP_RULE;
+    open: frameOpen,
+    refusalFor(block, inLayout, open) {
+      if (open || frameOpen) return OPEN_MARKUP_RULE;
       const outside = inLayout
         ? (layout?.slotsOutside.has(block) ?? false)
         : contentOutside || template.slotsOutside.has(block);
       return outside ? SLOT_PLACEMENT_RULE : undefined;
     },
   };
+}
+
+/**
+ * Whether one of the templates a page's render used ends outside plain
+ * content. The caller passes what the renderer itself rendered: each
+ * placed module's template and the template of every module the render
+ * embedded at any depth, whatever carried the reference (a `module` field,
+ * a module list, a shared or local list entry, a plugin list source, a
+ * content variant), as the renderer reports them. When one does, the
+ * page is rendered again with every plugin value refused
+ * ({@link OPEN_MARKUP_RULE}).
+ */
+export function anyEndsOutsideContent(templates: Iterable<string>): boolean {
+  for (const html of templates) if (!templateEndsInContent(html)) return true;
+  return false;
 }

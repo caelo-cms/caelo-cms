@@ -14,6 +14,9 @@
  *   checked prose renders translated.
  * - A variant naming a module that does not exist on the render's branch
  *   is flagged instead of rendering the stored chrome.
+ * - A page whose module embeds, through a shared list's entry, a module
+ *   that ends in an open `<noscript>` refuses every variant value on the
+ *   page (`context-open-markup`, #1732 review round 4).
  * - Adversarial: an answer for a page it was not asked about, a module swap
  *   on a page placement, an answer over the cap and a plugin past its
  *   preview budget.
@@ -114,12 +117,19 @@ beforeAll(async () => {
 afterAll(async () => {
   resetPluginHost();
   await flow.dropRows();
+  await flow.call("lists.delete_many", { slugs: [`${PFX}-promos`] }).catch(() => undefined);
+  await flow.call("list_types.delete_many", { slugs: [`${PFX}-promo`] }).catch(() => undefined);
   await rm(pluginsRoot, { recursive: true, force: true });
   await adapter.close();
 });
 
 /** A layout whose chrome block holds one module, and a page on it with `mode`. */
-async function chromePages(): Promise<{ translated: string; swapped: string; deleted: string }> {
+async function chromePages(): Promise<{
+  translated: string;
+  swapped: string;
+  deleted: string;
+  templateId: string;
+}> {
   const { layoutId, templateId } = await flow.template("chrome");
   const { moduleId } = (await flow.call("modules.create", {
     slug: `${PFX}-chrome`,
@@ -154,6 +164,7 @@ async function chromePages(): Promise<{ translated: string; swapped: string; del
     translated: await page("translated", { mode: "translate" }),
     swapped: await page("swapped", { mode: "swap-deleted", target: gone }),
     deleted: gone,
+    templateId,
   };
 }
 
@@ -200,6 +211,72 @@ describe("#1729 — a runtime-installed plugin gives pages their own chrome", ()
       `renders module ${pages.deleted}, which does not exist`,
     );
   }, 60_000);
+
+  it("refuses every variant value on a page a list-embedded module leaves open", async () => {
+    const { templateId } = pages;
+    const { moduleId: open } = (await flow.call("modules.create", {
+      slug: `${PFX}-open`,
+      displayName: `${PFX} open`,
+      html: '<div class="teaser"><noscript>Bitte JS aktivieren',
+    })) as { moduleId: string };
+    const { contentInstanceId } = (await flow.call("content_instances.create", {
+      moduleId: open,
+      values: {},
+    })) as { contentInstanceId: string };
+    await flow.call("list_types.upsert_many", {
+      listTypes: [
+        {
+          slug: `${PFX}-promo`,
+          name: "Promos",
+          purpose: "Teasers a page shows",
+          role: "content",
+          root: { allow: ["promo"] },
+          nodes: {
+            promo: {
+              label: "Promo",
+              fields: [{ name: "teaser", label: "Teaser", type: "module" }],
+            },
+          },
+        },
+      ],
+    });
+    const { lists } = (await flow.call("lists.upsert_many", {
+      lists: [
+        {
+          slug: `${PFX}-promos`,
+          name: "Promos",
+          purpose: "Teasers a page shows",
+          type: `${PFX}-promo`,
+          items: [{ node: "promo", values: { teaser: { moduleId: open, contentInstanceId } } }],
+        },
+      ],
+    })) as { lists: { id: string }[] };
+    const pageId = await flow.page(
+      templateId,
+      "open",
+      "<p>{{mode}}</p>{{#promos}}{{>teaser}}{{/promos}}",
+      [
+        { name: "mode", kind: "text", label: "Mode" },
+        {
+          name: "promos",
+          kind: "list",
+          listType: `${PFX}-promo`,
+          bind: "shared",
+          list: `caelo:list/${lists[0]?.id}`,
+          label: "Promos",
+        },
+      ],
+      { mode: "translate" },
+    );
+    const preview = await flow.preview(pageId);
+    expect(preview.html).toContain("<noscript>Bitte JS aktivieren");
+    // The chrome's translated prose no longer renders: the page reads
+    // otherwise after the open <noscript>.
+    expect(preview.html).not.toContain("Willkommen");
+    expect(preview.missingSlots).toContain(
+      `plugin-value-refused:${SLUG}.content-variants.layout:chrome:0/intro:context-open-markup`,
+    );
+  }, 120_000);
 
   const placement = (key: string, scope: "layout" | "page"): ContentVariantPlacement => ({
     key,

@@ -217,8 +217,16 @@ function computeContexts(html: string): PlaceholderContexts {
   const byStart = new Map<number, PlaceholderContext>();
   const markers = markerSet(html);
   if (tags.length === 0) {
-    const end = placesOf(parseBody(`${html}${markers.mark(0)}`), markers).get(0);
-    return { byStart, nestedOutsideContent: new Set(), endsInContent: isPlainContent(end) };
+    const text = `${html}${markers.mark(0)}`;
+    const root = parseBody(text);
+    return {
+      byStart,
+      nestedOutsideContent: new Set(),
+      // A browser keeps markup in a `<select>` that this reading drops.
+      endsInContent:
+        isPlainContent(placesOf(root, markers).get(0)) &&
+        selectDivergence(root, text) === Number.POSITIVE_INFINITY,
+    };
   }
 
   const values = readValues(html, tags, markers);
@@ -242,7 +250,10 @@ function computeContexts(html: string): PlaceholderContexts {
   return {
     byStart,
     nestedOutsideContent,
-    endsInContent: values.endsInContent && unsafeFrom === Number.POSITIVE_INFINITY,
+    // Where the reading of the end marker holds in every render (not where
+    // the value rules stop trusting the reading: a value after an unquoted
+    // `alt={{alt}}` is refused, but the module still ends where it ends).
+    endsInContent: values.endsInContent && values.endHolds && sections.endHolds,
   };
 }
 
@@ -473,8 +484,14 @@ function readValues(
 ): {
   readonly contexts: Map<number, PlaceholderContext>;
   readonly unsafeFrom: number;
-  /** The template ends in plain HTML content (see {@link endsInContent}). */
+  /** The end marker reads as plain HTML content (see {@link isPlainContent}). */
   readonly endsInContent: boolean;
+  /**
+   * No render ends elsewhere than this reading: no markup in a `<select>`,
+   * no value naming an element that could change the reading, and no
+   * unquoted value that renders empty moves the end of its tag.
+   */
+  readonly endHolds: boolean;
 } {
   let text = "";
   const segments: Segment[] = [];
@@ -541,6 +558,12 @@ function readValues(
   let unsafeFrom = selectDivergence(root, text);
   if (unsafeFrom !== Number.POSITIVE_INFINITY) unsafeFrom = toTemplate(unsafeFrom);
   unsafeFrom = Math.min(unsafeFrom, endTagNameValues(html, tags));
+  // Each of those can end a render elsewhere: a browser keeps markup in a
+  // `<select>` that this reading drops, and an end tag a value names may
+  // close raw text this reading keeps open.
+  let endHolds = unsafeFrom === Number.POSITIVE_INFINITY;
+  // Per start tag, the unquoted values that may render empty.
+  const emptyable = new Map<Element, Map<number, number>>();
   for (const [i, tag] of tags.entries()) {
     if (tag.kind !== "value") continue;
     const found = places.get(i) ?? [];
@@ -548,10 +571,20 @@ function readValues(
     for (const place of found) {
       if (place.at === "tag-name" && couldChangeReading(place.element.tagName, markers)) {
         unsafeFrom = Math.min(unsafeFrom, tag.start);
+        endHolds = false;
       }
       if (place.at === "attr-value" && valueIsOnlyTags(place.attribute, markers, text, place)) {
         // It may render empty: the browser then takes the next attribute as this value.
         unsafeFrom = Math.min(unsafeFrom, tag.start);
+        const loc = attributeLocation(place.element, place.attribute);
+        const span = loc ? attributeValueSpan(text, loc.startOffset, loc.endOffset) : null;
+        if (span) {
+          const ranges = emptyable.get(place.element) ?? new Map<number, number>();
+          ranges.set(span.valueStart, span.valueEnd);
+          emptyable.set(place.element, ranges);
+        } else {
+          endHolds = false;
+        }
       }
       read.push(valueContext(place, tag, { html, tags, text, toTemplate, endToTemplate, markers }));
     }
@@ -563,7 +596,42 @@ function readValues(
         : refusal("context-markup"),
     );
   }
-  return { contexts, unsafeFrom, endsInContent: isPlainContent(places.get(end)) };
+  for (const [element, ranges] of emptyable) {
+    if (!tagEndHolds(text, element, ranges)) endHolds = false;
+  }
+  return { contexts, unsafeFrom, endsInContent: isPlainContent(places.get(end)), endHolds };
+}
+
+/** More unquoted values that may render empty in one start tag than this are not tried one by one. */
+const MAX_EMPTYABLE_PER_TAG = 4;
+
+/**
+ * Whether `element`'s start tag ends where it does in this reading however
+ * many of its unquoted values (`ranges`: value start to end in `text`)
+ * render empty. An empty one makes the next attribute its value
+ * (`alt= loading="lazy"`), which moves the end of the tag only when a `>`
+ * or a quote in what follows then reads otherwise; everything after a tag
+ * that ends in the same place reads the same.
+ */
+function tagEndHolds(text: string, element: Element, ranges: ReadonlyMap<number, number>): boolean {
+  const loc = element.sourceCodeLocation?.startTag;
+  if (!loc || ranges.size > MAX_EMPTYABLE_PER_TAG) return false;
+  const src = text.slice(loc.startOffset, loc.endOffset);
+  const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
+  for (let mask = 1; mask < 1 << sorted.length; mask += 1) {
+    let variant = "";
+    let at = 0;
+    for (const [k, [from, to]] of sorted.entries()) {
+      if ((mask & (1 << k)) === 0) continue;
+      variant += src.slice(at, from - loc.startOffset);
+      at = to - loc.startOffset;
+    }
+    variant += src.slice(at);
+    // One start tag, ending where the source ends (an unfinished one is no token).
+    const tokens = htmlTokens(variant);
+    if (tokens.length !== 1 || tokens[0]?.kind !== "start") return false;
+  }
+  return true;
 }
 
 /**
@@ -805,9 +873,20 @@ function sectionsUnsafeFrom(
   html: string,
   tags: readonly MustacheSpan[],
   markers: MarkerSet,
-): { readonly from: number; readonly outside: readonly string[] } {
+): {
+  readonly from: number;
+  readonly outside: readonly string[];
+  /**
+   * Every render ends where the values reading ends: each section keeps
+   * what follows it, and every partial stands in plain content. A
+   * `{{! }}` renders nothing, so it changes no render's end.
+   */
+  readonly endHolds: boolean;
+} {
   const boundary = (k: TagKind) => k !== "value";
-  if (!tags.some((t) => boundary(t.kind))) return { from: Number.POSITIVE_INFINITY, outside: [] };
+  if (!tags.some((t) => boundary(t.kind))) {
+    return { from: Number.POSITIVE_INFINITY, outside: [], endHolds: true };
+  }
 
   // First reading: which boundary markers end a name (`<li{{#a}}`, the
   // valueless `disabled{{/a}}`, an unquoted `x=1{{/a}}`).
@@ -879,6 +958,7 @@ function sectionsUnsafeFrom(
   };
 
   let from = Number.POSITIVE_INFINITY;
+  let endHolds = true;
   // Where a nested module renders: a partial's place, a section's (a module list).
   const outside: string[] = [];
   const nestedAt = (tag: MustacheSpan, k: Boundary | null) => {
@@ -897,8 +977,11 @@ function sectionsUnsafeFrom(
       }
       case "close": {
         const o = open.pop();
-        if (o === undefined) return { from: 0, outside };
-        if (!sectionKeeps(html, o.key, key(i), o.tag, tag)) from = Math.min(from, o.tag.start);
+        if (o === undefined) return { from: 0, outside, endHolds: false };
+        if (!sectionKeeps(html, o.key, key(i), o.tag, tag)) {
+          from = Math.min(from, o.tag.start);
+          endHolds = false;
+        }
         break;
       }
       case "comment": {
@@ -910,16 +993,24 @@ function sectionsUnsafeFrom(
       case "partial": {
         const k = key(i);
         nestedAt(tag, k);
-        if (k?.key !== "text:html:-") from = Math.min(from, tag.start);
+        if (k?.key !== "text:html:-") {
+          // Its module's markup may end the raw text or the value it stands in.
+          from = Math.min(from, tag.start);
+          endHolds = false;
+        }
         break;
       }
       case "delimiters":
         from = Math.min(from, tag.start);
+        endHolds = false;
         break;
     }
   }
-  for (const o of open) from = Math.min(from, o.tag.start);
-  return { from, outside };
+  for (const o of open) {
+    from = Math.min(from, o.tag.start);
+    endHolds = false;
+  }
+  return { from, outside, endHolds };
 }
 
 /**
