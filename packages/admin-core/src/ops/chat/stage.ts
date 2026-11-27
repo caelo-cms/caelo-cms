@@ -429,30 +429,26 @@ export const STAGED_HEADERS_LISTED = 100;
  * The newest staged headers of a chat that live does not serve yet: those
  * with `staged_at` at or after `since` (null: nothing is live, every
  * staged header counts), at most `limit`, newest staged first (one Stage
- * stamps all its headers with one time; the newer write first). On the
- * shared draft only the chat's own headers (and its subagents',
- * `caelo_chat_owner`), found per task; an isolated branch belongs to its
- * chat and is read by the branch. Both walk an index of migration 0915 in
- * `staged_at` order and stop at `limit`, so the read costs the page it
- * lists, never the chat's history or the draft's.
+ * stamps all its headers with one time; the newer write first).
+ *
+ * The chat's own headers and its subagents' (`caelo_chat_owner`), found
+ * per task on whatever branch they were written: a chat that staged on the
+ * shared draft and then moved to an isolated branch (`chat.isolate_session`,
+ * a site import) keeps its staged draft changes. An isolated branch belongs
+ * to its chat, so on one every staged header of the branch counts too,
+ * whoever wrote it. Each read walks an index of migration 0915 in
+ * `staged_at` order and stops at `limit`, so the read costs the page it
+ * lists, never the chat's history or the shared draft's.
  */
 function stagedHeadersSql(binding: HeadChat, since: string | null, limit: number): SQL {
   const chat = sql`${binding.chatSessionId}::uuid`;
   const notLive = since === null ? sql`` : sql`AND ss.staged_at >= ${since}::timestamptz`;
-  if (binding.kind !== "draft") {
-    return sql`
-      SELECT ss.id::text AS id FROM site_snapshots ss
-       WHERE ss.chat_branch_id = ${binding.branchId}::uuid
-         AND ss.staged_at IS NOT NULL AND ss.undone_at IS NULL ${notLive}
-       ORDER BY ss.staged_at DESC, ss.created_at DESC, ss.id DESC LIMIT ${limit}`;
-  }
-  // A draft chat and its subagents write only on the draft, so its tasks
-  // name its headers; the draft branch's own index would read every
-  // chat's history of the shared draft. The owner is checked per task, not
-  // per header: a per-row function filter makes the planner expect a few
-  // rows and read every staged header of the task instead of the page.
-  return sql`
-    SELECT s.id::text AS id FROM (
+  // The owner is checked per task, not per header: a per-row function
+  // filter makes the planner expect a few rows and read every staged
+  // header of the task instead of the page. The draft branch's own index
+  // would read every chat's history of the shared draft.
+  const byTask = sql`
+    SELECT s.id, s.staged_at, s.created_at FROM (
       SELECT t.task FROM (
         SELECT ${chat} AS task UNION ALL
         SELECT cs.id FROM chat_sessions cs WHERE cs.parent_chat_session_id = ${chat}
@@ -464,8 +460,20 @@ function stagedHeadersSql(binding: HeadChat, since: string | null, limit: number
        WHERE ss.chat_task_id = t.task AND ss.staged_at IS NOT NULL AND ss.undone_at IS NULL
          ${notLive}
        ORDER BY ss.staged_at DESC, ss.created_at DESC LIMIT ${limit}
-    ) s
-    ORDER BY s.staged_at DESC, s.created_at DESC, s.id DESC LIMIT ${limit}`;
+    ) s`;
+  const byBranch =
+    binding.kind === "draft"
+      ? sql``
+      : sql`
+    UNION (
+      SELECT ss.id, ss.staged_at, ss.created_at FROM site_snapshots ss
+       WHERE ss.chat_branch_id = ${binding.branchId}::uuid
+         AND ss.staged_at IS NOT NULL AND ss.undone_at IS NULL ${notLive}
+       ORDER BY ss.staged_at DESC, ss.created_at DESC LIMIT ${limit}
+    )`;
+  return sql`
+    SELECT u.id::text AS id FROM ((${byTask}) ${byBranch}) u
+     ORDER BY u.staged_at DESC, u.created_at DESC, u.id DESC LIMIT ${limit}`;
 }
 
 /**

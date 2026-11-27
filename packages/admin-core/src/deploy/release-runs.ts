@@ -89,22 +89,30 @@ export async function liveSourceBuild(
 /**
  * Since when a Stage's merge is not live yet: what a Stage merged at or
  * after this moment (`site_snapshots.staged_at`) reaches visitors only
- * with the next Publish live. The start of the staging build live was
- * copied from (a merge after it is not in that build), or of an Owner's
- * direct production build (it built main as it was then). Null when
- * nothing is live on the default targets yet: every staged change is
- * still to be published.
+ * with the next Publish live. It is the start of the build that rendered
+ * what live serves (the run its `build_id` names): the staging build a
+ * Publish live copied, or an Owner's direct production build, which built
+ * main as it was then; a merge after that start is not in it. A rollback
+ * names the restored run's build, so it dates from that build too, not
+ * from the rollback. Null when nothing is live on the default production
+ * target yet: every staged change is still to be published.
  */
 export async function notLiveSince(tx: TransactionRunner): Promise<string | null> {
   const targets = (await tx.execute(sql`
-    SELECT id::text AS id, name FROM deploy_targets
-     WHERE name IN (${DEFAULT_STAGING_TARGET}, ${DEFAULT_PRODUCTION_TARGET})
-  `)) as unknown as { id: string; name: string }[];
-  const production = targets.find((t) => t.name === DEFAULT_PRODUCTION_TARGET);
-  const staging = targets.find((t) => t.name === DEFAULT_STAGING_TARGET);
+    SELECT id::text AS id FROM deploy_targets WHERE name = ${DEFAULT_PRODUCTION_TARGET}
+  `)) as unknown as { id: string }[];
+  const production = targets[0];
   const live = production ? await liveSiteBuild(tx, production.id) : undefined;
   if (!live) return null;
-  const source = staging ? await liveSourceBuild(tx, live, staging.id) : undefined;
-  const at = (source ?? live).started_at;
+  const built =
+    live.build_id && UUID_RE.test(live.build_id)
+      ? (
+          (await tx.execute(sql`
+            SELECT started_at FROM deploy_runs WHERE id = ${live.build_id}::uuid
+          `)) as unknown as { started_at: string | Date }[]
+        )[0]
+      : undefined;
+  // A live run whose build id names no run recorded its output as its own.
+  const at = (built ?? live).started_at;
   return at instanceof Date ? at.toISOString() : String(at);
 }

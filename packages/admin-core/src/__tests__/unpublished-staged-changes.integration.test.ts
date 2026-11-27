@@ -126,6 +126,24 @@ async function publishLive(stagingRunId: string): Promise<string> {
 }
 
 /**
+ * A production run whose build id is `buildId`: an Owner's direct
+ * production build names itself, a rollback the run it restores.
+ */
+async function productionRun(buildId?: string): Promise<string> {
+  return withSql(async (tx) => {
+    const rows = (await tx`
+      INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, build_id)
+      VALUES (${productionTarget}::uuid, ${OWNER_ID}::uuid, 'succeeded', clock_timestamp(), clock_timestamp(),
+              ${buildId ?? "pending"})
+      RETURNING id::text AS id`) as { id: string }[];
+    const id = rows[0]?.id ?? "";
+    if (buildId === undefined)
+      await tx`UPDATE deploy_runs SET build_id = ${id} WHERE id = ${id}::uuid`;
+    return id;
+  });
+}
+
+/**
  * A plugin-data build on top of the live run (#1155): a production run of
  * its own kind whose build id is its own run id, as both publishers record it.
  */
@@ -325,6 +343,21 @@ describe("#1750 a staged section script before Publish live", () => {
     expect(p.live?.stagedRunId).toBe(before);
     expect(p.pages.changed.items.map((i) => i.pageId)).toEqual([pages.other]);
     expect(await unpublished(d)).toContain(`staged global module ${PFX}Single`);
+  });
+
+  it("dates a rollback from the build it restored, and keeps staged draft changes of a chat that moved to its own branch", async () => {
+    // An Owner's direct production build, a change staged after it, then a
+    // rollback to the direct build: live serves the direct build's output.
+    const direct = await productionRun();
+    const f = await chat("rollback");
+    await op(f.ctx, "modules.update", { moduleId: single, js: "/* after the direct build */" });
+    await stage(f);
+    await productionRun(direct);
+    expect(await unpublished(f)).toContain(`staged global module ${PFX}Single`);
+
+    // The chat starts an experiment on its own branch before Publish live.
+    await op(SYS, "chat.isolate_session", { chatSessionId: f.id, reason: "experiment" });
+    expect(await unpublished(f)).toContain(`staged global module ${PFX}Single`);
   });
 
   it("lists the newest staged changes and says when older ones are not listed", async () => {
