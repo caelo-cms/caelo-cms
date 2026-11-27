@@ -138,8 +138,8 @@ const NESTING_ONLY: ReadonlySet<string> = new Set([
 /** The HTML tokenizer's whitespace (not JS `\s`, which also matches U+00A0). */
 const HTML_WS = /[\t\n\f\r ]/;
 
-/** Characters without which a value cannot change the markup in any place. */
-const MAY_BREAK = /[<>"'\t\n\f\r ]/;
+/** Characters without which a value cannot change the markup in any place (`-` ends a comment with the template's `>`). */
+const MAY_BREAK = /[<>"'\t\n\f\r -]/;
 
 /** Whether `value` holds a character that could change markup somewhere (a cheap first test). */
 export function mayBreakMarkup(value: string): boolean {
@@ -173,9 +173,9 @@ export function coreValueProblem(place: CorePlace, value: string): CoreValueProb
     case "content":
       return value.includes("<") ? contentProblem(place, value) : null;
     case "raw-text":
-      return rawTextProblem(place.element, value);
+      return rawTextProblem(place.element, value, place.after);
     case "comment":
-      return commentProblem(place.atStart, value);
+      return commentProblem(place.atStart, value, place.after);
     case "attribute":
       return attributeProblem(place, value);
     case "tag":
@@ -219,8 +219,17 @@ function contentProblem(
   // it: the value must end as text. A space first, so a trailing `<` stays
   // text (as before the module's own next tag); a tag the value leaves
   // unfinished takes the mark in.
+  // A trailing `<` (or `</`, `<!`, `<?`) the template's own next letter
+  // completes into a tag is no text.
+  if (/<[/!?]?$/.test(value) && /^[a-zA-Z!/?]/.test(place.after)) {
+    return {
+      rule: "unfinished-tag",
+      spelling: spellingAt(value, value.lastIndexOf("<")),
+      place: where,
+    };
+  }
   const mark = markFor(value);
-  const tokens = htmlTokens(`${value} ${mark}`);
+  const tokens = htmlTokens(`${value} ${mark}`, { textElements: true });
   const open: { readonly name: string; readonly at: number }[] = [];
   let nestingOnly = true;
   for (const t of tokens) {
@@ -470,15 +479,21 @@ function parentOf(n: Node): Node | null {
 
 // ── Raw text, comments, attributes, tags ──────────────────────────────
 
-function rawTextProblem(element: string, value: string): CoreValueProblem | null {
+/**
+ * An end tag of `element` that starts in `value`: completed by the value
+ * or by the template's text after it (`after`), or by whatever the end of
+ * that text leaves open (a following tag's value): `</textarea` before the
+ * template's `>` ends the element too.
+ */
+function rawTextProblem(element: string, value: string, after: string): CoreValueProblem | null {
   const where = `the text of <${element}>`;
   // Nothing ends a `<plaintext>`.
   if (element === "plaintext") return null;
-  const lower = asciiLower(value);
+  const read = asciiLower(value + after);
   const end = `</${element}`;
-  for (let at = lower.indexOf(end); at !== -1; at = lower.indexOf(end, at + 1)) {
-    const next = value[at + end.length];
-    if (next !== undefined && (HTML_WS.test(next) || next === "/" || next === ">")) {
+  for (let at = read.indexOf(end); at !== -1 && at < value.length; at = read.indexOf(end, at + 1)) {
+    const next = read[at + end.length];
+    if (next === undefined || HTML_WS.test(next) || next === "/" || next === ">") {
       return {
         rule: `ends-${ruleName(element)}`,
         spelling: spellingAt(value, at, at + end.length + 1),
@@ -487,16 +502,21 @@ function rawTextProblem(element: string, value: string): CoreValueProblem | null
     }
   }
   if (element === "script") {
-    const at = value.indexOf("<!--");
-    if (at !== -1) return { rule: "script-comment", spelling: "<!--", place: where };
+    const at = (value + after).indexOf("<!--");
+    if (at !== -1 && at < value.length) {
+      return { rule: "script-comment", spelling: "<!--", place: where };
+    }
   }
   return null;
 }
 
-function commentProblem(atStart: boolean, value: string): CoreValueProblem | null {
+/** A comment's end that starts in `value`, completed by it or by the template's text after it. */
+function commentProblem(atStart: boolean, value: string, after: string): CoreValueProblem | null {
   const where = "a comment";
-  const end = /--!?>/.exec(value);
-  if (end !== null) return { rule: "ends-comment", spelling: end[0], place: where };
+  const ends = /--!?>/g;
+  for (let m = ends.exec(value + after); m !== null; m = ends.exec(value + after)) {
+    if (m.index < value.length) return { rule: "ends-comment", spelling: m[0], place: where };
+  }
   if (atStart && (value.startsWith(">") || value.startsWith("->"))) {
     return { rule: "ends-comment", spelling: value.startsWith(">") ? ">" : "->", place: where };
   }

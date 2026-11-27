@@ -11,13 +11,15 @@
  * (the #1732 review ran `<td onfocus=…>` from a richtext inside a table).
  * Every start and end tag is seen, whatever a tree builder would do with
  * it. The tokenizer stays in its data state, as no tree builder switches it
- * to raw text: the checks refuse every element whose content is raw text,
- * so the prose they admit is read as the browser reads it.
+ * to raw text: the plugin checks refuse every element whose content is raw
+ * text, so the prose they admit is read as the browser reads it. A core
+ * value's check (#1748) asks for the switch a tree builder makes
+ * ({@link HtmlTokenOptions.textElements}).
  *
  * Linear and flat: no recursion however deep the markup nests.
  */
 
-import { type Token, Tokenizer } from "parse5";
+import { type Token, Tokenizer, TokenizerMode } from "parse5";
 
 /** One token: a start or end tag, a comment (a `<?…>` too), a doctype, or text. */
 export type HtmlToken =
@@ -40,9 +42,38 @@ export type HtmlToken =
   | { readonly kind: "doctype"; readonly start: number }
   | { readonly kind: "text"; readonly value: string };
 
+/** How a tree builder switches the tokenizer after an HTML start tag ({@link HtmlTokenOptions.textElements}). */
+const TEXT_STATES: Readonly<Record<string, (typeof TokenizerMode)[keyof typeof TokenizerMode]>> = {
+  title: TokenizerMode.RCDATA,
+  textarea: TokenizerMode.RCDATA,
+  style: TokenizerMode.RAWTEXT,
+  xmp: TokenizerMode.RAWTEXT,
+  iframe: TokenizerMode.RAWTEXT,
+  noembed: TokenizerMode.RAWTEXT,
+  noframes: TokenizerMode.RAWTEXT,
+  // Scripting on, as in a browser.
+  noscript: TokenizerMode.RAWTEXT,
+  script: TokenizerMode.SCRIPT_DATA,
+  plaintext: TokenizerMode.PLAINTEXT,
+};
+
+/** Options of {@link htmlTokens}. */
+export interface HtmlTokenOptions {
+  /**
+   * #1748 — read the content of `<script>`, `<style>`, `<textarea>`,
+   * `<title>` and the other text elements as text, as a browser's tree
+   * builder makes its tokenizer read it in HTML content (outside SVG and
+   * MathML): a core value's own balanced `<textarea></div></textarea>` is
+   * no `</div>`. Off for the plugin checks, which refuse those elements.
+   */
+  readonly textElements?: boolean;
+}
+
 /** The tokens of `html`, in order. A tag left unfinished at the end is no token (the tokenizer drops it). */
-export function htmlTokens(html: string): HtmlToken[] {
+export function htmlTokens(html: string, options: HtmlTokenOptions = {}): HtmlToken[] {
   const out: HtmlToken[] = [];
+  // SVG / MathML elements open around the current token: no text elements there.
+  let foreign = 0;
   const text = (t: Token.CharacterToken) => {
     const last = out[out.length - 1];
     if (last?.kind === "text") out[out.length - 1] = { kind: "text", value: last.value + t.chars };
@@ -52,6 +83,11 @@ export function htmlTokens(html: string): HtmlToken[] {
     { sourceCodeLocationInfo: true },
     {
       onStartTag(t) {
+        if (options.textElements) {
+          const textState = foreign === 0 ? TEXT_STATES[t.tagName] : undefined;
+          if (textState !== undefined) tokenizer.state = textState;
+          else if ((t.tagName === "svg" || t.tagName === "math") && !t.selfClosing) foreign += 1;
+        }
         out.push({
           kind: "start",
           name: t.tagName,
@@ -68,6 +104,9 @@ export function htmlTokens(html: string): HtmlToken[] {
         });
       },
       onEndTag(t) {
+        if (options.textElements && foreign > 0 && (t.tagName === "svg" || t.tagName === "math")) {
+          foreign -= 1;
+        }
         out.push({ kind: "end", name: t.tagName, start: t.location?.startOffset ?? -1 });
       },
       onComment(t) {

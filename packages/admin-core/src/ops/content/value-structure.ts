@@ -14,14 +14,16 @@
  * - a module write (create, or an update of its HTML or fields) against
  *   its fields' defaults, the shared lists its list fields bind and the
  *   site texts its HTML reads by key ({@link moduleWriteValueProblems});
- * - a shared list write against the modules that render it: those whose
- *   list field binds it and those whose placement points a list field at
- *   it ({@link listWriteValueProblems}).
+ * - a shared list write against the modules whose list field binds it
+ *   ({@link listWriteValueProblems}).
  *
- * What neither side sees (a module's existing placements when its HTML
- * changes, a site text a module reads by key when the text changes, a
- * page's title) is found by the Stage: the engine records the
- * `value-breaks-markup` render failure, which Publish live refuses.
+ * What neither side sees is found by the Stage: the engine records the
+ * `value-breaks-markup` render failure, which Publish live refuses. That
+ * is a module's existing placements when its HTML changes and a
+ * placement that points a list field at a shared list the module does not
+ * fix (both would make a write read every placement), a site text a
+ * module reads by key when the text changes (nothing indexes which module
+ * reads which key), and a page's title or properties.
  */
 
 import type { ErrorDetail, TransactionRunner } from "@caelo-cms/query-api";
@@ -36,7 +38,6 @@ import {
 import { listFieldsOf, loadModulesInView, parseListRef } from "../../lists/local.js";
 import { loadListEntities } from "../../lists/store.js";
 import { loadModuleStateWithBranchOverlay } from "../../snapshots/index.js";
-import { findContentInstancesContaining, idNeedles } from "./content-instance-refs.js";
 
 /** A module's fields as stored (an array of field objects). */
 type StoredFields = readonly unknown[];
@@ -164,8 +165,8 @@ async function loadSiteTexts(
 /**
  * The entries of shared list `listId` a write would store that break the
  * markup where a module renders them: the modules whose list field binds
- * the list, and the modules whose placement points a list field at it.
- * Each problem is addressed in the list's entries (`["items", 0, "values",
+ * the list (`module_refs`, the read `lists.get`'s usage makes). Each
+ * problem is addressed in the list's entries (`["items", 0, "values",
  * "text"]`). An entry `previous` holds with the same value passes.
  */
 export async function listWriteValueProblems(
@@ -179,20 +180,12 @@ export async function listWriteValueProblems(
   },
 ): Promise<ErrorDetail[]> {
   const ref = `caelo:list/${list.id}`;
-  // Which module fields render the list: bound in the module, or by a placement.
+  // The module fields that render the list.
   const renders = new Map<string, Set<string>>();
-  const add = (moduleId: string, field: string) => {
-    renders.set(moduleId, (renders.get(moduleId) ?? new Set()).add(field));
-  };
   for (const m of await loadModulesInView(tx, branchId, { referencing: [list.id] })) {
     for (const f of listFieldsOf(m.fields)) {
-      if (f.list === ref || f.default === ref) add(m.id, f.name);
-    }
-  }
-  for (const ci of await findContentInstancesContaining(tx, branchId, idNeedles([list.id]))) {
-    const values = JSON.parse(ci.valuesText) as Record<string, unknown>;
-    for (const [field, value] of Object.entries(values)) {
-      if (value === ref) add(ci.moduleId, field);
+      if (f.list !== ref && f.default !== ref) continue;
+      renders.set(m.id, (renders.get(m.id) ?? new Set()).add(f.name));
     }
   }
   const out: ErrorDetail[] = [];

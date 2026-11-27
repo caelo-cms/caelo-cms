@@ -324,3 +324,60 @@ describe("the repair a Stage names for a breaking value (#1748)", () => {
     expect(at("<plaintext>{{x}}", "</plaintext>")).toBeNull();
   });
 });
+
+describe("#1748 review: what the value meets around it", () => {
+  it("reads its own text elements as text, as the browser's tree builder makes the tokenizer read them", () => {
+    expect(at("<div>{{x}}</div>", "<textarea></div></textarea>")).toBeNull();
+    expect(at("<div>{{x}}</div>", '<style>a::after{content:"</div><!--"}</style>')).toBeNull();
+    expect(at("<div>{{x}}</div>", "<script>if (a<b) x = '</div>';</script>")).toBeNull();
+    expect(rule("<div>{{x}}</div>", "<textarea>x")).toBe("unclosed-textarea");
+  });
+
+  it("counts the template's text after the value: it can complete what the value starts", () => {
+    expect(rule("<textarea>{{x}}>still inside</textarea>", "</textarea")).toBe("ends-textarea");
+    expect(at("<textarea>{{x}}still inside</textarea>", "</textarea")).toBeNull();
+    expect(rule("<!-- a {{x}}> b -->", "--")).toBe("ends-comment");
+    expect(rule("<p>{{x}}b</p>", "a <")).toBe("unfinished-tag");
+    expect(at("<p>{{x}} b</p>", "a <")).toBeNull();
+  });
+
+  it("checks a module field only where its section renders", () => {
+    const fields: TemplateField[] = [
+      { name: "show", kind: "boolean" },
+      { name: "body", kind: "richtext" },
+    ];
+    const html = "{{#show}}<p>{{body}}</p>{{/show}}";
+    const hidden = renderTemplate({
+      html,
+      fields,
+      contentValues: { show: false, body: "<p>T</p>" },
+    });
+    expect(hidden.missingSlots).toEqual([]);
+    const shown = renderTemplate({ html, fields, contentValues: { show: true, body: "<p>T</p>" } });
+    expect(shown.missingSlots).toEqual(["value-breaks-markup:body:closes-p"]);
+  });
+
+  it("checks a `{{&field}}` inside a list's entries, at render and at write", () => {
+    const html = "{{#nav}}<div>{{&body}}</div>{{/nav}}";
+    const fields: TemplateField[] = [
+      { name: "nav", kind: "list", listType: "texts" },
+      { name: "body", kind: "richtext" },
+    ];
+    const r = renderTemplate({
+      html,
+      fields,
+      contentValues: {
+        body: "</div>",
+        nav: [{ id: "00000000-0000-4000-9000-000000000001", node: "text", values: { text: "a" } }],
+      },
+      lists: createListRenderContext(fixtureData()).forPage(PAGE.home, {
+        linkResolver: fixtureLinkIndex().forPage(PAGE.home),
+      }),
+      linkResolver: fixtureLinkIndex().forPage(PAGE.home),
+    });
+    expect(r.missingSlots).toEqual(["value-breaks-markup:body:end-tag-div"]);
+    expect(moduleValueProblems(html, fields, { body: "</div>" }).map((p) => p.path)).toEqual([
+      ["body"],
+    ]);
+  });
+});

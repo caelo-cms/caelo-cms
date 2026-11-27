@@ -161,7 +161,10 @@ export interface PlaceholderContexts {
 /**
  * #1748 — where a value tag sits, as the structure rule for a CORE value
  * reads it (`core-value-structure.ts`): what in the value would change the
- * markup around it depends only on this.
+ * markup around it depends only on this. `after` is the template's text
+ * right after the tag ({@link CORE_AFTER} characters, another tag's
+ * marker included), which can complete what the value starts: the `>` of
+ * a `</textarea` or of a comment's `--`, the letter of a trailing `<`.
  */
 export type CorePlace =
   /**
@@ -170,11 +173,16 @@ export type CorePlace =
    * them; null when they cannot be written back (inside `<head>`).
    * `plain`: no SVG, MathML or `<select>` around it.
    */
-  | { readonly kind: "content"; readonly open: string | null; readonly plain: boolean }
+  | {
+      readonly kind: "content";
+      readonly open: string | null;
+      readonly plain: boolean;
+      readonly after: string;
+    }
   /** The text of an HTML element only its end tag ends: `script`, `style`, `title`, `textarea`, … */
-  | { readonly kind: "raw-text"; readonly element: string }
+  | { readonly kind: "raw-text"; readonly element: string; readonly after: string }
   /** A comment's text; `atStart` right after its `<!--`. */
-  | { readonly kind: "comment"; readonly atStart: boolean }
+  | { readonly kind: "comment"; readonly atStart: boolean; readonly after: string }
   /** An attribute's value: its quote (null unquoted), and whether the value starts it. */
   | { readonly kind: "attribute"; readonly quote: '"' | "'" | null; readonly atStart: boolean }
   /** A tag's name (`inName`) or its attribute list (`<div {{attrs}}>`). */
@@ -681,6 +689,7 @@ function readValues(
  * @param mark the tag's marker; `at` where it starts in `text`, the reading.
  */
 function corePlaceOf(place: Place, mark: string, at: number, text: string): CorePlace | null {
+  const after = at < 0 ? "" : text.slice(at + mark.length, at + mark.length + CORE_AFTER);
   switch (place.at) {
     case "text": {
       const parent = place.parent;
@@ -689,16 +698,17 @@ function corePlaceOf(place: Place, mark: string, at: number, text: string): Core
         parent?.namespaceURI === H.NS.HTML &&
         (name === "script" || name === "style" || TEXT_ONLY_ELEMENTS.has(name))
       ) {
-        return { kind: "raw-text", element: name };
+        return { kind: "raw-text", element: name, after };
       }
       return {
         kind: "content",
         open: openTagsOf(place.chain),
         plain: place.foreign === null && place.select === null,
+        after,
       };
     }
     case "comment":
-      return { kind: "comment", atStart: place.node.data.startsWith(mark) };
+      return { kind: "comment", atStart: place.node.data.startsWith(mark), after };
     case "attr-value": {
       const loc = attributeLocation(place.element, place.attribute);
       const span = loc ? attributeValueSpan(text, loc.startOffset, loc.endOffset) : null;
@@ -718,6 +728,9 @@ function corePlaceOf(place: Place, mark: string, at: number, text: string): Core
       return null;
   }
 }
+
+/** How much of the template after a value tag a {@link CorePlace} keeps: enough for an end tag's name. */
+const CORE_AFTER = 16;
 
 /**
  * The start tags of `chain`'s elements, outermost first, which put a value
