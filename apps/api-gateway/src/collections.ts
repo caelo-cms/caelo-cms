@@ -243,17 +243,22 @@ export class GatewayCollections {
       // Only an open release keeps its prefetch (release() evicts both).
       if (this.open.has(id)) this.prefetched.set(id, prefetch);
     }
-    await prefetch;
+    // #1778 — the model loads while the files are on their way: reads wait
+    // on the network, the load on the CPU, so together they take the longer
+    // of the two instead of their sum.
     const model = entry.release.manifest.vectorModel?.id;
-    if (options.embedder && model && entry.profile?.semantic) {
-      // The embedder logs a load and its failure; a model the catalog lacks
-      // never starts loading, so that one is said here.
-      await options.embedder.ready(model).catch((e: unknown) => {
-        if (e instanceof ModelUnavailableError) {
-          console.error(`[api-gateway] collection ${id}: ${e.message}`);
-        }
-      });
-    }
+    const embedder = options.embedder;
+    const modelReady =
+      embedder && model && entry.profile?.semantic
+        ? embedder.ready(model).catch((e: unknown) => {
+            // The embedder logs a load and its failure; a model the catalog
+            // lacks never starts loading, so that one is said here.
+            if (e instanceof ModelUnavailableError) {
+              console.error(`[api-gateway] collection ${id}: ${e.message}`);
+            }
+          })
+        : Promise.resolve();
+    await Promise.all([prefetch, modelReady]);
   }
 
   /**

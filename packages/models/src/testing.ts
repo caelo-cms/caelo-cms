@@ -21,8 +21,9 @@ export function modelsForTests(
   const required = env.CAELO_MODELS === "required";
   const present =
     dir !== null &&
-    existsSync(modelFilePath(dir, model, model.files.model)) &&
-    existsSync(modelFilePath(dir, model, model.files.tokenizer));
+    existsSync(modelFilePath(dir, model, model.derived.graph)) &&
+    existsSync(modelFilePath(dir, model, model.derived.table)) &&
+    existsSync(modelFilePath(dir, model, model.derived.tokenizer));
   if (!present && !required) {
     console.warn(
       `[models] SKIPPED: ${model.id} is not fetched, so tests that embed are untested in this run. Run \`bun run models:fetch\` and export ${MODELS_DIR_ENV}=<the directory it prints>.`,

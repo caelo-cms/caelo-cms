@@ -119,16 +119,19 @@ export type WarmableQueryEmbedder = QueryEmbedder & {
 };
 
 /**
- * The gateway's query embedder: one WebAssembly embedder per model, loaded
- * on first use and kept; query vectors in a small LRU. The runtime is
- * imported lazily, so a gateway without semantic search never loads it.
+ * The query embedder on WebAssembly: one embedder per model, loaded on
+ * first use and kept; query vectors in a small LRU. The runtime is
+ * imported lazily, so a process without semantic search never loads it.
  *
- * A load is the expensive step of a cold instance: on Cloud Run's one vCPU
- * it takes seconds, blocks the event loop for part of that, and the default
- * model holds about 700 MiB of the process afterwards
- * (docs/dev/embedding-models.md). Each load writes one log line with its
- * duration and the process's memory, so a slow first search can be told
- * apart from a slow index.
+ * It runs in the process's own thread. Without its token table in the
+ * graph (#1782) a load holds the event loop for about 75 ms on an M3
+ * (before: more than half a second); a worker thread would cut that to
+ * about 15 ms but add 0.5 to 1 s to every load (its own runtime, its own
+ * WebAssembly compile), and the load is what a cold instance's first
+ * search waits for (#1778, measured in docs/dev/embedding-models.md).
+ *
+ * Each load writes one log line with its duration and the process's
+ * memory, so a slow first search can be told apart from a slow index.
  */
 export function wasmQueryEmbedder(): WarmableQueryEmbedder {
   const embedders = new Map<string, Promise<Embedder>>();
@@ -149,11 +152,11 @@ export function wasmQueryEmbedder(): WarmableQueryEmbedder {
       e = import("@caelo-cms/models/wasm")
         .then((m) => m.createWasmEmbedder(model))
         .then(
-          (loaded) => {
+          (embedder) => {
             console.log(
               `[collections] model ${model.id} loaded in ${took()} ms (process memory ${Math.round(process.memoryUsage().rss / 1048576)} MiB)`,
             );
-            return loaded;
+            return embedder;
           },
           (err: unknown) => {
             console.error(
