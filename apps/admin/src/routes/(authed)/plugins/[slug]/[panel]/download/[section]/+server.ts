@@ -27,7 +27,8 @@ export const GET: RequestHandler = async ({ locals, params, url }) => {
   const call = panelCaller(locals, params.slug);
   // #1760 — filters whose options are site data are checked against them too.
   const resolved = await withFilterOptions(declared, call);
-  if (!resolved.ok) throw error(502, `The plugin could not list a filter's options: ${resolved.message}`);
+  if (!resolved.ok)
+    throw error(502, `The plugin could not list a filter's options: ${resolved.message}`);
   const section = resolved.section;
   // The filters, not the page: a download is the whole filtered view.
   const { filterArgs } = tableArgs(section, url);
