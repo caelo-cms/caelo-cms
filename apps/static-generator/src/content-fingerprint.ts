@@ -75,19 +75,30 @@ export function bodyContentDigest(bodyHtml: string): string {
   return createHash("sha256").update(visibleContent(bodyHtml)).digest("hex");
 }
 
-/** sha256 (hex) of the page's title, description and body digest. */
+/**
+ * sha256 (hex) of the page's title, description and body digest — and
+ * (#1752) the `<title>` search results show, when it is not the page title
+ * (an own SEO title, a title template). A page whose `<title>` is its title
+ * fingerprints exactly as before, so no page counts as changed by the
+ * upgrade alone; the page title always counts, as the feed and the JSON-LD
+ * name show it.
+ */
 export function pageContentFingerprint(page: {
   readonly title: string;
   readonly metaDescription: string;
   readonly bodyDigest: string;
+  readonly headTitle?: string;
 }): string {
-  return createHash("sha256")
+  const hash = createHash("sha256")
     .update(page.title.trim())
     .update("\u0000")
     .update(page.metaDescription.trim())
     .update("\u0000")
-    .update(page.bodyDigest)
-    .digest("hex");
+    .update(page.bodyDigest);
+  if (page.headTitle !== undefined && page.headTitle.trim() !== page.title.trim()) {
+    hash.update("\u0000").update(page.headTitle.trim());
+  }
+  return hash.digest("hex");
 }
 
 /**

@@ -29,6 +29,13 @@ import type { SourceLanguage } from "./escaped-line-breaks.js";
 import { LIST_ITEM_ATTR_RE } from "./lists/item-attr.js";
 import { pluginPreviewSelectionSchema } from "./plugin-preview.js";
 import { redirectTargetPathSchema } from "./redirect-target.js";
+import {
+  ogDescriptionSchema,
+  ogTitleSchema,
+  placementRefSchema,
+  seoRobotsInputShape,
+  seoTitleSchema,
+} from "./seo.js";
 import { decodeSourceTextTransport } from "./source-text-transport.js";
 
 /**
@@ -877,10 +884,15 @@ export type SetMediaSourceToolInput = z.infer<typeof setMediaSourceToolInput>;
 export const setPageSeoToolInput = z
   .object({
     pageId: z.string().uuid(),
+    seoTitle: seoTitleSchema.optional(),
     metaDescription: z.string().max(320).optional(),
+    ogTitle: ogTitleSchema.optional(),
+    ogDescription: ogDescriptionSchema.optional(),
     ogImageAssetId: z.string().uuid().nullable().optional(),
     canonicalUrl: z.string().max(2048).nullable().optional(),
     noindex: z.boolean().optional(),
+    ...seoRobotsInputShape,
+    nosnippetPlacements: z.array(placementRefSchema).max(64).optional(),
     changefreq: z
       .enum(["always", "hourly", "daily", "weekly", "monthly", "yearly", "never"])
       .optional(),
@@ -900,6 +912,9 @@ export const autofillPageSeoToolInput = z
     pageId: z.string().uuid(),
     metaDescription: z.string().trim().min(1).max(320),
     ogImageAssetId: z.string().uuid().nullable().optional(),
+    seoTitle: seoTitleSchema.pipe(z.string().min(1)).optional(),
+    ogTitle: ogTitleSchema.pipe(z.string().min(1)).optional(),
+    ogDescription: ogDescriptionSchema.pipe(z.string().min(1)).optional(),
   })
   .strict();
 export type AutofillPageSeoToolInput = z.infer<typeof autofillPageSeoToolInput>;
@@ -992,10 +1007,21 @@ export const bulkOptimizeSeoToolInput = z
         z
           .object({
             pageId: z.string().uuid(),
-            metaDescription: z.string().min(1).max(320),
+            metaDescription: z.string().min(1).max(320).optional(),
+            seoTitle: seoTitleSchema.optional(),
+            ogTitle: ogTitleSchema.optional(),
+            ogDescription: ogDescriptionSchema.optional(),
             ogImageAssetId: z.string().uuid().nullable().optional(),
           })
-          .strict(),
+          .strict()
+          .refine(
+            (u) =>
+              u.metaDescription !== undefined ||
+              u.seoTitle !== undefined ||
+              u.ogTitle !== undefined ||
+              u.ogDescription !== undefined,
+            "each item rewrites at least one of `metaDescription`, `seoTitle`, `ogTitle`, `ogDescription`",
+          ),
       )
       .min(1)
       .max(200),

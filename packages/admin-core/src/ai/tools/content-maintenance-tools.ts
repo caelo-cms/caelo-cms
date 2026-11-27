@@ -67,21 +67,73 @@ function formatShareImage(image: SeoPage["shareImage"]): string {
     : `shareImage: ${from}, asset ${image.assetId}`;
 }
 
+/** Where a resolved head value comes from, in words the AI acts on. */
+function originText(
+  v: { origin: string; inheritsFrom?: string | null; template?: string | null },
+  pageType: string,
+): string {
+  switch (v.origin) {
+    case "human":
+      return "the operator's own text: keep unless told";
+    case "ai":
+      return "AI-written, not reviewed";
+    case "reviewed":
+      return "AI-written, reviewed by a person";
+    case "page_type":
+      return v.template
+        ? `from template of page type ${pageType}: \`${v.template}\``
+        : `page type ${pageType}`;
+    case "site":
+      return v.template ? `from the site's title template: \`${v.template}\`` : "site default";
+    case "inherited":
+      return `inherited from ${v.inheritsFrom === "pageTitle" ? "the page title" : v.inheritsFrom}`;
+    default:
+      return "none";
+  }
+}
+
+/** The head a build renders for the page, each value with its origin. */
+function formatResolvedHead(r: SeoPage["resolved"]): string[] {
+  const line = (label: string, v: Parameters<typeof originText>[0] & { value: string }): string =>
+    `${label}: ${v.value ? JSON.stringify(v.value) : "(none)"} — ${originText(v, r.pageType)}`;
+  return [
+    line("title", r.title),
+    line("metaDescription", r.metaDescription),
+    line("og:title", r.ogTitle),
+    line("og:description", r.ogDescription),
+    `og:type: ${r.ogType.value} — ${originText(r.ogType, r.pageType)}`,
+    `robots: ${r.robots}`,
+    ...r.unsetVariables.map(
+      (v) =>
+        `title template variable {${v}} has no value (shows raw, blocks Publish live)${v === "site_name" ? " -> set_site_identity({siteName})" : ""}`,
+    ),
+  ];
+}
+
 function formatSeoPage(p: SeoPage): string {
   const seo = p.seo;
-  const fields = seo
-    ? [
-        `metaDescription: ${seo.metaDescription || "(empty)"}`,
-        `ogImageAssetId: ${seo.ogImageAssetId ?? "(none)"}`,
-        `canonicalUrl: ${seo.canonicalUrl ?? "(default)"}`,
-        `noindex: ${seo.noindex}`,
-        `sitemap: changefreq ${seo.changefreq}, priority ${seo.priority}`,
-        `autofilledAt: ${seo.autofilledAt ?? "never"}; optimizedAt: ${seo.optimizedAt ?? "never"}`,
-        ...(seo.pendingFields.length > 0
-          ? [`pending (not staged): ${seo.pendingFields.join(", ")}`]
-          : []),
-      ]
-    : ["No SEO row for this page yet — autofill_page_seo_many fills it before first publish."];
+  const fields = formatResolvedHead(p.resolved);
+  if (seo) {
+    fields.push(
+      `own: seoTitle ${JSON.stringify(seo.seoTitle)}, ogTitle ${JSON.stringify(seo.ogTitle)}, ogDescription ${JSON.stringify(seo.ogDescription)}`,
+      ...(seo.nosnippetPlacements.length > 0
+        ? [
+            `nosnippetPlacements: ${seo.nosnippetPlacements.map((n) => `${n.blockName}#${n.position}`).join(", ")}`,
+          ]
+        : []),
+      `ogImageAssetId: ${seo.ogImageAssetId ?? "(none)"}`,
+      `canonicalUrl: ${seo.canonicalUrl ?? "(default)"}`,
+      `sitemap: changefreq ${seo.changefreq}, priority ${seo.priority}${seo.noindex ? " (noindex: not listed)" : ""}`,
+      `autofilledAt: ${seo.autofilledAt ?? "never"}; optimizedAt: ${seo.optimizedAt ?? "never"}`,
+      ...(seo.pendingFields.length > 0
+        ? [`pending (not staged): ${seo.pendingFields.join(", ")}`]
+        : []),
+    );
+  } else {
+    fields.push(
+      "No SEO row for this page yet — autofill_page_seo_many fills it before first publish.",
+    );
+  }
   fields.push(formatShareImage(p.shareImage));
   const textHead = p.contentTextTruncated
     ? `contentText (the first ${p.contentText.length} of ${p.contentTextLength} characters — enough to write a description from):`
@@ -111,8 +163,8 @@ const getPageSeoInput = z
 export const getPageSeoTool = makeReadTool({
   name: "get_page_seo",
   description:
-    "Read pages' stored SEO fields (meta description, own OG image, canonical, noindex, sitemap, autofill/optimize times), the `shareImage` each page really gets (own, language default or site default) AND core text (plain text of own content blocks, no header/footer chrome, this chat's draft, ~1500 chars). A 'pending (not staged)' line names SEO fields this chat changed: live only after Stage + Publish live.\n" +
-    "USE FOR: reading before writing/optimizing descriptions — ALL pages in one call, then ONE `autofill_page_seo_many` (first description) or `bulk_optimize_seo`/`set_page_seo_many`.\n" +
+    "Read pages' SEO head as a build renders it — `<title>`, meta description, og:title/description/type, robots — each with its ORIGIN (the operator's own / AI-written / reviewed / page type or site template / inherited / none), plus the stored own fields, canonical, sitemap, `data-nosnippet` placements, the `shareImage` each page really gets, and core text (plain text of own content blocks, this chat's draft, ~1500 chars). A 'pending (not staged)' line names SEO fields this chat changed: live only after Stage + Publish live.\n" +
+    "USE FOR: reading before writing/optimizing SEO — ALL pages in one call, then ONE `autofill_page_seo_many` (first texts) or `bulk_optimize_seo`/`set_page_seo_many`. Fill only real gaps: a template or inherited value is no gap, the operator's own text is never yours to rewrite unasked.\n" +
     "DO NOT USE `inspect_page_render`/`screenshot_page` for this (layout/visual only). No SEO row -> `autofill_page_seo_many` fills it.",
   opName: "pages_seo.get_many",
   input: getPageSeoInput,

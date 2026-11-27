@@ -11,7 +11,14 @@
  * field-by-field translation.
  */
 
-import type { ListItem, ListTypeDef, PageTypeDef, StaticFileContentType } from "@caelo-cms/shared";
+import type {
+  ListItem,
+  ListTypeDef,
+  MaxImagePreview,
+  PageTypeDef,
+  SeoOrigins,
+  StaticFileContentType,
+} from "@caelo-cms/shared";
 
 export type StateSchemaVersion = 1;
 
@@ -112,10 +119,27 @@ export interface PageState {
  * by whoever writes the live row).
  */
 export interface PageSeoState {
+  /** #1752 — the page's own `<title>`; "" = its page type's or the site's template. */
+  readonly seoTitle: string;
   readonly metaDescription: string;
+  /** #1752 — own og:title / og:description; "" = shared from the SEO title / description. */
+  readonly ogTitle: string;
+  readonly ogDescription: string;
   readonly ogImageAssetId: string | null;
   readonly canonicalUrl: string | null;
   readonly noindex: boolean;
+  /** #1752 — the robots directives besides `noindex` (`RobotsDirectives`). */
+  readonly nofollow: boolean;
+  readonly noarchive: boolean;
+  readonly nosnippet: boolean;
+  readonly noimageindex: boolean;
+  readonly maxSnippet: number | null;
+  readonly maxImagePreview: MaxImagePreview;
+  readonly maxVideoPreview: number | null;
+  /** #1752 — content instances of the page's placements rendered with `data-nosnippet` (sorted). */
+  readonly nosnippetContent: readonly string[];
+  /** #1752 — who wrote each non-empty own text (complete: `completeSeoOrigins`). */
+  readonly origins: SeoOrigins;
   readonly changefreq: string;
   readonly priority: number;
   /** Fill-once marker: set by the first autofill, never cleared by one. */

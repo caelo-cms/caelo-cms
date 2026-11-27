@@ -64,6 +64,7 @@ export * from "./mcp-access.js";
 export * from "./media.js";
 export {
   CONTENT_INSTANCE_ATTRIBUTE,
+  markNosnippet,
   stripContentInstances,
   tagContentInstance,
 } from "./module-id-tag.js";
@@ -98,6 +99,7 @@ export * from "./safe-keys.js";
 export * from "./screenshot-capture.js";
 export * from "./search-feed.js";
 export * from "./seo.js";
+export * from "./seo-head.js";
 export * from "./session-cookie.js";
 export * from "./site-security-headers.js";
 export * from "./skills.js";

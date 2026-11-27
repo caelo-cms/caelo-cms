@@ -137,7 +137,8 @@ const titles = (html: string): string[] =>
   [...html.matchAll(/<li>(T1257 Guide \d+)<\/li>/g)].map((m) => m[1] as string);
 const canonicalOf = (html: string): string | null =>
   /<link rel="canonical" href="([^"]+)"/.exec(html)?.[1] ?? null;
-const noindex = (html: string): boolean => /<meta name="robots" content="noindex"/.test(html);
+/** #1752 — the one robots meta names noindex first, the other directives after it. */
+const noindex = (html: string): boolean => /<meta name="robots" content="noindex[,"]/.test(html);
 const guide = (n: number) => `T1257 Guide ${String(n).padStart(2, "0")}`;
 
 beforeAll(async () => {
