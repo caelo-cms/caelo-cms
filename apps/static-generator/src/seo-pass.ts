@@ -70,6 +70,7 @@ import { pageContentFingerprint, pluginRegionsDigest } from "./content-fingerpri
 import type { ContentStates } from "./content-states.js";
 import type { MediaPass, OgImageOutcome } from "./media-pass.js";
 import type { RenderFailure } from "./nested-modules-pass.js";
+import { SITEMAP_IMAGE_NS, sitemapImageLines, sitemapImagesOf } from "./sitemap-images.js";
 
 interface PageSeoBundle {
   pageId: string;
@@ -358,6 +359,8 @@ export async function prepareSeoPass(args: {
   };
   // #1257 — indexable follow-up pages of each overview, for the sitemap.
   const followUpsOf = new Map<string, number[]>();
+  // #1762 — page 1's library images, for its sitemap entry.
+  const imagesOf = new Map<string, string[]>();
 
   return {
     renderFailures,
@@ -387,6 +390,8 @@ export async function prepareSeoPass(args: {
           firstPublishedAt: bundle.firstPublishedAt,
           updatedAt: bundle.updatedAt,
         });
+        // #1762 — the library images the page shows, as it ships.
+        imagesOf.set(bundle.pageId, sitemapImagesOf(p.html, settings.siteBaseUrl));
       }
     },
 
@@ -527,11 +532,16 @@ export async function prepareSeoPass(args: {
         // What the page shows last changed live — not the last draft edit
         // of its row (docs/dev/search-engine-feed.md).
         const lastmod = contentStates.changedAt(b.pageId);
-        const urlEntry = (loc: string, alternates: readonly string[]): string =>
+        const urlEntry = (
+          loc: string,
+          alternates: readonly string[],
+          images: readonly string[] = [],
+        ): string =>
           [
             "  <url>",
             `    <loc>${enc(loc)}</loc>`,
             ...alternates,
+            ...sitemapImageLines(images),
             `    <lastmod>${lastmod}</lastmod>`,
             `    <changefreq>${b.changefreq}</changefreq>`,
             `    <priority>${b.priority.toFixed(1)}</priority>`,
@@ -547,7 +557,7 @@ export async function prepareSeoPass(args: {
               `    <xhtml:link rel="alternate" hreflang="${enc(a.hreflang)}" href="${enc(a.href)}" />`,
           );
         return [
-          urlEntry(publicUrlOf(b), alternates),
+          urlEntry(publicUrlOf(b), alternates, imagesOf.get(b.pageId)),
           ...(followUpsOf.get(b.pageId) ?? [])
             .sort((x, y) => x - y)
             .map((n) => urlEntry(followUpUrlOf(b, n), [])),
@@ -555,7 +565,8 @@ export async function prepareSeoPass(args: {
       });
       const xml = [
         '<?xml version="1.0" encoding="UTF-8"?>',
-        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">',
+        // #1762 — the image namespace only where an entry lists an image.
+        `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml"${[...imagesOf.values()].some((i) => i.length > 0) ? ` xmlns:image="${SITEMAP_IMAGE_NS}"` : ""}>`,
         ...entries,
         "</urlset>",
         "",
