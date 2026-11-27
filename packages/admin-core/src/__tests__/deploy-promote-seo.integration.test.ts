@@ -39,6 +39,7 @@ import {
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { NO_BUILD_HEADERS_NOTE } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { planCrawlerPolicy } from "../../../plugins/seo/src/crawlers/policy.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
 import { seedLiveRedirects } from "./fixtures/redirects.js";
@@ -346,6 +347,77 @@ describe("deploy.promote ships production SEO semantics", () => {
       expect(await readFile(join(production, "robots.txt"), "utf8")).toBe(live);
     } finally {
       await setRules([]);
+    }
+  });
+
+  // #1758 — the seo plugin's crawler policy, "search and AI answers yes,
+  // training no": the planned groups and lines, the card's notes, staging
+  // keeps every crawler out, production ships what the Stage carries.
+  it("#1758 — a crawler policy by purpose goes live with the Stage that carries it", async () => {
+    const plan = planCrawlerPolicy([], {
+      search: "allow",
+      aiAnswers: "allow",
+      training: "block",
+      userFetch: "allow",
+    });
+    const seo = await ok<{
+      siteBaseUrl: string;
+      sitemapEnabled: boolean;
+      feedEnabled: boolean;
+      indexNowEnabled: boolean;
+      organizationJson: Record<string, unknown>;
+    }>("site_defaults.get_seo", {});
+    const base = {
+      siteBaseUrl: seo.siteBaseUrl,
+      sitemapEnabled: seo.sitemapEnabled,
+      feedEnabled: seo.feedEnabled,
+      indexNowEnabled: seo.indexNowEnabled,
+      organizationJson: seo.organizationJson,
+    };
+    const card = await ok<{ preview: string }>("site_defaults.preview_set_seo", {
+      robotsRules: plan.rules,
+    });
+    expect(card.preview).toContain("NOTE: `__usage_ai-training` states a preference");
+    expect(card.preview).toContain("Content-Signal: search=yes, ai-input=yes, ai-train=no");
+    const staging = join(testRoot, "output", "staging", "current");
+    const production = join(testRoot, "output", "production", "current");
+    try {
+      await ok("site_defaults.set_seo", { ...base, robotsRules: plan.rules });
+      const staged = await ok<{ runId: string }>("deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      });
+      await markAudited(staged.runId);
+      expect(await readFile(join(staging, "robots.txt"), "utf8")).toBe(
+        "User-agent: *\nDisallow: /\n",
+      );
+      await ok("deploy.promote", {
+        fromTarget: "staging",
+        toTarget: "production",
+        repoRoot: testRoot,
+      });
+      const live = await readFile(join(production, "robots.txt"), "utf8");
+      expect(live.split("\n\nSitemap:")[0]).toBe(
+        [
+          "User-agent: *",
+          "Content-Signal: search=yes, ai-input=yes, ai-train=no",
+          "Allow: /",
+          "",
+          "User-agent: GPTBot",
+          "User-agent: ClaudeBot",
+          "User-agent: Google-Extended",
+          "User-agent: Applebot-Extended",
+          "User-agent: CCBot",
+          "User-agent: meta-externalagent",
+          "User-agent: Bytespider",
+          "Disallow: /",
+          "",
+          "User-agent: __usage_ai-training",
+          "Disallow: /",
+        ].join("\n"),
+      );
+    } finally {
+      await ok("site_defaults.set_seo", { ...base, robotsRules: [] });
     }
   });
 
