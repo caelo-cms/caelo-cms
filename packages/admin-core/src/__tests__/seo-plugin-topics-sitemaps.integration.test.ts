@@ -57,7 +57,16 @@ let buildDir = "";
 const restore: (() => Promise<void>)[] = [];
 let siteNameBefore: string | null = null;
 const articles: string[] = [];
-const ids = { home: "", topic: "", dupTopic: "", fresh: "", hidden: "", old: "", video: "" };
+const ids = {
+  home: "",
+  topic: "",
+  dupTopic: "",
+  fresh: "",
+  first: "",
+  hidden: "",
+  old: "",
+  video: "",
+};
 let vocab = { id: "", slug: `${PFX}-tags`, seo: "", seoTool: "", seoTools: "" };
 
 async function sqlSystem<T>(query: (tx: SQL) => Promise<T>): Promise<T> {
@@ -300,6 +309,8 @@ beforeAll(async () => {
   });
 
   ids.fresh = await page("fresh", "news");
+  // Goes live first with the build under test: no first_published_at yet.
+  ids.first = await page("first", "news");
   ids.hidden = await page("hidden", "news");
   ids.old = await page("old", "news");
   await run("pages_seo.set", { pageId: ids.hidden, noindex: true });
@@ -469,7 +480,7 @@ describe("#1759 topic pages and internal links", () => {
 
 describe("#1761 news and video sitemaps", () => {
   it("lists recent indexable news and the video page, and robots.txt names both", async () => {
-    const built = [ids.fresh, ids.hidden, ids.old, ids.video].map((pageId) => ({
+    const built = [ids.fresh, ids.first, ids.hidden, ids.old, ids.video].map((pageId) => ({
       pageId,
       pageSlug: pageId,
       html: "<html><head><title>x</title></head><body>b</body></html>",
@@ -497,6 +508,8 @@ describe("#1761 news and video sitemaps", () => {
     expect(r.extraSitemaps).toEqual(["sitemap-news.xml", "sitemap-video.xml"]);
     const news = readFileSync(join(buildDir, "sitemap-news.xml"), "utf8");
     expect(news).toContain(`<loc>${BASE}/${PFX}-fresh/</loc>`);
+    // The build that first publishes an article lists it (Codex review on #1797).
+    expect(news).toContain(`<loc>${BASE}/${PFX}-first/</loc>`);
     expect(news).toContain("<news:name>Example News</news:name>");
     expect(news).not.toContain(`${PFX}-hidden`);
     expect(news).not.toContain(`${PFX}-old`);
@@ -511,7 +524,7 @@ describe("#1761 news and video sitemaps", () => {
     );
     // The VideoObject in the page's graph names the same thumbnail.
     const graph = JSON.parse(
-      /<script type="application\/ld\+json">(.*?)<\/script>/.exec(built[3]?.html as string)?.[1] ??
+      /<script type="application\/ld\+json">(.*?)<\/script>/.exec(built[4]?.html as string)?.[1] ??
         "{}",
     ) as { "@graph": Record<string, unknown>[] };
     const videoNode = graph["@graph"].find((n) => n["@type"] === "VideoObject");

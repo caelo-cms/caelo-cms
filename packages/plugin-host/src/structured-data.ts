@@ -104,6 +104,11 @@ function namedPages(page: StructuredDataPage): string[] {
   return [...out];
 }
 
+/** A page record as a related page: no head of its own ({@link StructuredDataArgs.related}). */
+function asRelated(p: StructuredDataPage): StructuredDataPage {
+  return { ...p, lang: "", description: "", shareImage: null, live: false, listed: [] };
+}
+
 /**
  * The arguments of one call: its pages, the pages they name, their page
  * types (the sitemap-entries point asks with the same records).
@@ -113,7 +118,20 @@ export function chunkArgs(
   chunk: readonly StructuredDataPage[],
 ): StructuredDataArgs {
   const wanted = new Set(chunk.flatMap(namedPages));
-  const related = input.related.filter((r) => wanted.has(r.pageId.toLowerCase()));
+  const inChunk = new Set(chunk.map((p) => p.pageId.toLowerCase()));
+  // A named page the caller asks about in another chunk (an author in the
+  // same build batch) is not in `input.related`: hand it over from `pages`,
+  // without its head, as every related record (the preview's view).
+  const fromPages = input.pages
+    .filter((p) => !inChunk.has(p.pageId.toLowerCase()) && wanted.has(p.pageId.toLowerCase()))
+    .map(asRelated);
+  const known = new Set(fromPages.map((p) => p.pageId.toLowerCase()));
+  const related = [
+    ...input.related.filter(
+      (r) => wanted.has(r.pageId.toLowerCase()) && !known.has(r.pageId.toLowerCase()),
+    ),
+    ...fromPages,
+  ];
   const types = new Set([...chunk, ...related].map((p) => p.pageType));
   return {
     pages: chunk,

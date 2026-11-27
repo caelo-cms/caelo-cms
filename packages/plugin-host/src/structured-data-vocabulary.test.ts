@@ -252,6 +252,17 @@ describe("structured-data vocabulary (#1753)", () => {
     ]);
   });
 
+  it("allows the live modified date only as dateModified, the property a later build re-dates", () => {
+    expect(
+      refusalsOf({
+        dateModified: { live: "modified" },
+        datePublished: { live: "published" },
+        uploadDate: { live: "modified" },
+        temporalCoverage: [{ live: "modified" }],
+      }),
+    ).toEqual(["uploadDate:live-modified-property", "temporalCoverage:live-modified-property"]);
+  });
+
   it("refuses nesting past the depth cap", () => {
     const deep = (n: number): unknown =>
       n === 0 ? "leaf" : { node: { type: "Thing", properties: { inner: deep(n - 1) } } };
@@ -278,6 +289,24 @@ describe("the seo plugin's answer on a blog passes the vocabulary (#1756)", () =
       expect(checked.refusals).toEqual([]);
       expect(checked.pages.has(page.pageId)).toBe(true);
     }
+  });
+
+  it("has no refusal for a topic page whose lists show more pages than an array holds", async () => {
+    const { structuredDataAnswer } = await import("../../plugins/seo/src/schema/nodes.js");
+    const blog = await import("../../plugins/seo/test/fixture-blog.js");
+    const listed = Array.from(
+      { length: STRUCTURED_DATA_ARRAY_MAX + 20 },
+      (_, i) => `d0000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+    );
+    const page = { ...blog.topic, listed };
+    const answer = structuredDataAnswer({ args: blog.argsFor([page]), mappings: blog.mappings });
+    const checked = checkStructuredDataAnswer(answer, new Set([page.pageId]));
+    expect(checked.refusals).toEqual([]);
+    const items = answer.pages[page.pageId]?.nodes?.[0]?.properties;
+    expect((items?.itemListElement as unknown[] | undefined)?.length).toBe(
+      STRUCTURED_DATA_ARRAY_MAX,
+    );
+    expect(items?.numberOfItems).toBe(STRUCTURED_DATA_ARRAY_MAX);
   });
 
   it("has no refusal for any special template's fixture page (#1761)", async () => {

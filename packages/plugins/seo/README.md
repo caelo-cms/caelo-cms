@@ -40,7 +40,8 @@ page's one graph ([`docs/dev/structured-data.md`](../../../docs/dev/structured-d
 - Author pages: a page type mapped to `ProfilePage` is the WebPage of a
   `Person` (`#person`), with role, bio, portrait, `sameAs` links and the
   organization. Its list of articles is a page query `refers_to` the page.
-- Topic pages (`CollectionPage`): an `ItemList` of the pages its lists show.
+- Topic pages (`CollectionPage`): an `ItemList` of the pages its lists show, in
+  their order (the first 50, the most an array value holds).
 - Special templates: `LocalBusiness` (address, opening hours, geo),
   `Event`, `JobPosting`, `Product` (offers from page properties) and
   `VideoObject`.

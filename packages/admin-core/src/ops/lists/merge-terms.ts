@@ -9,7 +9,8 @@
  * 2. a merged term's overview page (`landing_page`) becomes the kept
  *    term's when it has none, else it is deleted with a 301 to the kept
  *    term's overview page, so its inbound links keep working,
- * 3. the merged terms leave the vocabulary.
+ * 3. the merged terms leave the vocabulary; their own sub-terms (a
+ *    category's children) move under the kept term first.
  *
  * Each step runs through the op that owns it (`pages.update`,
  * `pages.delete_many`, `lists.patch_items_many`), so the change is a draft
@@ -41,12 +42,27 @@ interface TermItem {
 function flatten(
   items: readonly TermItem[],
   out = new Map<string, TermItem>(),
-): Map<string, TermItem> {
+  parents = new Map<string, string | null>(),
+  parent: string | null = null,
+): { items: Map<string, TermItem>; parents: Map<string, string | null> } {
   for (const item of items) {
     out.set(item.id, item);
-    flatten(item.children ?? [], out);
+    parents.set(item.id, parent);
+    flatten(item.children ?? [], out, parents, item.id);
   }
-  return out;
+  return { items: out, parents };
+}
+
+/** Whether `id` sits somewhere below `ancestor` in the vocabulary's tree. */
+function isBelow(
+  parents: ReadonlyMap<string, string | null>,
+  id: string,
+  ancestor: string,
+): boolean {
+  for (let at = parents.get(id) ?? null; at !== null; at = parents.get(at) ?? null) {
+    if (at === ancestor) return true;
+  }
+  return false;
 }
 
 /** The page a term's `landing_page` names, or null. */
@@ -109,7 +125,7 @@ export const mergeTermsOp = defineOperation({
         handlerError(OP, `list "${input.list}" is not a vocabulary: only terms merge`),
       );
     }
-    const items = flatten(list.state.items as readonly TermItem[]);
+    const { items, parents } = flatten(list.state.items as readonly TermItem[]);
     const fromAll = new Set<string>();
     for (const [i, m] of input.merges.entries()) {
       for (const id of [...m.from, m.into]) {
@@ -127,6 +143,17 @@ export const mergeTermsOp = defineOperation({
         if (fromAll.has(id))
           return failBatch(false, handlerError(OP, `merges[${i}]: term ${id} is merged twice`));
         fromAll.add(id);
+        // The merged term's sub-terms move under the kept one (step 3), which
+        // cannot sit among them.
+        if (isBelow(parents, m.into, id)) {
+          return failBatch(
+            false,
+            handlerError(
+              OP,
+              `merges[${i}]: the kept term ${m.into} sits under the merged term ${id}: keep ${id} and merge the other way, or move ${m.into} out first (patch_list_items_many, op "move"). Nothing was written.`,
+            ),
+          );
+        }
       }
     }
     if (input.merges.some((m) => fromAll.has(m.into))) {
@@ -240,17 +267,33 @@ export const mergeTermsOp = defineOperation({
       }
     }
 
-    // 3. The merged terms leave the vocabulary.
-    const removed = [...fromAll].map((itemId) => ({ op: "remove" as const, itemId }));
+    // 3. The merged terms leave the vocabulary. Removing an entry removes
+    // its sub-entries, so a merged term's sub-terms that stay (a category's
+    // children) first move under the kept term, and only the topmost merged
+    // terms are removed.
+    const childCount = new Map<string, number>();
+    const moves: { op: "move"; itemId: string; parentId: string; position: number }[] = [];
+    for (const f of fromAll) {
+      const into = intoOf.get(f) as string;
+      for (const child of items.get(f)?.children ?? []) {
+        if (fromAll.has(child.id)) continue;
+        const position = childCount.get(into) ?? (items.get(into)?.children ?? []).length;
+        childCount.set(into, position + 1);
+        moves.push({ op: "move", itemId: child.id, parentId: into, position });
+      }
+    }
+    const removed = [...fromAll]
+      .filter((id) => ![...fromAll].some((other) => isBelow(parents, id, other)))
+      .map((itemId) => ({ op: "remove" as const, itemId }));
     const r = await patchListItemsManyOp.handler(
       ctx,
-      { lists: [{ slug: input.list, patches: [...patches, ...removed] }] },
+      { lists: [{ slug: input.list, patches: [...patches, ...moves, ...removed] }] },
       tx,
     );
     if (!r.ok) return failBatch(true, r.error);
     return ok({
       retaggedPages,
-      removedTerms: removed.length,
+      removedTerms: fromAll.size,
       adoptedOverviewPages: adopted,
       redirectedOverviewPages: redirected,
     });

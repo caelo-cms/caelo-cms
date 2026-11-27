@@ -293,6 +293,30 @@ describe("renderSeoHead (#1752)", () => {
     expect(setArticleModifiedTime("<html></html>", "x")).toBe("<html></html>");
   });
 
+  it("keeps the graph's publication date when it equals the modified date it re-dates (#1753)", () => {
+    // Right after the first publish both dates are the same instant.
+    const first = "2026-01-02T00:00:00.000Z";
+    const html = renderSeoHead({
+      ...input,
+      head: head({ pageTypeSeo: { ogType: "article" } }),
+      article: { publishedTime: first, modifiedTime: first },
+      jsonLd: graph({ published: first, modified: first }),
+    });
+    const dated = setArticleModifiedTime(html, "2026-03-04T05:06:07.000Z");
+    const nodes = (
+      JSON.parse(
+        /<script type="application\/ld\+json">(.*?)<\/script>/.exec(dated)?.[1] ?? "{}",
+      ) as { "@graph": Record<string, unknown>[] }
+    )["@graph"];
+    const dated2 = nodes.filter((n) => n.dateModified !== undefined);
+    expect(dated2.length).toBeGreaterThan(0);
+    for (const n of dated2) {
+      expect(n.dateModified).toBe("2026-03-04T05:06:07.000Z");
+      if (n.datePublished !== undefined) expect(n.datePublished).toBe(first);
+    }
+    expect(dated).toContain(`<meta property="article:published_time" content="${first}" />`);
+  });
+
   it("dates the JSON-LD graph's live modified date with the article's, and again later (#1753)", () => {
     const html = renderSeoHead({
       ...input,

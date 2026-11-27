@@ -24,13 +24,14 @@
  * Values only come from the page's own fields, which the page shows.
  */
 
-import type {
-  StructuredDataAnswer,
-  StructuredDataNode,
-  StructuredDataPage,
-  StructuredDataPageAnswer,
-  StructuredDataScalar,
-  StructuredDataValue,
+import {
+  STRUCTURED_DATA_ARRAY_MAX,
+  type StructuredDataAnswer,
+  type StructuredDataNode,
+  type StructuredDataPage,
+  type StructuredDataPageAnswer,
+  type StructuredDataScalar,
+  type StructuredDataValue,
 } from "@caelo-cms/plugin-sdk";
 import { entityAnswer } from "./entities.js";
 import type { SchemaMapping } from "./mapping.js";
@@ -173,14 +174,18 @@ export function pageAnswer(
     }
     case "collection": {
       if (page.listed.length === 0) return { webPage: { type: "CollectionPage" } };
+      // The first pages the page shows, in its order: an array holds at most
+      // STRUCTURED_DATA_ARRAY_MAX values, and a page with several lists
+      // (two sections of 30 articles) shows more. The list names what it holds.
+      const shown = page.listed.slice(0, STRUCTURED_DATA_ARRAY_MAX);
       nodes.push({
         type: "ItemList",
         id: { fragment: "items" },
         properties: {
-          itemListElement: page.listed.map((id, i) => ({
+          itemListElement: shown.map((id, i) => ({
             node: { type: "ListItem", properties: { position: i + 1, url: { page: id } } },
           })),
-          numberOfItems: page.listed.length,
+          numberOfItems: shown.length,
         },
       });
       return {

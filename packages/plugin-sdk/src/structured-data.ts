@@ -25,7 +25,9 @@
  * - `{live: "published" | "modified"}`: the date the page went live first
  *   or last changed live, from the live page record (`dateModified` agrees
  *   with the sitemap's `<lastmod>`); a page outside the record has no such
- *   date and the property is left out;
+ *   date and the property is left out. `"modified"` stands only as
+ *   `dateModified` (`live-modified-property` otherwise): a later build
+ *   re-dates the written graph by that name;
  * - `{page: <page id>}`: that page's public URL, built by core;
  * - `{media: <media id>}`: the URL of that library image, published by core;
  * - `{url: "https://…"}`: an address on ANOTHER site (a profile on a social
@@ -221,6 +223,9 @@ export interface StructuredDataPage {
   /**
    * When the page went live first (ISO 8601, the live page record), or null
    * when it never has: what a news sitemap's two-day window is measured on.
+   * In a build, a page the build itself takes live for the first time
+   * carries the build's publication time (the date its graph shows); the
+   * editor preview shows null for it.
    */
   readonly publishedAt: string | null;
   /**

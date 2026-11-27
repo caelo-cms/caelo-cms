@@ -498,6 +498,7 @@ export async function prepareSeoPass(args: {
     siteBaseUrl: settings.siteBaseUrl,
     pageUrlStyle,
     site: { organization: Boolean(settings.organization.name), name: settings.siteName },
+    publishAt: contentStates.publishAt,
   });
   const extraSitemaps = new ExtraSitemaps(settings.siteName);
   // `<html lang>`: the build always has the site language.

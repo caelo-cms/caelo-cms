@@ -218,6 +218,12 @@ export async function prepareStructuredDataPass(args: {
   readonly siteBaseUrl: string;
   readonly pageUrlStyle: PageUrlStyle;
   readonly site: StructuredDataArgs["site"];
+  /**
+   * When this build publishes (the live comparison's `publishAt`): a page it
+   * records live for the first time has no `first_published_at` yet, and
+   * goes live with this date, as its graph and sitemap dates do.
+   */
+  readonly publishAt: string;
 }): Promise<StructuredDataPass | null> {
   const [graph, sitemaps] = await Promise.all([
     args.plugins.hasStructuredDataContributors(),
@@ -251,7 +257,12 @@ export async function prepareStructuredDataPass(args: {
         description: own ? own.description : "",
         shareImage: own ? own.shareImage : null,
         live: own?.live ?? false,
-        publishedAt: r.first_published_at === null ? null : iso(r.first_published_at),
+        publishedAt:
+          r.first_published_at !== null
+            ? iso(r.first_published_at)
+            : own?.live
+              ? args.publishAt
+              : null,
         properties: (parse(r.properties) as Record<string, unknown>) ?? {},
         terms: terms.get(r.id) ?? [],
         listed: own?.listed ?? [],

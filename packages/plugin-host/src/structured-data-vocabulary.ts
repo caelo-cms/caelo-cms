@@ -247,6 +247,20 @@ function checkValue(raw: unknown, depth: number): CheckedValue | { rule: string 
 }
 
 /**
+ * Check a property's value. `{live: "modified"}` is the page's modified
+ * date, which a later build re-dates in the written graph by its property
+ * name (`setArticleModifiedTime`), so it may only stand as `dateModified`.
+ */
+function checkNamed(name: string, raw: unknown, depth: number): CheckedValue | { rule: string } {
+  const checked = checkValue(raw, depth);
+  if ("rule" in checked || name === "dateModified") return checked;
+  const values = checked.k === "list" ? checked.items : [checked];
+  return values.some((v) => v.k === "live" && v.v === "modified")
+    ? { rule: "live-modified-property" }
+    : checked;
+}
+
+/**
  * The properties of a nested node, all or nothing: a nested node with a
  * bad property is refused whole, so a half address never reaches a page.
  */
@@ -261,7 +275,7 @@ function checkProperties(
   const props = new Map<string, CheckedValue>();
   for (const [name, value] of entries) {
     if (!PROPERTY_RE.test(name)) return { rule: "property-name" };
-    const checked = checkValue(value, depth);
+    const checked = checkNamed(name, value, depth);
     if ("rule" in checked) return checked;
     props.set(name, checked);
   }
@@ -341,7 +355,7 @@ export function checkStructuredDataAnswer(
             refuse(pageId, fieldName(name), "property-not-allowed");
             continue;
           }
-          const checked = checkValue(value, 0);
+          const checked = checkNamed(name, value, 0);
           if ("rule" in checked) refuse(pageId, name, checked.rule);
           else webPage.set(name, checked);
         }
@@ -396,7 +410,7 @@ export function checkStructuredDataAnswer(
           refuse(pageId, "property", "property-name");
           continue;
         }
-        const checked = checkValue(value, 0);
+        const checked = checkNamed(name, value, 0);
         if ("rule" in checked) refuse(pageId, name, checked.rule);
         else props.set(name, checked);
       }

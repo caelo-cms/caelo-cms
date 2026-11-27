@@ -263,4 +263,60 @@ describe("#1759 lists.merge_terms", () => {
       await fail({ list: `${PFX}-nope`, merges: [{ from: [vocab.tools], into: vocab.ads }] }),
     ).toContain("no list");
   });
+
+  it("keeps a merged category's sub-categories under the kept one, and refuses merging a term into its own child", async () => {
+    const slug = `${PFX}-tree`;
+    await op(SYS, "lists.upsert_many", {
+      lists: [
+        {
+          slug,
+          name: "Blog categories",
+          purpose: "Nested categories of the blog",
+          type: "categories",
+          items: [
+            {
+              node: "category",
+              values: { name: "Marketing", slug: "marketing" },
+              children: [
+                { node: "category", values: { name: "Email", slug: "email" } },
+                { node: "category", values: { name: "Social", slug: "social" } },
+              ],
+            },
+            {
+              node: "category",
+              values: { name: "Online Marketing", slug: "online-marketing" },
+              children: [{ node: "category", values: { name: "Search", slug: "search" } }],
+            },
+          ],
+        },
+      ],
+    });
+    const tree = (await op<{ list: { id: string; items: ListItem[] } }>(SYS, "lists.get", { slug }))
+      .list;
+    const marketing = tree.items[0] as ListItem;
+    const online = tree.items[1] as ListItem;
+    const email = marketing.children?.[0] as ListItem;
+
+    const refused = await execute(registry, adapter, SYS, "lists.merge_terms", {
+      list: slug,
+      merges: [{ from: [marketing.id], into: email.id }],
+    });
+    expect(refused.ok).toBe(false);
+    expect(refused.ok ? "" : JSON.stringify(refused.error)).toContain("sits under the merged term");
+
+    const r = await op<{ removedTerms: number }>(SYS, "lists.merge_terms", {
+      list: slug,
+      merges: [{ from: [marketing.id], into: online.id }],
+    });
+    expect(r.removedTerms).toBe(1);
+    const after = (await op<{ list: { items: ListItem[] } }>(SYS, "lists.get", { slug })).list;
+    expect(after.items.map((i) => i.values.name)).toEqual(["Online Marketing"]);
+    expect(after.items[0]?.children?.map((i) => i.values.name)).toEqual([
+      "Search",
+      "Email",
+      "Social",
+    ]);
+    // The moved sub-categories keep their ids, so the pages filed under them keep their terms.
+    expect(after.items[0]?.children?.[1]?.id).toBe(email.id);
+  });
 });

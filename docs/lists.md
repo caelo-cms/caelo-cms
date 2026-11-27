@@ -973,7 +973,7 @@ tools (`translate_chrome`, `apply_translations` with `kind: "addresses"`,
   list's current slice when the page has one, else every query list's
   entries, each page once). The structured-data pass hands them to plugins
   as `StructuredDataPage.listed`, so an overview page's `ItemList` names
-  exactly the pages it shows.
+  the pages it shows, in their order (the `seo` plugin lists the first 50).
 - Overlays: refused overlay entries (unknown address, a structural
   `module` / `term` value, a value failing its field) are collected on
   the context (`overlayIssues`); the preview and the generator report
