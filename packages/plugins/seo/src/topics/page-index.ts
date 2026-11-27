@@ -154,8 +154,3 @@ export async function allIndexedPages(ctx: Ctx): Promise<PageIndexRow[]> {
     afterId = (page[page.length - 1] as PageIndexRow).id;
   }
 }
-
-/** One row by page id, or null when the page is not published in the last Stage. */
-export async function indexedPage(ctx: Ctx, pageId: string): Promise<PageIndexRow | null> {
-  return (await rowsOf(ctx, [pageId]))[0] ?? null;
-}

@@ -26,7 +26,7 @@ import {
   SITEMAP_VIDEOS_PER_PAGE,
   STRUCTURED_DATA_PAGES_PER_CALL,
 } from "@caelo-cms/plugin-sdk";
-import { pluginValueRefusedMarker } from "@caelo-cms/shared";
+import { PLUGIN_SITEMAP_ENTRIES_POINT, pluginValueRefusedMarker } from "@caelo-cms/shared";
 import {
   isPluginDisabled,
   loadedPlugins,
@@ -38,9 +38,6 @@ import { checkPluginMedia, describePluginMedia } from "./plugin-values.js";
 import type { PublicUrlContext } from "./public-urls.js";
 import { reportPluginRenderFailure } from "./render-failures.js";
 import { chunkArgs, type StructuredDataInput } from "./structured-data.js";
-
-/** The point a refused sitemap entry is named after. */
-export const PLUGIN_SITEMAP_ENTRIES_POINT = "sitemap-entries";
 
 /** One video entry core writes; `thumbnail` is the library image's id. */
 export interface ResolvedVideoEntry {

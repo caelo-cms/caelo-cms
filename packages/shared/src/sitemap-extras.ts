@@ -8,6 +8,9 @@
  * names every sitemap the build wrote.
  */
 
+/** The point a refused sitemap entry is named after (`plugin-value-refused:<plugin>.sitemap-entries.<field>:<rule>`). */
+export const PLUGIN_SITEMAP_ENTRIES_POINT = "sitemap-entries";
+
 /** One article of the news sitemap. */
 export interface NewsSitemapEntry {
   /** The page's public URL (its canonical). */

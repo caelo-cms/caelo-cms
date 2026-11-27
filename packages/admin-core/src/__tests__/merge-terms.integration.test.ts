@@ -220,7 +220,9 @@ describe("#1759 lists.merge_terms", () => {
     expect(list.items.map((i) => i.values.name)).toEqual(["SEO Tools", "Ads"]);
     const ads = list.items.find((i) => i.values.name === "Ads");
     // Reads show page links as paths.
-    expect((ads?.values.landing_page as { href: string }).href).toBe(`/${PFX}-topic-adsense`);
+    expect((ads?.values.landing_page as { href: string } | undefined)?.href).toBe(
+      `/${PFX}-topic-adsense`,
+    );
 
     // #1550 — a page delete's 301 is Staged: it goes live with the Publish live that ships the delete.
     const redirects = await asSystem(
