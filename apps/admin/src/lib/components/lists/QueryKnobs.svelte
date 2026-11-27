@@ -22,7 +22,7 @@
     node: string;
     query: Record<string, unknown> | undefined;
     ctx: FieldEditorContext;
-    pageTypes: readonly { slug: string; name: string; properties: readonly { name: string; label: string }[] }[];
+    pageTypes: readonly { slug: string; name: string; properties: readonly { name: string; label: string; type?: string }[] }[];
     previewAvailable: boolean;
     csrfToken: string;
     idPrefix: string;
@@ -44,8 +44,17 @@
   const disabled = $derived(ctx.readOnly);
   const terms = $derived(ctx.vocabularies.flatMap((v) => termChoices(v).map((c) => ({ ...c, vocabulary: v.name }))));
   const propertyOrders = $derived(
-    [...new Map(pageTypes.flatMap((t) => t.properties.map((p) => [p.name, p.label] as const))).entries()],
+    [...new Map(pageTypes.flatMap((t) => t.properties.filter((p) => p.type !== "page").map((p) => [p.name, p.label] as const))).entries()],
   );
+  /** #1754 — the `page` properties a `refers_to` filter can follow. */
+  const pageProperties = $derived(
+    [...new Map(pageTypes.flatMap((t) => t.properties.filter((p) => p.type === "page").map((p) => [p.name, p.label] as const))).entries()],
+  );
+  const refersTo = $derived(q.refers_to as { property?: string; page?: string } | undefined);
+  function setRefersTo(next: { property?: string; page?: string }): void {
+    const merged = { ...refersTo, ...next };
+    set("refers_to", merged.property ? { property: merged.property, page: merged.page || "self" } : undefined);
+  }
 
   function set(knob: QueryKnob, value: unknown): void {
     onchange(setKnob(source, query, knob, value));
@@ -137,6 +146,24 @@
             {disabled}
             onchange={(e) => set(knob, (e.currentTarget as HTMLInputElement).value.trim() || undefined)}
           />
+          <datalist id={`${id}-pages`}>
+            {#each ctx.pages as p (p.id)}<option value={p.path}>{p.title}</option>{/each}
+          </datalist>
+        {:else if knob === "refers_to"}
+          <div class="flex gap-2">
+            <Select {id} value={refersTo?.property ?? ""} {disabled} aria-label="Property" onchange={(e: Event) => setRefersTo({ property: (e.currentTarget as HTMLSelectElement).value || undefined })}>
+              <option value="">Any page</option>
+              {#each pageProperties as [name, label] (name)}<option value={name}>{label}</option>{/each}
+            </Select>
+            <Input
+              list={`${id}-pages`}
+              placeholder="this page"
+              aria-label="Page named"
+              value={refersTo?.page === "self" ? "" : String(refersTo?.page ?? "")}
+              disabled={disabled || !refersTo?.property}
+              onchange={(e) => setRefersTo({ page: (e.currentTarget as HTMLInputElement).value.trim() || "self" })}
+            />
+          </div>
           <datalist id={`${id}-pages`}>
             {#each ctx.pages as p (p.id)}<option value={p.path}>{p.title}</option>{/each}
           </datalist>

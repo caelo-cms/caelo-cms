@@ -432,6 +432,6 @@ describe("render passes (engine)", () => {
     expect((pages[2]?.html.match(/<li>/g) ?? []).length).toBe(3);
     expect(pages[2]?.html).toContain("<li>Guide 063</li>");
     const deps = mergeListRenderDeps(pages.map((p) => p.lists.deps()));
-    expect(deps.queries).toEqual([{ pageType: "guide", terms: [], parent: null }]);
+    expect(deps.queries).toEqual([{ pageType: "guide", terms: [], parent: null, refersTo: null }]);
   });
 });

@@ -6,7 +6,7 @@
  * it the tab is read-only.
  */
 
-import type { ListTypeDef, PageTypeDef } from "@caelo-cms/shared";
+import { type ListTypeDef, type PageTypeDef, TERM_OVERVIEW_FIELD } from "@caelo-cms/shared";
 import { fail, redirect } from "@sveltejs/kit";
 import { snakeName } from "#lib/lists/type-editor.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
@@ -60,12 +60,14 @@ export const actions: Actions = {
     }
     const role = String(form.get("role") ?? "content") as ListTypeDef["role"];
     const kind = snakeName(String(form.get("entryLabel") ?? "") || "entry", "entry");
-    // A vocabulary entry needs a name and a slug (docs/lists.md §3).
+    // A vocabulary entry needs a name, a slug and its overview page
+    // (docs/lists.md §3, #1754).
     const fields: ListTypeDef["nodes"][string]["fields"] =
       role === "vocabulary"
         ? [
             { name: "name", label: "Name", type: "text", required: true },
             { name: "slug", label: "Slug", type: "text", required: true },
+            { name: TERM_OVERVIEW_FIELD, label: "Overview page", type: "link" },
           ]
         : [{ name: "label", label: "Label", type: "text", required: true }];
     const definition: ListTypeDef = {

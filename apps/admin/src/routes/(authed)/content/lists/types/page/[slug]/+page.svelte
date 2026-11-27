@@ -15,6 +15,7 @@
   );
   const ctx: FieldEditorContext = $derived({
     pages: data.pages,
+    pageTypes: data.pageTypes,
     modules: [],
     vocabularies: data.vocabularies,
     readOnly: !data.canStructure,

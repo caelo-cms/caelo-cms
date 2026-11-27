@@ -52,6 +52,7 @@
     icon: "Icon name",
     module: "Embedded module",
     term: "Category or tag",
+    page: "Pages (e.g. authors)",
   };
   /** Types whose default the editor can offer (module / term defaults name stored rows). */
   const DEFAULTABLE = new Set<ListFieldType>(["text", "richtext", "link", "select", "boolean", "number", "date", "icon"]);
@@ -143,6 +144,19 @@
       <label class="inline-flex items-center gap-1">
         <input type="checkbox" checked={field.multiple === true} disabled={ro} onchange={(e) => patch({ multiple: (e.currentTarget as HTMLInputElement).checked || undefined })} />
         Several
+      </label>
+    {:else if field.type === "page"}
+      <label class="inline-flex items-center gap-1">
+        Pages of type
+        <Select class="h-7" value={field.pageType ?? ""} disabled={ro} data-testid="field-def-page-type" onchange={(e: Event) => patch({ pageType: (e.currentTarget as HTMLSelectElement).value || undefined })}>
+          <option value="">any type</option>
+          {#each ctx.pageTypes ?? [] as t (t.slug)}<option value={t.slug}>{t.name}</option>{/each}
+          {#if field.pageType && !(ctx.pageTypes ?? []).some((t) => t.slug === field.pageType)}<option value={field.pageType}>{field.pageType} (missing)</option>{/if}
+        </Select>
+      </label>
+      <label class="inline-flex items-center gap-1">
+        <input type="checkbox" checked={field.multiple === true} disabled={ro} onchange={(e) => patch({ multiple: (e.currentTarget as HTMLInputElement).checked || undefined })} />
+        Several, in order
       </label>
     {/if}
   </div>

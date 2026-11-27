@@ -14,12 +14,12 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import type { FieldDef, PageTypeDef } from "@caelo-cms/shared";
+import type { PageTypeDef } from "@caelo-cms/shared";
 import { z } from "zod";
 import { deletePageTypesManyOp, upsertPageTypesManyOp } from "../../ops/lists/page-types.js";
 import { describeError, toolError } from "./_describe-error.js";
 import { idOf, idsOf } from "./_draft-reads.js";
-import { makeOpTool } from "./_list-tool-kit.js";
+import { describeField, makeOpTool } from "./_list-tool-kit.js";
 import { UPSERT_PAGE_TYPES_JSON_SCHEMA } from "./_list-tool-schemas.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -38,10 +38,6 @@ interface PageTypeRow extends PageTypeDef {
   vocabularySlugs: string[];
 }
 
-function describeProperty(f: FieldDef): string {
-  return `${f.name}${f.required ? "*" : ""}:${f.type}`;
-}
-
 function describePageType(t: PageTypeRow): string {
   const vocab = t.vocabularies
     .map(
@@ -53,7 +49,7 @@ function describePageType(t: PageTypeRow): string {
     `${t.slug} — ${t.name}: ${t.purpose}`,
     `  id ${t.id}; ${t.collection ? "collection" : "standalone pages"}; ${t.pageCount} page(s); version ${t.version}`,
     `  templates: ${t.templates.join(", ")} (default ${t.defaultTemplate})`,
-    `  properties: ${t.properties.map(describeProperty).join(", ") || "none"}`,
+    `  properties: ${t.properties.map(describeField).join(", ") || "none"}`,
     `  vocabularies: ${vocab || "none"}`,
   ].join("\n");
 }
@@ -113,7 +109,8 @@ export const upsertPageTypesManyTool = makeOpTool({
     "Create or replace page types in one transaction, when the operator starts a new kind of content ('a news section with categories', 'a job board').\n" +
     "CORE RULES:\n" +
     "- `templates`: ids from `list_templates`; none fits -> `create_template` with `newPageType` instead (template + type in one call). `defaultTemplate` is one of them.\n" +
-    "- `properties`: fields every page of the type carries (e.g. `author` text, `event_date` date); no `module` fields. `vocabularies[].list`: list id from `list_lists`.\n" +
+    "- `properties`: fields every page of the type carries (e.g. `event_date` date); no `module` fields. `vocabularies[].list`: list id from `list_lists`.\n" +
+    '- A page that names other pages (authors, reviewer, speakers, manufacturer) -> a `page` property, e.g. `{name:"authors", label:"Authors", type:"page", pageType:"author", multiple:true}`: the named pages are ordinary pages of their own type (create it in the same call), never text. The named page lists its referrers with a query `refers_to:{property:"authors", page:"self"}`.\n' +
     "- Order for 'news with categories': `upsert_lists_many` (a `categories` list) -> `create_template` with `newPageType` (or this, reusing a template) -> `build_page`/`update_pages_many` with pageType, properties, terms.\n" +
     "- Type in use: a new property's default is written into its pages; dropping a template they use is refused (move them first); dropping a property/vocabulary they hold values for needs `dropValues:true` (only with operator agreement). Pass `expectedVersion` from `list_page_types`.",
   inputSchema: UPSERT_PAGE_TYPES_JSON_SCHEMA,
