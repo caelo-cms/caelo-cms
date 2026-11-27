@@ -2216,16 +2216,19 @@ export const ADMIN_MEMORY_DEFAULT = "2Gi";
  * suggest and read answer from collection index files the gateway keeps
  * parsed in memory (`CAELO_COLLECTIONS_CACHE_MB`,
  * COLLECTIONS_CACHE_MB_DEFAULT), and a search by meaning embeds the query
- * with a model the gateway loads itself: GATEWAY_PEAK_WITH_MODEL_MIB
- * (@caelo-cms/shared gateway-memory.ts) measured on Cloud Run. 1 GiB held
- * the model only just and the cache not at all: on 2026-11-26 (#1745) a searchVIU
- * gateway was lost in the middle of its first semantic search. 2 GiB holds
- * both; `upgrade` raises a Google Cloud gateway below it (never lowers a
- * larger value, stack-converge.ts planServiceMemory), the Azure stack sizes
- * its gateway app from it, and the AWS stack defines no gateway task yet
- * (#749). Request-billed, so it costs memory only while a request runs.
+ * with a model the gateway loads itself (@caelo-cms/shared
+ * gateway-memory.ts). On 2026-11-26 (#1745) a searchVIU gateway with 1 GiB
+ * was lost in the middle of its first semantic search, and #1747 raised it
+ * to 2 GiB; #1777 removed the causes (the model's load is a third of what
+ * it was, the cache bound counts parsed bytes), so 1 GiB holds the model's
+ * peak and a full cache with a quarter to spare. `upgrade` raises a Google
+ * Cloud gateway below it and never lowers a larger value
+ * (stack-converge.ts planServiceMemory): an install #1747 raised to 2 GiB
+ * keeps it. The Azure stack sizes its gateway app from it, and the AWS
+ * stack defines no gateway task yet (#749). Request-billed, so it costs
+ * memory only while a request runs.
  */
-export const GATEWAY_MEMORY_DEFAULT = "2Gi";
+export const GATEWAY_MEMORY_DEFAULT = "1Gi";
 
 /** The memory upgrade raises each Cloud Run service to (null: the stacks' alone). */
 export const SERVICE_MEMORY_FLOOR: Readonly<Record<CloudRunSlug, string | null>> = {

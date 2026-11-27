@@ -157,3 +157,28 @@ BENCH_MODELS_DIR=<dir> bun run bench:semantic
 default model in CI. It fails when native and WebAssembly drift apart, or
 when the hybrid ranking falls under 0.85 or less than 0.15 above the word
 search.
+
+## Weight-only 8-bit (#1784, 2026-11-27)
+
+The publisher's export quantises dynamically (activations per input tensor),
+which costs quality and forces one text per run. A weight-only 8-bit form keeps
+the activations in float. Converted from the publisher's fp32 graph at the same
+revision with ONNX Runtime 1.31.1's `MatMulNBitsQuantizer` (8 bits, blocks of
+128, asymmetric, MatMul only; the token table stays fp32), measured with this
+page's labelled set, native passages and WebAssembly queries, on an M3 Pro that
+another process kept busy (compare the rows with each other, not with the tables
+above):
+
+| Graph | Hybrid MRR@10 | Vector MRR@10 | Native/WebAssembly top-1 agree | Native passage p50 | WebAssembly query p50 |
+|---|---|---|---|---|---|
+| quint8 (the publisher's, today) | 0.897 | 0.833 | 100 % | 8.0 ms | 20.9 ms |
+| 8-bit weights, float compute | 0.922 | 0.874 | 100 % (cosine 1.0000) | 36.1 ms | 86.4 ms |
+| 8-bit weights, int8 compute (`accuracy_level` 4) | 0.922 | 0.867 | 97.4 % | 6.6 ms | 83.7 ms |
+
+The quality is the fp32 graph's (0.922 / 0.874 above), and with int8 compute
+the index job would even embed faster. But ONNX Runtime's WebAssembly build has
+no int8 path for `MatMulNBits`: the gateway's query would take four times as
+long, several hundred milliseconds on Cloud Run's one vCPU, and its fp32 token
+table would need quantising of its own. Not added to the catalog; worth
+measuring again when ONNX Runtime Web gains the int8 kernel. Switching the
+default would also be a model change (every index embeds again).

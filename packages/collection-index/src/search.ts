@@ -42,7 +42,7 @@ import { DEFAULT_PROBE, listScore, nearestLists } from "./partitions.js";
 import type { OpenRelease } from "./release.js";
 import { keywordTerm, langTerm } from "./schema.js";
 import { docPosition, type ParsedDocs, type PostingList, VECTORS_PER_BLOCK } from "./segment.js";
-import { hammingCandidates, int8Score, normalize } from "./vectors.js";
+import { defaultRescore, hammingCandidates, int8Score, normalize } from "./vectors.js";
 import { closestWord, type VocabularyWord } from "./vocabulary.js";
 import { COMPOUND_PREFIX } from "./writer.js";
 
@@ -625,7 +625,7 @@ export interface VectorQuery {
   readonly filter?: SearchFilter;
   /** Least cosine similarity a passage needs to count. */
   readonly minSimilarity: number;
-  /** Binary candidates rescored with int8 (a flat segment). */
+  /** Binary candidates rescored with int8 per flat segment (default `defaultRescore` of its size). */
   readonly rescore?: number;
   /** Lists scored per partitioned segment (default `DEFAULT_PROBE`). */
   readonly probe?: number;
@@ -679,7 +679,12 @@ export async function searchVectors(release: OpenRelease, q: VectorQuery): Promi
         return;
       }
       const files = await seg.reader.codeFiles();
-      const candidates = hammingCandidates(files, query, q.rescore ?? 200, skip);
+      const candidates = hammingCandidates(
+        files,
+        query,
+        q.rescore ?? defaultRescore(v.count),
+        skip,
+      );
       const blocks = [...new Set(candidates.map((c) => Math.floor(c.ordinal / VECTORS_PER_BLOCK)))];
       const loaded = new Map(
         await Promise.all(blocks.map(async (b) => [b, await seg.reader.vectorBlock(b)] as const)),

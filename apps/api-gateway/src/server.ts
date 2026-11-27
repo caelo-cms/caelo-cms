@@ -1310,6 +1310,16 @@ function cacheableJsonResponse(
   return response;
 }
 
+/** Seconds the CDN may keep a release key (#1786); browsers ask the CDN every time. */
+export const RELEASE_KEY_CDN_SECONDS = 30;
+
+/** The current release key, cacheable at the CDN for {@link RELEASE_KEY_CDN_SECONDS}. */
+function releaseKeyResponse(identity: string, requestId: string): Response {
+  const response = jsonResponse({ release: identity }, { status: 200, requestId });
+  response.headers.set("Cache-Control", `public, max-age=0, s-maxage=${RELEASE_KEY_CDN_SECONDS}`);
+  return response;
+}
+
 async function collectionOperation(
   url: URL,
   route: { readonly slug: string; readonly operation: string; readonly releaseOnly: boolean },
@@ -1370,7 +1380,12 @@ async function collectionOperation(
           `[api-gateway] collection ${route.slug}.${route.operation}: the warm-up took longer than ${RELEASE_WARM_WAIT_MS} ms; the key went out, the search waits for the rest (request ${requestId})`,
         );
       }
-      answer = { status: 200, body: { release: identity }, cacheSeconds: null };
+      // #1786 — the CDN may hold the key for a short while: a visitor whose
+      // search the CDN also holds then never wakes this gateway. A key that
+      // went stale with a Publish live costs one 409, which names the new
+      // one (the runtime follows it once), or at most this long of answers
+      // from the release before.
+      return releaseKeyResponse(identity, requestId);
     } else if (asked !== null && asked !== identity) {
       // A newer Stage went live: the client asks again under the new key.
       answer = {

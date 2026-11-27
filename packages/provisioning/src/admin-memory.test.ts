@@ -9,7 +9,11 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { COLLECTIONS_CACHE_MB_DEFAULT, GATEWAY_PEAK_WITH_MODEL_MIB } from "@caelo-cms/shared";
+import {
+  COLLECTIONS_CACHE_HEAP_FACTOR,
+  COLLECTIONS_CACHE_MB_DEFAULT,
+  GATEWAY_PEAK_WITH_MODEL_MIB,
+} from "@caelo-cms/shared";
 import { generateDockerCompose } from "./compose.js";
 import {
   ADMIN_MEMORY_DEFAULT,
@@ -81,36 +85,35 @@ describe("planAdminMemory (upgrade)", () => {
 });
 
 describe("the gateways' memory (epic #1644)", () => {
-  // #1745 — searchVIU's 1 GiB gateway was lost in the middle of its
-  // first semantic search: the query model's load alone took it from 10 %
-  // to at least 87 %, with the index cache still to come.
-  it("holds the query model at the peak of its load and the full index cache", () => {
-    expect(GATEWAY_MEMORY_DEFAULT).toBe("2Gi");
-    expect(memoryQuantityMiB(GATEWAY_MEMORY_DEFAULT)).toBeGreaterThanOrEqual(
-      GATEWAY_PEAK_WITH_MODEL_MIB + COLLECTIONS_CACHE_MB_DEFAULT,
+  // #1745 — searchVIU's 1 GiB gateway was lost in the middle of its first
+  // semantic search, with the old model's load at 87 %. #1777 — the model
+  // without its token table and an honest cache bound fit 1 GiB with a
+  // quarter to spare.
+  it("holds the query model at the peak of its load and a full index cache, a quarter to spare", () => {
+    expect(GATEWAY_MEMORY_DEFAULT).toBe("1Gi");
+    const needed =
+      GATEWAY_PEAK_WITH_MODEL_MIB + COLLECTIONS_CACHE_MB_DEFAULT * COLLECTIONS_CACHE_HEAP_FACTOR;
+    expect((memoryQuantityMiB(GATEWAY_MEMORY_DEFAULT) as number) * 0.75).toBeGreaterThanOrEqual(
+      needed,
     );
-    // What the gateway ran with before does not.
-    expect(memoryQuantityMiB("1Gi")).toBeLessThan(
-      GATEWAY_PEAK_WITH_MODEL_MIB + COLLECTIONS_CACHE_MB_DEFAULT,
-    );
+    // Half of it does not.
+    expect(memoryQuantityMiB("512Mi") as number).toBeLessThan(needed);
   });
 
-  it("upgrade raises both gateways from 512Mi and from 1Gi, never lowers, leaves the proxy alone", () => {
+  it("upgrade raises both gateways from 512Mi, never lowers (an install #1747 raised keeps 2Gi), leaves the proxy alone", () => {
     for (const slug of ["gateway", "staging-gateway"] as const) {
-      for (const from of ["512Mi", "1Gi"]) {
-        expect(planServiceMemory(slug, from)).toEqual({
-          ok: true,
-          flags: ["--memory=2Gi"],
-          from,
-        });
-      }
+      expect(planServiceMemory(slug, "512Mi")).toEqual({
+        ok: true,
+        flags: ["--memory=1Gi"],
+        from: "512Mi",
+      });
       expect(planServiceMemory(slug, null)).toEqual({
         ok: true,
-        flags: ["--memory=2Gi"],
+        flags: ["--memory=1Gi"],
         from: null,
       });
-      expect(planServiceMemory(slug, "2Gi")).toEqual({ ok: true, flags: [], from: "2Gi" });
-      expect(planServiceMemory(slug, "4Gi")).toEqual({ ok: true, flags: [], from: "4Gi" });
+      for (const kept of ["1Gi", "2Gi", "4Gi"])
+        expect(planServiceMemory(slug, kept)).toEqual({ ok: true, flags: [], from: kept });
     }
     expect(planServiceMemory("admin", "1Gi")).toEqual(planAdminMemory("1Gi"));
     expect(planServiceMemory("mcp-auth-proxy", "512Mi")).toEqual({
@@ -130,7 +133,10 @@ describe("the gateways' memory (epic #1644)", () => {
       "utf8",
     );
     expect(azure).toContain("resources: azureContainerAppResources(GATEWAY_MEMORY_DEFAULT),");
-    expect(azureContainerAppResources(GATEWAY_MEMORY_DEFAULT)).toEqual({ cpu: 1, memory: "2.0Gi" });
+    expect(azureContainerAppResources(GATEWAY_MEMORY_DEFAULT)).toEqual({
+      cpu: 0.5,
+      memory: "1.0Gi",
+    });
     const args = stagingGatewayDeployArgs({
       provider: "gcp-firebase",
       projectId: "acme",
@@ -142,7 +148,7 @@ describe("the gateways' memory (epic #1644)", () => {
       databaseHost: "db1.p-label.europe-west1.sql-psa.goog",
       vpc: { network: "default", subnetwork: "default" },
     });
-    expect(args).toContain("--memory=2Gi");
+    expect(args).toContain("--memory=1Gi");
   });
 
   it("prices an always-on gateway instance at its memory", () => {
@@ -158,9 +164,9 @@ describe("the gateways' memory (epic #1644)", () => {
         l.name.startsWith("Cloud Run gateway"),
       );
     expect(line(0)?.monthlyUsd).toBe(1);
-    // $15 for the first GiB, ~$6.50 for the second.
-    expect(line(1)?.monthlyUsd).toBe(23);
-    expect(line(1)?.notes).toContain("2Gi");
+    // Its light traffic ($1) and $15 for the always-on instance's one GiB.
+    expect(line(1)?.monthlyUsd).toBe(16);
+    expect(line(1)?.notes).toContain("1Gi");
   });
 });
 

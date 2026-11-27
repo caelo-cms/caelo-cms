@@ -131,7 +131,14 @@ export {
   type PassageVector,
   VectorPool,
 } from "./vector-pool.js";
-export { binaryCode, type EncodedVector, encodeVector, normalize } from "./vectors.js";
+export {
+  binaryCode,
+  defaultRescore,
+  type EncodedVector,
+  encodeVector,
+  normalize,
+  RESCORE_SHARE,
+} from "./vectors.js";
 export { closestWord, editDistance } from "./vocabulary.js";
 export {
   buildSegment,
