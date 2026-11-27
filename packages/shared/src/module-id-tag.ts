@@ -63,6 +63,8 @@ const NOSNIPPET_ROOTS = new Set(["div", "section", "span"]);
 /** The one element that encloses a whole fragment, and where its opening tag is. */
 interface SoleRoot {
   readonly tag: string;
+  /** Does the opening tag carry `data-nosnippet` (the parsed attribute name)? */
+  readonly nosnippet: boolean;
   /** Index of the opening tag's `<`. */
   readonly start: number;
   /** Index of the opening tag's `>`. */
@@ -81,10 +83,15 @@ function readTopLevel(html: string): { root: SoleRoot | null; empty: boolean } {
   let root: SoleRoot | null = null;
   let looseText = false;
   const parser = new Parser({
-    onopentag(name) {
+    onopentag(name, attributes) {
       if (depth === 0) {
         roots += 1;
-        root = { tag: name, start: parser.startIndex, end: parser.endIndex };
+        root = {
+          tag: name,
+          nosnippet: Object.hasOwn(attributes, "data-nosnippet"),
+          start: parser.startIndex,
+          end: parser.endIndex,
+        };
       }
       depth += 1;
     },
@@ -116,11 +123,19 @@ export function markNosnippet(html: string): string {
   const { root, empty } = readTopLevel(html);
   if (empty) return html;
   if (root !== null && NOSNIPPET_ROOTS.has(root.tag.toLowerCase())) {
-    const openTag = html.slice(root.start, root.end + 1);
     // A supported root that already carries it (this wrapper, say) is done.
-    if (/\sdata-nosnippet\b/.test(openTag)) return html;
+    if (root.nosnippet) return html;
+    // The parsed tag, not a pattern over the text: its attribute values may
+    // hold anything, `>` and attribute-like words included.
+    const open = html.slice(root.start, root.end + 1);
+    const nameEnd = 1 + root.tag.length;
+    if (!open.startsWith("<") || !open.endsWith(">") || open.length < nameEnd + 1) {
+      return `<div data-nosnippet="">${html}</div>`;
+    }
     return (
-      html.slice(0, root.start) + tagRoot(openTag, "data-nosnippet", "") + html.slice(root.end + 1)
+      html.slice(0, root.start) +
+      openTagWith(open.slice(1, nameEnd), open.slice(nameEnd, -1), "data-nosnippet", "") +
+      html.slice(root.end + 1)
     );
   }
   return `<div data-nosnippet="">${html}</div>`;
@@ -134,12 +149,21 @@ function tagRoot(html: string, name: string, value: string): string {
   if (!m) return html;
   const tagAttrs = m[2] ?? "";
   if (new RegExp(`\\s${name}\\s*=`).test(tagAttrs)) return html;
+  const replaced = openTagWith(m[1] ?? "", tagAttrs, name, value);
+  return html.slice(0, m.index) + replaced + html.slice(m.index + m[0].length);
+}
+
+/**
+ * The opening tag `<tag attrs>` with `name="value"` added last, before the
+ * `/` of a self-closing tag (#1099: after it the tag would no longer
+ * self-close).
+ */
+function openTagWith(tag: string, tagAttrs: string, name: string, value: string): string {
   // String ops, not a `\s*\/\s*$` regex: that backtracks polynomially on
   // long whitespace runs (CodeQL js/polynomial-redos).
   const trimmed = tagAttrs.trimEnd();
   const selfClosing = trimmed.endsWith("/");
   const attrs = selfClosing ? trimmed.slice(0, -1).trimEnd() : tagAttrs;
   const close = selfClosing ? "/>" : ">";
-  const replaced = `<${m[1]}${attrs} ${name}="${value}"${close}`;
-  return html.slice(0, m.index) + replaced + html.slice(m.index + m[0].length);
+  return `<${tag}${attrs} ${name}="${value}"${close}`;
 }
