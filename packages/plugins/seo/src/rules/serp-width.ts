@@ -52,9 +52,6 @@ export const SERP_LIMITS = {
   mobile: { title: 920, description: 680 },
 } as const;
 
-/** One device of {@link SERP_LIMITS}. */
-export type SerpDevice = keyof typeof SERP_LIMITS;
-
 /** The width of `text` in px at `fontPx`. */
 export function textWidthPx(text: string, fontPx: number): number {
   let units = 0;
