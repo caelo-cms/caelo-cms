@@ -41,6 +41,7 @@ A start of a job that may wait reads the budget again (on Google Cloud through S
 3. Elastic work (a search index, a plugin batch in pieces) runs its lead task and gets helpers while CPU is free, up to what it wants (its unfinished pieces, capped by its `maxTasks`). Helpers leave the headroom. When the budget is over, or a waiting job of a higher class needs room, helpers stop after their current piece: lowest class and newest work first.
 4. Widening happens only above the headroom and cutting only below zero, so a short capture does not stop and restart helpers.
 5. A background job that cannot give CPU back (a batch without pieces) starts only if a quality check still fits after it: its runner and one Lighthouse run (`CHECK_MINIMUM_VCPU`, 3). Room for a check at full width would keep a large job from ever starting on a small quota; the check then runs its batch in more rounds.
+6. Nothing waits for good: a job that needs more than the whole budget (a small self-hosted machine, a tiny quota) starts once nothing else holds any of it. On a 4-core machine (3 for the jobs) a batch without pieces would otherwise need 6.
 
 On a new project's 20 vCPU (14 for the jobs) a Stage runs the check (1 + 10 vCPU) and one index task (2); once the check ends, the index widens to 6 tasks (12, plus the headroom). The next Stage's check makes the helpers stop after their piece.
 

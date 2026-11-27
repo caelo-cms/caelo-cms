@@ -35,6 +35,9 @@
  *      runner and one Lighthouse run ({@link CHECK_MINIMUM_VCPU}). Room for
  *      a check at full width would keep a large job from ever starting on a
  *      small quota; the check then runs its batch in more rounds.
+ *   6. Nothing waits for good: a job that needs more than the whole budget
+ *      (a small self-hosted machine, a tiny quota) starts once nothing else
+ *      holds any of it.
  */
 
 import { MAX_LIGHTHOUSE_TASKS } from "../reporting-jobs/run-capacity.js";
@@ -236,11 +239,14 @@ export function planAdmission(
       holders[w.kind] = (holders[w.kind] ?? 0) + cost;
       continue;
     }
-    const need =
+    const need = Math.min(
+      // Rule 6: never more than the whole budget, so it starts on an idle one.
+      Math.max(0, budgetVcpu),
       w.vcpuPerTask +
-      (w.cls === "background" ? HEADROOM_VCPU : 0) +
-      // Rule 5: a background job that cannot give CPU back leaves a check room.
-      (w.cls === "background" && !w.elastic && !audits() ? CHECK_MINIMUM_VCPU : 0);
+        (w.cls === "background" ? HEADROOM_VCPU : 0) +
+        // Rule 5: a background job that cannot give CPU back leaves a check room.
+        (w.cls === "background" && !w.elastic && !audits() ? CHECK_MINIMUM_VCPU : 0),
+    );
     if (blocker === null && free >= need) {
       start.push(w.id);
       free -= w.vcpuPerTask;

@@ -183,6 +183,21 @@ describe("admission order", () => {
     expect(plan.waiting.get(big.id)?.needVcpu).toBe(9);
   });
 
+  it("a job larger than the whole budget starts once nothing else holds any of it", () => {
+    // A 4-core machine (3 for the jobs), or a tiny quota: a batch on one
+    // task wants 1 + 2 (headroom) + 3 (a check's room) = 6.
+    const batch = booking({ kind: "plugin_batch", cls: "background", state: "waiting" });
+    expect(planAdmission(3, [batch]).start).toEqual([batch.id]);
+    // While anything runs it waits for that to end.
+    const build = booking({ kind: "build", cls: "immediate" });
+    const plan = planAdmission(3, [build, batch]);
+    expect(plan.start).toEqual([]);
+    expect(plan.waiting.get(batch.id)?.needVcpu).toBe(3);
+    // An index lead on a 1-core budget starts on an idle one too.
+    const lead = index({ state: "waiting" });
+    expect(planAdmission(1, [lead]).start).toEqual([lead.id]);
+  });
+
   it("without a limit everything starts and elastic work runs as wide as it wants", () => {
     const i = index({ state: "waiting" });
     const batch = booking({ kind: "plugin_batch", cls: "background", state: "waiting" });
