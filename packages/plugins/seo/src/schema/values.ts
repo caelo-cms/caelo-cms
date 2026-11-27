@@ -115,7 +115,8 @@ export function valuesOf(
     case "page":
       return pageIdsOf(raw).map((id) => ({ page: id }));
     case "link": {
-      const href = typeof raw === "object" && raw !== null ? (raw as { href?: unknown }).href : raw;
+      // `raw` is not null here (checked above).
+      const href = typeof raw === "object" ? (raw as { href?: unknown }).href : raw;
       if (typeof href !== "string") return [];
       const internal = PAGE_REF_RE.exec(href);
       if (internal) return [{ page: (internal[1] as string).toLowerCase() }];
