@@ -538,6 +538,17 @@ describe("a term's overview page", () => {
     expect(titles(resolve(ctxFor(P.post3), CRUMBS))).toEqual(["Home", "Blog", "Post three"]);
   });
 
+  it("a page below the home page that leads through a topic elsewhere still starts at home", () => {
+    // The blog hangs below the home page; the topic page has a tree of its own.
+    const pages = PAGES.map((p) => (p.id === P.blog ? { ...p, parentId: P.home } : p));
+    expect(titles(resolve(ctxFor(P.post2, data({ pages })), CRUMBS))).toEqual([
+      "Home",
+      "Topics",
+      "SEO",
+      "Post two",
+    ]);
+  });
+
   it("a page already below the overview page keeps its tree trail", () => {
     const pages = PAGES.map((p) => (p.id === P.post2 ? { ...p, parentId: P.seo } : p));
     expect(titles(resolve(ctxFor(P.post2, data({ pages })), CRUMBS))).toEqual([

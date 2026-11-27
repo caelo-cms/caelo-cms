@@ -1357,7 +1357,7 @@ function createPageContext(
         // in the last position, and would render `href=""` in every
         // template that links `{{link}}`. The rendering page is always in
         // the build that renders it (the editor preview also renders drafts).
-        const seen = new Set<string>();
+        let seen = new Set<string>();
         const walk = (start: ListPageRecord, walked: Set<string>): ListPageRecord[] => {
           const out: ListPageRecord[] = [];
           let p: ListPageRecord | undefined = start;
@@ -1372,11 +1372,13 @@ function createPageContext(
         // #1754 — given a vocabulary, the trail leads through the overview
         // page of the page's term (a curated topic page) when the page tree
         // does not already: Home → … → Topic → Article. The overview page's
-        // own place in the tree gives the crumbs above it.
+        // own place in the tree gives the crumbs above it, and only those
+        // count as walked: the page's own ancestors (a home page above it,
+        // say) are no longer in the trail.
         if (via !== null && !seen.has(via.id)) {
           const walked = new Set<string>([current.id]);
           chain = [...walk(via, walked), current];
-          for (const id of walked) seen.add(id);
+          seen = walked;
         }
         // The home page is no parent in the tree, yet every trail starts
         // there; its short name is the "Start" crumb, translated with it.
