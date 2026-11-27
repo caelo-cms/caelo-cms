@@ -275,6 +275,25 @@ describe("markNosnippet", () => {
     // A text-only placement is wrapped too (review #1771); an empty one stays empty.
     expect(markNosnippet("plain text")).toBe('<div data-nosnippet="">plain text</div>');
     expect(markNosnippet("  ")).toBe("  ");
+    // The parsed root is stamped, never markup inside a comment (review #1771).
+    expect(markNosnippet("<!-- <div>example</div> --><section>Sensitive</section>")).toBe(
+      '<!-- <div>example</div> --><section data-nosnippet="">Sensitive</section>',
+    );
+    expect(markNosnippet("<!-- <div data-nosnippet> --><section>x</section>")).toBe(
+      '<!-- <div data-nosnippet> --><section data-nosnippet="">x</section>',
+    );
+    expect(markNosnippet("<!-- only a note -->")).toBe("<!-- only a note -->");
+    // Only the attribute itself counts, not a longer name or a value (review #1771).
+    expect(markNosnippet('<div data-nosnippet-disabled="true">x</div>')).toBe(
+      '<div data-nosnippet-disabled="true" data-nosnippet="">x</div>',
+    );
+    expect(markNosnippet('<div title=" data-nosnippet=">x</div>')).toBe(
+      '<div title=" data-nosnippet=" data-nosnippet="">x</div>',
+    );
+    expect(markNosnippet('<span title="a>b">x</span>')).toBe(
+      '<span title="a>b" data-nosnippet="">x</span>',
+    );
+    expect(markNosnippet("<div data-nosnippet>x</div>")).toBe("<div data-nosnippet>x</div>");
     // An unsupported root that carries the attribute is still wrapped (review #1771).
     expect(markNosnippet('<article data-nosnippet="">x</article>')).toBe(
       '<div data-nosnippet=""><article data-nosnippet="">x</article></div>',
