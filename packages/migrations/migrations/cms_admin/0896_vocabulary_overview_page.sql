@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0887 — every vocabulary entry can name its overview page (issue #1754,
+-- 0896 — every vocabulary entry can name its overview page (issue #1754,
 -- epic #1751; docs/lists.md §3).
 --
 -- A term (a category, a tag, a topic) points to the page that is its

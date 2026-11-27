@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0888 — skill guidance for page references and term overview pages
+-- 0897 — skill guidance for page references and term overview pages
 -- (issue #1754, epic #1751; docs/lists.md §2, §6).
 --
 -- An author is a normal page of a page type (maintainer decision
@@ -8,7 +8,7 @@
 -- order, and the author page lists the articles naming it with a page
 -- query `refers_to: {property, page: "self"}`. A term never makes a page
 -- by itself; an important topic gets a curated page, and the term's
--- `landing_page` (now on every vocabulary type, 0887) points there, so
+-- `landing_page` (now on every vocabulary type, 0896) points there, so
 -- term chips link it and breadcrumbs given the vocabulary lead through
 -- it. The manage-page-types skill teaches page types, vocabularies and
 -- page queries, so it gains both; manage-module names the new query
