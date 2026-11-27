@@ -136,6 +136,37 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
         "the page-output observer and the Stage audit read the lists the settings name, by id, once per Stage",
     },
   },
+  // #1757, #1758, #1760, #1763 — the seo plugin has no consumer and no cron.
+  seo: {
+    "site_defaults.get_seo": {
+      notBackground:
+        "plan_crawler_policy (an AI tool) and the Stage audit read the robots rules, one row",
+    },
+    "pages_seo.overview": {
+      notBackground:
+        "the Stage audit reads the staged pages' heads by id (duplicates), the Owner's overview panel one page of 50",
+    },
+    "pages_seo.get": {
+      notBackground:
+        "the write hints after an AI SEO write and the editor toolbar place read the pages written or shown",
+    },
+    "pages.list": {
+      notBackground: "the write hints after an AI SEO write read the pages written, by id",
+    },
+    "pages.search": {
+      notBackground: "the write hints after an AI SEO write look for a similar title, 20 pages",
+    },
+    "page_types.list": { notBackground: "the overview panel's page type filter" },
+    "pages.resolve_public_urls": {
+      notBackground: "the editor toolbar place builds the shown page's address",
+    },
+    "pages_seo.share_images": {
+      notBackground: "the editor toolbar place reads the shown page's share image",
+    },
+    "quality_audits.staged_pages": {
+      notBackground: "the Stage audit's batch calls read pages outside their batch, by id",
+    },
+  },
 };
 
 function sources(dir: string, out: string[] = []): string[] {

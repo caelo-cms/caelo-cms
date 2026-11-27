@@ -97,6 +97,8 @@ const PENDING_WRITERS: Record<string, string> = {
   "packages/admin-core/src/ops/content/path-moves.ts":
     "the page-move gateway: a rename, move or revert stages its 301s",
   "packages/admin-core/src/ops/content/pages.ts": "pages.delete's dead-URL 301, Staged",
+  "packages/admin-core/src/ops/content/page-gone.ts":
+    "pages.delete's 410 Gone rule for a page removed on purpose (#1762), Staged",
   "packages/admin-core/src/ops/content/url_migrations.ts": "an approved URL migration, Staged",
 };
 

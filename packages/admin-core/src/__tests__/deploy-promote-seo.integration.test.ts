@@ -30,6 +30,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { planCrawlerPolicy } from "@caelo-cms/plugin-seo/crawler-policy";
 import {
   DatabaseAdapter,
   execute,
@@ -39,7 +40,6 @@ import {
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { NO_BUILD_HEADERS_NOTE } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { planCrawlerPolicy } from "../../../plugins/seo/src/crawlers/policy.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
 import { seedLiveRedirects } from "./fixtures/redirects.js";
