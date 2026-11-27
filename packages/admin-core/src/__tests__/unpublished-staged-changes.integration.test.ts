@@ -383,5 +383,6 @@ describe("#1750 a staged section script before Publish live", () => {
     expect(v.olderStagedNotListed).toBe(true);
     expect(v.staged.globals.map((g) => g.entityId).sort()).toEqual([detection, newest].sort());
     expect(await unpublished(e)).toContain("older changes of this chat are not listed");
-  });
+    // A page and one more: about a hundred writes through the real op.
+  }, 180_000);
 });
