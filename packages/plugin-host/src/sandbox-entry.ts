@@ -23,6 +23,9 @@
  * (which authorizes and validates every call, sequence number and size)
  * are, and they hold whatever the child does.
  */
+import { RENDER_POINT_ENTRIES } from "./render-points.js";
+import { SANDBOX_PART_UNITS } from "./sandbox-protocol.js";
+
 export const sandboxPreludeSource = `
 const DenoNs = globalThis.Deno;
 const FunctionCall = Function.prototype.call;
@@ -70,6 +73,20 @@ if (typeof globalThis.Deno !== "undefined") throw new Error("SandboxPreludeFaile
 if (typeof globalThis.process !== "undefined") throw new Error("SandboxPreludeFailed: process still reachable");
 `;
 
+/**
+ * #1729 (Q3 A) — the reserved entries of composition points, as the child
+ * resolves them: entry → [definition key naming the operation, manifest
+ * field announcing it] (render-points.ts is the source of truth).
+ */
+const reservedEntries = JSON.stringify(
+  Object.fromEntries(
+    Object.entries(RENDER_POINT_ENTRIES).map(([name, e]) => [
+      name,
+      [e.definitionKey, e.announcedBy],
+    ]),
+  ),
+);
+
 /** Entry module: prelude first, then the plugin, then the protocol loop. */
 export const sandboxEntrySource = `
 import {
@@ -94,6 +111,20 @@ const write = (value, strictCas = false) => {
   let offset = 0;
   while (offset < bytes.length) offset += stdoutWriteSync(Uint8Subarray(bytes, offset));
 };
+// An answer over one line goes out as parts of its JSON text (#1729); the
+// host joins them and caps the total for the point that asked.
+const writeResult = (value) => {
+  const json = JSONStringify(value);
+  if (encodeText(json).length < 1048000) return write({ kind: "result", value });
+  let parts = 0;
+  for (let at = 0; at < json.length; at += ${SANDBOX_PART_UNITS}) {
+    write({ kind: "part", text: StringSlice(json, at, at + ${SANDBOX_PART_UNITS}) });
+    parts++;
+  }
+  write({ kind: "result", value: null, parts });
+};
+const RESERVED = ${reservedEntries};
+const announced = (value) => Array.isArray(value) ? value.length > 0 : value === true;
 const pending = new MapCtor();
 let nextId = 0;
 let callLimit = 1024;
@@ -207,10 +238,15 @@ const execute = async (message) => {
     ...(message.hasFonts ? { fonts: handles("fonts", ["find", "inspect", "resolve", "readChunk"]) } : {}),
     ...(message.hasSiteMedia ? { siteMedia: handles("siteMedia", ["find", "inspect", "readChunk"]) } : {}),
     ...(message.hasConsentPurposes ? { consentPurposes: handles("consentPurposes", ["list"]) } : {}),
+    ...(message.hasChanges ? { changes: handles("changes", ["cursorState"]) } : {}),
+    ...(message.hasCms ? { cms: handles("cms", ["call"]) } : {}),
     ...(message.hasPrivateFiles ? { privateFiles: handles("privateFiles", ["begin", "writeChunk", "commit", "stat", "readChunk", "remove"]) } : {}),
     ...(message.hasConfig ? { config: configHandle() } : {}),
     ...(message.collections && message.collections.length > 0 ? { collections: collectionsOf(message.collections) } : {}),
     ...(message.hasChatTools ? { chatTools: ObjectFreeze({ run: (conversation, tool, input, opts) => rpc("chatTools.run", conversation, tool, input, opts || {}) }) } : {}),
+    // #1729 — no send: a runtime-installed plugin mails only its templates.
+    ...(message.hasAi ? { ai: handles("ai", ["complete", "generateObject"]) } : {}),
+    ...(message.hasEmail ? { email: handles("email", ["queue", "unsubscribeLink"]) } : {}),
     api: handles("api", ["list", "get"]),
     captcha: handles("captcha", ["requireProof"]),
     theme: ObjectFreeze(message.theme), visitor: ObjectFreeze(message.visitor),
@@ -223,16 +259,32 @@ const execute = async (message) => {
     for (let i = 0; i < names.length; i++)
       if (typeof plugin.operations?.[names[i]] !== "function") throw new ErrorCtor("SandboxOperationNotDeclared: " + names[i]);
     if (message.args.hasStaticRender && typeof plugin.staticRender !== "function") throw new ErrorCtor("SandboxStaticRenderMissing");
+    if ((message.args.hasOnActivate === true) !== (typeof plugin.onActivate === "function")) throw new ErrorCtor("SandboxOnActivateMismatch: the manifest's hasOnActivate must say whether the definition has an onActivate");
+    // #1729 — each composition point the manifest announces must name an
+    // operation of the definition, and the definition answers no other.
+    for (const name in RESERVED) {
+      const key = RESERVED[name][0];
+      const field = RESERVED[name][1];
+      if (announced(message.args[field]) !== (typeof plugin[key] === "string"))
+        throw new ErrorCtor("SandboxRenderPointMismatch: the manifest's " + field + " must say whether the definition sets " + key);
+      if (typeof plugin[key] === "string" && typeof plugin.operations?.[plugin[key]] !== "function")
+        throw new ErrorCtor("SandboxRenderPointMissing: " + key + " names no operation of the definition");
+    }
     write({ kind: "result", value: true });
     return;
   }
   let handler;
   if (message.operation === "$staticRender") handler = plugin.staticRender;
+  else if (message.operation === "$onActivate") handler = plugin.onActivate;
+  else if (ObjectHasOwn(RESERVED, message.operation)) {
+    const key = RESERVED[message.operation][0];
+    handler = typeof plugin[key] === "string" && ObjectHasOwn(plugin.operations, plugin[key]) && plugin.operations[plugin[key]];
+  }
   else handler = ObjectHasOwn(plugin.operations, message.operation) && plugin.operations[message.operation];
   if (typeof handler !== "function") throw new ErrorCtor("SandboxOperationNotDeclared");
   const value = await handler(ctx, message.args);
   if (MapSize(pending)) throw new ErrorCtor("SandboxUnawaitedCall");
-  write({ kind: "result", value: value === undefined ? null : value });
+  writeResult(value === undefined ? null : value);
 };
 for (;;) {
   const { done, value: chunk } = await readStdin();

@@ -44,12 +44,15 @@ import {
   verifyManifestSignature,
 } from "@caelo-cms/plugin-sandbox";
 import {
+  externalCapabilityRefusal,
   manifestFromDefinition,
   type PluginContext,
   type PluginContextTier1,
   type PluginDefinition,
   type PluginManifest,
   pluginManifest,
+  urlTableSlots,
+  urlTablesProblems,
 } from "@caelo-cms/plugin-sdk";
 import { execute, type TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
@@ -97,6 +100,7 @@ import { runSandbox } from "./sandbox-runtime.js";
 import { pluginWorkerScheduler } from "./scheduler.js";
 import { pluginToolsRegistry } from "./tools-registry.js";
 import { urlContributionsRegistry } from "./url-composition.js";
+import { declaredUrlContributions } from "./url-tables.js";
 
 export interface BootstrapOpts {
   readonly infra: PluginHostInfra;
@@ -590,6 +594,9 @@ async function loadTier2Row(
     return { approval, definition };
   });
   await assertRequiredPluginsActive(opts.infra, opts.systemActorId, definition);
+  // #1729 — the same gates as a shipped plugin, before any side effect.
+  preflightRegistration(definition);
+  assertUrlSlotsClaimable(definition);
   // Both the registry and in-chat activation paths use this idempotent
   // provisioning, in both public databases (#1329).
   const emitted = await inPhase("provision", async () => {
@@ -612,6 +619,8 @@ async function loadTier2Row(
         slug: row.slug,
         adminSchema: admin1.adminSchema,
         indexes: admin1.indexes,
+        // #635 — the declared projection's tables republish on every write.
+        projectedTables: Object.keys(definition.visitorProjection ?? {}),
         target: adminGrantTarget(opts.infra.adapter.installNames.roles),
       });
       await opts.infra.adapter.provisionPluginAdminSchema({
@@ -646,7 +655,7 @@ async function loadTier2Row(
       throw new Error(`Tool name already registered by ${existing.pluginSlug}: ${tool.name}`);
     }
   }
-  loadedPlugins.set({
+  const lp: LoadedPlugin = {
     pluginId: row.id,
     slug: row.slug,
     version: row.version,
@@ -655,11 +664,12 @@ async function loadTier2Row(
     pluginActorId: actorId,
     externalApproval: approval,
     definition,
-  });
-  pluginToolsRegistry.unregisterPlugin(row.slug);
-  for (const tool of definition.tools ?? []) pluginToolsRegistry.register(row.slug, tool);
-  const registered = loadedPlugins.bySlug(row.slug);
-  if (registered) notifyPluginRegistered(registered);
+  };
+  loadedPlugins.set(lp);
+  // #1729 — one registration for every plugin: workers, list types, the
+  // configuration's defaults and `$onActivate` register as for a shipped one.
+  await registerPluginSurfaces(lp, opts);
+  notifyPluginRegistered(lp);
 }
 
 interface LoadOpts {
@@ -884,24 +894,12 @@ export async function activateApprovedExternalPlugin(
       grantIds: string[];
     };
     const manifest = pluginManifest.parse(artifact.manifest);
-    // Each capability is enabled here only once its isolated host broker is implemented.
-    const supported = new Set([
-      "cms_admin_schema",
-      "chat_runner_tools",
-      "companion_skills",
-      "font_assets",
-      "private_files",
-      "image_generation",
-      "site_media_read",
-      "consent_provider",
-      "collections",
-      "page_output",
-      "batch_jobs",
-      "visitor_ai",
-    ]);
-    for (const capability of manifest.requestedCapabilities ?? [])
-      if (!supported.has(capability))
-        throw new Error(`External capability broker unavailable: ${capability}`);
+    // #1729 — only capabilities the status record marks brokered; the
+    // installation policy refused the rest at staging and approval already.
+    for (const capability of manifest.requestedCapabilities ?? []) {
+      const refusal = externalCapabilityRefusal(capability);
+      if (refusal) throw new Error(`External capability broker unavailable: ${refusal}`);
+    }
     if (artifact.status === "active") {
       // Finalization may have committed before a transient host load failure.
       // The Query API and loader both verify this is still the exact active artifact.
@@ -925,6 +923,16 @@ export async function activateApprovedExternalPlugin(
       if (existing && existing.pluginSlug !== manifest.slug)
         throw new Error(`Tool name already registered: ${tool.name}`);
     }
+    // What the load refuses for the state of other plugins is refused here,
+    // before finalization retires the running version: a URL slot another
+    // running plugin holds, a required plugin that is not active.
+    if (manifest.urlTables) {
+      urlContributionsRegistry.assertClaimable(
+        manifest.slug,
+        declaredUrlContributions(manifest.slug, manifest.urlTables),
+      );
+    }
+    await assertRequiredPluginsActive(opts.infra, opts.systemActorId, manifest);
     const context = await makePluginContext({
       plugin: {
         pluginId: artifact.pluginId,
@@ -949,7 +957,10 @@ export async function activateApprovedExternalPlugin(
       source: artifact.source,
       manifest,
       operation: "$inspect",
-      args: manifest,
+      // The child compares declarations with the definition; reviewed
+      // markup and files are host data it never needs (and they would
+      // crowd the 1 MB message line).
+      args: { ...manifest, deferralPlaceholders: undefined, clientFiles: undefined },
       context,
       authorize: async () => {},
       denySdkCalls: true,
@@ -972,6 +983,8 @@ export async function activateApprovedExternalPlugin(
         slug: manifest.slug,
         adminSchema: admin2.adminSchema,
         indexes: admin2.indexes,
+        // #635 — the declared projection's tables republish on every write.
+        projectedTables: Object.keys(manifest.visitorProjection ?? {}),
         target: adminGrantTarget(opts.infra.adapter.installNames.roles),
       });
       await opts.infra.adapter.provisionPluginAdminSchema({
@@ -1088,148 +1101,7 @@ function validateDistDirectory(distDir: string, slug: string): void {
 async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome> {
   const def = opts.definition;
 
-  // #388 — capability enforcement at the registration seam (defense in
-  // depth behind the validator's manifest-cap-missing rule): a tool or
-  // worker whose capability was not granted must never register. Checked
-  // BEFORE any side effect so a refused plugin leaves no row, no schema,
-  // and no registry entry behind.
-  const grantedCaps = new Set(def.requestedCapabilities ?? []);
-  if ((def.tools?.length ?? 0) > 0 && !grantedCaps.has("chat_runner_tools")) {
-    throw new Error(
-      `plugin "${def.slug}" declares tools without the chat_runner_tools capability — registration refused`,
-    );
-  }
-  if ((def.workers?.length ?? 0) > 0 && !grantedCaps.has("background_workers")) {
-    throw new Error(
-      `plugin "${def.slug}" declares workers without the background_workers capability — registration refused`,
-    );
-  }
-  // #1267 — the change journal is gated per kind: the consumer needs the
-  // journal capability, and every core kind the read grant of core data.
-  const consumer = def.changeConsumer;
-  if (consumer) {
-    if (!grantedCaps.has("change_journal")) {
-      throw new Error(
-        `plugin "${def.slug}" declares a changeConsumer without the change_journal capability — registration refused`,
-      );
-    }
-    if (consumer.kinds.length > 0 && !grantedCaps.has("cms_admin")) {
-      throw new Error(
-        `plugin "${def.slug}" consumes core changes (${consumer.kinds.join(", ")}) without the cms_admin read grant — registration refused`,
-      );
-    }
-    for (const name of [consumer.operationName, consumer.rebuildOperationName]) {
-      if (!def.operations[name]) {
-        throw new Error(
-          `plugin "${def.slug}" names "${name}" in changeConsumer, which is not one of its operations`,
-        );
-      }
-    }
-    for (const t of consumer.ownTables ?? []) {
-      if (!def.adminSchema || !(t in def.adminSchema)) {
-        throw new Error(
-          `plugin "${def.slug}" consumes changes of "${t}", which is not a table of its adminSchema`,
-        );
-      }
-    }
-  }
-  // #1340 — a public operation runs its declaration, never plugin code: an
-  // entry that is also a code operation would read as "this code answers
-  // visitors" while the code never runs. The manifest lint refuses it; the
-  // loader checks again for a definition that skipped the projection.
-  for (const op of def.publicOperations ?? []) {
-    if (Object.hasOwn(def.operations, op.name) || !op.run) {
-      throw new Error(
-        `plugin "${def.slug}" lists "${op.name}" in publicOperations ${op.run ? "and also as a code operation" : "without a run"}: a public operation is only its declared run`,
-      );
-    }
-  }
-  // Client assets run in every visitor's browser on every page. That is
-  // the widest blast radius any contribution has, so it is release-signed
-  // only — a runtime-authored plugin's frontend stays inside its Shadow
-  // DOM component, where the sandbox can still reason about it.
-  if (typeof def.buildAssets === "function" && def.tier !== 1) {
-    throw new Error(
-      `plugin "${def.slug}" declares buildAssets but is not release-signed — refused`,
-    );
-  }
-
-  // Epic #1107 — list sources, list types and list-resolve overlays each
-  // change what pages render, so each needs its own grant; refused here,
-  // before any side effect, like tools and workers above.
-  // Epic #1644 — collections, page output and batch jobs each need their grant.
-  if (Object.keys(def.collections ?? {}).length > 0 && !grantedCaps.has("collections")) {
-    throw new Error(
-      `plugin "${def.slug}" declares collections without the collections capability — registration refused`,
-    );
-  }
-  if (def.pageOutputObserver !== undefined && !grantedCaps.has("page_output")) {
-    throw new Error(
-      `plugin "${def.slug}" declares a page-output observer without the page_output capability — registration refused`,
-    );
-  }
-  // #1654 — a visitor conversation spends the Owner's visitor-AI budget.
-  if ((def.aiChatOperations?.length ?? 0) > 0 && !grantedCaps.has("visitor_ai")) {
-    throw new Error(
-      `plugin "${def.slug}" declares ai-chat operations without the visitor_ai capability — registration refused`,
-    );
-  }
-  if ((def.batchOperations?.length ?? 0) > 0 && !grantedCaps.has("batch_jobs")) {
-    throw new Error(
-      `plugin "${def.slug}" declares batch operations without the batch_jobs capability — registration refused`,
-    );
-  }
-  if ((def.listTypes?.length ?? 0) > 0 && !grantedCaps.has("list_types")) {
-    throw new Error(
-      `plugin "${def.slug}" declares listTypes without the list_types capability — registration refused`,
-    );
-  }
-  if (def.listResolveOperation !== undefined) {
-    if (!grantedCaps.has("list_resolve")) {
-      throw new Error(
-        `plugin "${def.slug}" answers list-resolve without the list_resolve capability — registration refused`,
-      );
-    }
-    if (!def.operations[def.listResolveOperation]) {
-      throw new Error(
-        `plugin "${def.slug}" names listResolveOperation "${def.listResolveOperation}", which is not one of its operations`,
-      );
-    }
-  }
-  if (def.listExt) {
-    // Compiled now so a schema the host cannot compile fails the load,
-    // not the first list-type write that meets it.
-    try {
-      compileListExt(def.listExt);
-    } catch (e) {
-      throw new Error(`plugin "${def.slug}" declares a listExt schema the host cannot compile`, {
-        cause: e,
-      });
-    }
-  }
-
-  // Declared BEFORE the activation gate on purpose. An inactive plugin
-  // contributes nothing, but a module written while it ran still says
-  // `{{#its_source}}`; remembering the name lets the renderer report
-  // "that plugin is switched off" instead of "unknown source".
-  if (def.listSources && def.listSources.length > 0) {
-    if (!grantedCaps.has("list_sources")) {
-      throw new Error(
-        `plugin "${def.slug}" declares listSources without the list_sources capability — registration refused`,
-      );
-    }
-    if (!def.listSourcesOperation) {
-      throw new Error(
-        `plugin "${def.slug}" declares listSources without a listSourcesOperation to resolve them`,
-      );
-    }
-    if (!def.operations[def.listSourcesOperation]) {
-      throw new Error(
-        `plugin "${def.slug}" names listSourcesOperation "${def.listSourcesOperation}", which is not one of its operations`,
-      );
-    }
-    pluginListSourcesRegistry.declare(def.slug, def.listSources);
-  }
+  preflightRegistration(def);
 
   // Upsert the plugins row + actor row; reuses migration 0036's partial unique index.
   //
@@ -1402,20 +1274,10 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // #390 — claim URL slots. Exclusive: a conflict throws here and
   // surfaces to the Owner as "conflicts with <holder>". Claimed only
   // for a running plugin, so an inactive one never holds a slot its
-  // activation would have to fight for. urlContributions are
-  // release-signed only (runtime-authored plugins never reach
-  // registerLoadedPlugin with a definition carrying them — the manifest
-  // validator has no claim field for tier 2 to smuggle functions in).
-  if (def.urlContributions && def.urlContributions.length > 0) {
-    if (def.tier !== 1) {
-      throw new Error(
-        `plugin "${def.slug}" declares urlContributions but is not release-signed — refused`,
-      );
-    }
-    // Checked now (a conflict fails the activation before anything is
-    // provisioned), claimed only once the plugin is loaded — see below.
-    urlContributionsRegistry.assertClaimable(def.slug, def.urlContributions);
-  }
+  // activation would have to fight for. Checked now (a conflict fails the
+  // activation before anything is provisioned), claimed only once the
+  // plugin is loaded (registerPluginSurfaces).
+  assertUrlSlotsClaimable(def);
 
   // #387 — provision the plugin's declared cms_public schema at load.
   // Before this, only the sandboxed activation path ran `schemaFromSpec`,
@@ -1477,152 +1339,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
     pluginActorId,
   };
   loadedPlugins.set(lp);
-  // URL slots + the annotation op go live only now that the plugin can
-  // answer: claimed earlier, a render running concurrently with this
-  // activation called the annotation op of a plugin not yet loaded
-  // (PluginNotFound in every preview during the activation window).
-  if (def.urlContributions && def.urlContributions.length > 0) {
-    try {
-      urlContributionsRegistry.register(
-        def.slug,
-        def.urlContributions,
-        def.urlAnnotationsOperation,
-      );
-    } catch (e) {
-      loadedPlugins.unload(def.slug);
-      throw e;
-    }
-  }
-
-  // #1645 — the declared configuration's defaults (or the migration of what
-  // a previous version stored), on main, before anything can read them.
-  if (def.config) {
-    ensureConfigOps(opts.infra);
-    const seeded = await execute(
-      opts.infra.registry,
-      opts.infra.adapter,
-      {
-        actorId: opts.systemActorId,
-        actorKind: "system",
-        requestId: `plugin-config-seed-${def.slug}`,
-      },
-      CONFIG_OPS.seed,
-      { pluginSlug: def.slug },
-    );
-    if (!seeded.ok) {
-      loadedPlugins.unload(def.slug);
-      throw new PluginLoadError(
-        "activate",
-        new Error(
-          `plugin "${def.slug}": its configuration could not be stored (${"message" in seeded.error ? String(seeded.error.message) : seeded.error.kind})`,
-        ),
-      );
-    }
-  }
-
-  // Create-time defaults, on main, before anything can read them.
-  const onActivate = def.onActivate;
-  if (onActivate) {
-    // A plugin's onActivate may read its own change consumer's state.
-    registerPluginChangeOps(opts.infra.registry);
-    const ctx = await makePluginContext({
-      plugin: lp,
-      infra: opts.infra,
-      invocation: { origin: "system", actorId: hostSystemActorId() },
-    });
-    try {
-      // #1144 — one activation of this plugin at a time across processes.
-      await runActivationSerialized(opts.infra, opts.systemActorId, def.slug, () =>
-        timedStep("activate", () => onActivate(ctx)),
-      );
-    } catch (e) {
-      loadedPlugins.unload(def.slug);
-      throw new PluginLoadError(
-        "activate",
-        new Error(`plugin "${def.slug}" onActivate failed`, { cause: e }),
-      );
-    }
-  }
-
-  // Epic #1107 — the plugin's list types go live with it, like its
-  // skills: core's own op writes them (validated against every list of
-  // the type, snapshotted, owned by this plugin), refreshed from the
-  // verified manifest on every load. Availability then follows the
-  // plugin's status (`plugin_list_type_available`), so a disable
-  // archives them without touching a row.
-  if (def.listTypes && def.listTypes.length > 0) {
-    await timedStep("list types", () =>
-      inPhase("activate", async () => {
-        const r = await execute(
-          opts.infra.registry,
-          opts.infra.adapter,
-          {
-            actorId: opts.systemActorId,
-            actorKind: "system",
-            requestId: `plugin-list-types-${def.slug}`,
-          },
-          "list_types.sync_plugin_types",
-          { pluginId, listTypes: def.listTypes },
-        );
-        if (!r.ok) {
-          loadedPlugins.unload(def.slug);
-          urlContributionsRegistry.unregisterPlugin(def.slug);
-          throw new Error(
-            `plugin "${def.slug}" list types could not be stored: ${"message" in r.error ? (r.error as { message: string }).message : r.error.kind}`,
-          );
-        }
-      }),
-    );
-  }
-
-  // Register tools + workers + prompt-context renderers.
-  for (const tool of def.tools ?? []) {
-    pluginToolsRegistry.register(def.slug, tool);
-  }
-  if (def.listSources && def.listSources.length > 0 && def.listSourcesOperation) {
-    pluginListSourcesRegistry.register(def.slug, def.listSources, def.listSourcesOperation);
-  }
-  for (const renderer of def.promptContext ?? []) {
-    pluginPromptContextRegistry.register({
-      pluginSlug: def.slug,
-      label: renderer.label,
-      render: () =>
-        // Render with a fresh ctx every turn — handles get the live infra.
-        Promise.resolve(
-          makePluginContext({
-            plugin: lp,
-            infra: opts.infra,
-            invocation: { origin: "system", actorId: hostSystemActorId() },
-          }),
-        ).then((ctx) => Promise.resolve(renderer.render(ctx as PluginContext))),
-    });
-  }
-  // Always, also without workers: scheduling replaces what an earlier load
-  // of the plugin registered, so a release that drops a worker (or fixes
-  // the cron of one that was off the schedule, #1728) leaves nothing stale.
-  const unscheduledWorkers = pluginWorkerScheduler.schedule({
-    pluginSlug: def.slug,
-    workers: def.workers ?? [],
-    dispatch: runPluginOperation,
-    pluginActorId,
-  });
-  // #1720 — a cron croner refuses (an artifact approved under an older
-  // croner; every review refuses one now) keeps only that worker off the
-  // schedule. The plugin loads; the problem is the plugin's, recorded
-  // here for its history and reported in its health for as long as the
-  // worker is off (#1728, the runtime record), never a failed load (#1008).
-  for (const w of unscheduledWorkers) {
-    await recordPluginError({
-      infra: opts.infra,
-      systemActorId: opts.systemActorId,
-      slug: def.slug,
-      pluginId,
-      phase: "worker",
-      error: new Error(
-        `worker "${w.workerName}" is not scheduled: its cron "${w.cron}" is not a pattern the scheduler accepts (${w.reason}). The plugin's other workers run; this one runs once a release of the plugin fixes its pattern.`,
-      ),
-    });
-  }
+  await registerPluginSurfaces(lp, opts);
 
   // Plugin skills are live the moment the plugin is. Reaching this line
   // means an Owner activated the plugin, and a skill is not a second
@@ -1716,6 +1433,424 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // must never see a plugin halfway through its registration.
   notifyPluginRegistered(lp);
   return { plugin: lp, status: persistedStatus };
+}
+
+/**
+ * #1729 — the capability gates every plugin passes before any side effect
+ * of its load (no row, schema or registry entry for a refused plugin), for
+ * shipped and runtime-installed plugins alike: a declaration whose grant is
+ * missing, an operation name that names nothing, a list extension the host
+ * cannot compile. Also declares the plugin's list-source names, which
+ * outlive its activation (list-sources.ts).
+ */
+function preflightRegistration(
+  def: PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>,
+): void {
+  // #388 — capability enforcement at the registration seam (defense in
+  // depth behind the validator's manifest-cap-missing rule): a tool or
+  // worker whose capability was not granted must never register. Checked
+  // BEFORE any side effect so a refused plugin leaves no row, no schema,
+  // and no registry entry behind.
+  const grantedCaps = new Set(def.requestedCapabilities ?? []);
+  if ((def.tools?.length ?? 0) > 0 && !grantedCaps.has("chat_runner_tools")) {
+    throw new Error(
+      `plugin "${def.slug}" declares tools without the chat_runner_tools capability — registration refused`,
+    );
+  }
+  if ((def.workers?.length ?? 0) > 0 && !grantedCaps.has("background_workers")) {
+    throw new Error(
+      `plugin "${def.slug}" declares workers without the background_workers capability — registration refused`,
+    );
+  }
+  // #1267 — the change journal is gated per kind: the consumer needs the
+  // journal capability, and every core kind the read grant of core data.
+  const consumer = def.changeConsumer;
+  if (consumer) {
+    if (!grantedCaps.has("change_journal")) {
+      throw new Error(
+        `plugin "${def.slug}" declares a changeConsumer without the change_journal capability — registration refused`,
+      );
+    }
+    if (consumer.kinds.length > 0 && !grantedCaps.has("cms_admin")) {
+      throw new Error(
+        `plugin "${def.slug}" consumes core changes (${consumer.kinds.join(", ")}) without the cms_admin read grant — registration refused`,
+      );
+    }
+    for (const name of [consumer.operationName, consumer.rebuildOperationName]) {
+      if (!def.operations[name]) {
+        throw new Error(
+          `plugin "${def.slug}" names "${name}" in changeConsumer, which is not one of its operations`,
+        );
+      }
+    }
+    for (const t of consumer.ownTables ?? []) {
+      if (!def.adminSchema || !(t in def.adminSchema)) {
+        throw new Error(
+          `plugin "${def.slug}" consumes changes of "${t}", which is not a table of its adminSchema`,
+        );
+      }
+    }
+  }
+  // #1340 — a public operation runs its declaration, never plugin code: an
+  // entry that is also a code operation would read as "this code answers
+  // visitors" while the code never runs. The manifest lint refuses it; the
+  // loader checks again for a definition that skipped the projection.
+  for (const op of def.publicOperations ?? []) {
+    if (Object.hasOwn(def.operations, op.name) || !op.run) {
+      throw new Error(
+        `plugin "${def.slug}" lists "${op.name}" in publicOperations ${op.run ? "and also as a code operation" : "without a run"}: a public operation is only its declared run`,
+      );
+    }
+  }
+  // #390 / #1729 — URL slots change the address of every page they shape:
+  // their own grant, for every plugin. A runtime-installed plugin's slots
+  // are tables the host reads (decision Q7 A): its code never runs while
+  // core composes an address, so it can neither carry code contributions
+  // nor claim a slot data cannot describe.
+  const urlCode = def.urlContributions ?? [];
+  if (urlCode.length > 0 || def.urlTables) {
+    if (!grantedCaps.has("url_slots")) {
+      throw new Error(
+        `plugin "${def.slug}" claims URL slots without the url_slots capability — registration refused`,
+      );
+    }
+    if (urlCode.length > 0 && def.urlTables) {
+      throw new Error(
+        `plugin "${def.slug}" declares both urlContributions code and urlTables — declare one of them`,
+      );
+    }
+    if (urlCode.length > 0 && def.tier !== 1) {
+      throw new Error(
+        `plugin "${def.slug}" carries URL contribution code but runs sandboxed — its URL slots must be declared as urlTables`,
+      );
+    }
+    if (def.urlTables) {
+      const problems = urlTablesProblems({
+        ...def,
+        urlContributions: urlTableSlots(def.urlTables).map((slot) => ({ slot })),
+      });
+      if (problems.length > 0) {
+        throw new Error(`plugin "${def.slug}": ${problems.join("; ")}`);
+      }
+    }
+  }
+
+  // Epic #1107 — list sources, list types and list-resolve overlays each
+  // change what pages render, so each needs its own grant; refused here,
+  // before any side effect, like tools and workers above.
+  // Epic #1644 — collections, page output and batch jobs each need their grant.
+  if (Object.keys(def.collections ?? {}).length > 0 && !grantedCaps.has("collections")) {
+    throw new Error(
+      `plugin "${def.slug}" declares collections without the collections capability — registration refused`,
+    );
+  }
+  if (def.pageOutputObserver !== undefined && !grantedCaps.has("page_output")) {
+    throw new Error(
+      `plugin "${def.slug}" declares a page-output observer without the page_output capability — registration refused`,
+    );
+  }
+  // #1654 — a visitor conversation spends the Owner's visitor-AI budget.
+  if ((def.aiChatOperations?.length ?? 0) > 0 && !grantedCaps.has("visitor_ai")) {
+    throw new Error(
+      `plugin "${def.slug}" declares ai-chat operations without the visitor_ai capability — registration refused`,
+    );
+  }
+  if ((def.batchOperations?.length ?? 0) > 0 && !grantedCaps.has("batch_jobs")) {
+    throw new Error(
+      `plugin "${def.slug}" declares batch operations without the batch_jobs capability — registration refused`,
+    );
+  }
+  // #1729 — head and sitemap entries and default share images change every
+  // affected page's head: they need the grant, and each names an operation
+  // (for a runtime-installed plugin, its reserved entry).
+  const headPoints: [string, string | undefined][] = [];
+  if ((def.contributes?.length ?? 0) > 0) {
+    headPoints.push(["contributionsOperation", def.contributionsOperation]);
+  }
+  if (def.shareImagesOperation !== undefined) {
+    headPoints.push(["shareImagesOperation", def.shareImagesOperation]);
+  }
+  if (headPoints.length > 0 && !grantedCaps.has("head_contributions")) {
+    throw new Error(
+      `plugin "${def.slug}" contributes to the page head without the head_contributions capability — registration refused`,
+    );
+  }
+  for (const [key, operation] of headPoints) {
+    if (!operation || !def.operations[operation]) {
+      throw new Error(
+        `plugin "${def.slug}" names ${key} "${operation ?? ""}", which is not one of its operations`,
+      );
+    }
+  }
+  if ((def.listTypes?.length ?? 0) > 0 && !grantedCaps.has("list_types")) {
+    throw new Error(
+      `plugin "${def.slug}" declares listTypes without the list_types capability — registration refused`,
+    );
+  }
+  // #1729 — client files run in every visitor's browser and withholding a
+  // module changes what visitors see: the client_assets grant, and
+  // operations that exist, for every plugin (one plugin model).
+  if (
+    (Object.keys(def.clientFiles ?? {}).length > 0 || def.buildDataOperation !== undefined) &&
+    !grantedCaps.has("client_assets")
+  ) {
+    throw new Error(
+      `plugin "${def.slug}" puts files on visitors' pages (clientFiles) without the client_assets capability — registration refused`,
+    );
+  }
+  if (def.buildDataOperation !== undefined && !def.operations[def.buildDataOperation]) {
+    throw new Error(
+      `plugin "${def.slug}" names buildDataOperation "${def.buildDataOperation}", which is not one of its operations`,
+    );
+  }
+  if (def.deferralsOperation !== undefined) {
+    if (!grantedCaps.has("client_assets")) {
+      throw new Error(
+        `plugin "${def.slug}" withholds modules (deferralsOperation) without the client_assets capability — registration refused`,
+      );
+    }
+    if (!def.operations[def.deferralsOperation]) {
+      throw new Error(
+        `plugin "${def.slug}" names deferralsOperation "${def.deferralsOperation}", which is not one of its operations`,
+      );
+    }
+  }
+  if (def.listResolveOperation !== undefined) {
+    if (!grantedCaps.has("list_resolve")) {
+      throw new Error(
+        `plugin "${def.slug}" answers list-resolve without the list_resolve capability — registration refused`,
+      );
+    }
+    if (!def.operations[def.listResolveOperation]) {
+      throw new Error(
+        `plugin "${def.slug}" names listResolveOperation "${def.listResolveOperation}", which is not one of its operations`,
+      );
+    }
+  }
+  if (def.listExt) {
+    // Compiled now so a schema the host cannot compile fails the load,
+    // not the first list-type write that meets it.
+    try {
+      compileListExt(def.listExt);
+    } catch (e) {
+      throw new Error(`plugin "${def.slug}" declares a listExt schema the host cannot compile`, {
+        cause: e,
+      });
+    }
+  }
+
+  // Declared BEFORE the activation gate on purpose. An inactive plugin
+  // contributes nothing, but a module written while it ran still says
+  // `{{#its_source}}`; remembering the name lets the renderer report
+  // "that plugin is switched off" instead of "unknown source".
+  if (def.listSources && def.listSources.length > 0) {
+    if (!grantedCaps.has("list_sources")) {
+      throw new Error(
+        `plugin "${def.slug}" declares listSources without the list_sources capability — registration refused`,
+      );
+    }
+    if (!def.listSourcesOperation) {
+      throw new Error(
+        `plugin "${def.slug}" declares listSources without a listSourcesOperation to resolve them`,
+      );
+    }
+    if (!def.operations[def.listSourcesOperation]) {
+      throw new Error(
+        `plugin "${def.slug}" names listSourcesOperation "${def.listSourcesOperation}", which is not one of its operations`,
+      );
+    }
+    pluginListSourcesRegistry.declare(def.slug, def.listSources);
+  }
+}
+
+/**
+ * Throw when the plugin's URL slots conflict with another running plugin's,
+ * without claiming them (url-composition.ts `assertClaimable`).
+ */
+function assertUrlSlotsClaimable(
+  def: PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>,
+): void {
+  const contributions = def.urlTables
+    ? declaredUrlContributions(def.slug, def.urlTables)
+    : (def.urlContributions ?? []);
+  if (contributions.length > 0) urlContributionsRegistry.assertClaimable(def.slug, contributions);
+}
+
+/**
+ * #1729 — the one registration of a loaded plugin's surfaces, for shipped
+ * and runtime-installed plugins alike (docs/dev/external-plugin-brokers.md
+ * §4.3): URL slots, the configuration's defaults, `onActivate`, list types,
+ * tools, list sources, prompt context and workers. Each registers only when
+ * the definition carries it; a runtime-installed plugin's definition
+ * carries what its reviewed manifest declares (`externalDeclarations`).
+ * Skills are not here: a shipped plugin's are upserted with its release
+ * (`registerLoadedPlugin`), an installed one's are bound to the approved
+ * artifact at finalization (`syncExternalCompanionSkills`).
+ */
+async function registerPluginSurfaces(
+  lp: LoadedPlugin,
+  host: { readonly infra: PluginHostInfra; readonly systemActorId: string },
+): Promise<void> {
+  const def = lp.definition;
+  const { pluginId, pluginActorId } = lp;
+  // URL slots + the annotation op go live only now that the plugin can
+  // answer: claimed earlier, a render running concurrently with this
+  // activation called the annotation op of a plugin not yet loaded
+  // (PluginNotFound in every preview during the activation window).
+  // #1729 — declared tables (`urlTables`) are read by the host itself.
+  // A reload replaces the slots an earlier version claimed, so a version
+  // that drops them, or its tables, leaves no composition reading them.
+  urlContributionsRegistry.unregisterPlugin(def.slug);
+  if (def.urlTables || (def.urlContributions && def.urlContributions.length > 0)) {
+    try {
+      if (def.urlTables) urlContributionsRegistry.registerDeclared(def.slug, def.urlTables);
+      else
+        urlContributionsRegistry.register(
+          def.slug,
+          def.urlContributions ?? [],
+          def.urlAnnotationsOperation,
+        );
+    } catch (e) {
+      loadedPlugins.unload(def.slug);
+      throw e;
+    }
+  }
+
+  // #1645 — the declared configuration's defaults (or the migration of what
+  // a previous version stored), on main, before anything can read them.
+  if (def.config) {
+    ensureConfigOps(host.infra);
+    const seeded = await execute(
+      host.infra.registry,
+      host.infra.adapter,
+      {
+        actorId: host.systemActorId,
+        actorKind: "system",
+        requestId: `plugin-config-seed-${def.slug}`,
+      },
+      CONFIG_OPS.seed,
+      { pluginSlug: def.slug },
+    );
+    if (!seeded.ok) {
+      loadedPlugins.unload(def.slug);
+      throw new PluginLoadError(
+        "activate",
+        new Error(
+          `plugin "${def.slug}": its configuration could not be stored (${"message" in seeded.error ? String(seeded.error.message) : seeded.error.kind})`,
+        ),
+      );
+    }
+  }
+
+  // Create-time defaults, on main, before anything can read them.
+  const onActivate = def.onActivate;
+  if (onActivate) {
+    // A plugin's onActivate may read its own change consumer's state.
+    registerPluginChangeOps(host.infra.registry);
+    const ctx = await makePluginContext({
+      plugin: lp,
+      infra: host.infra,
+      invocation: { origin: "system", actorId: hostSystemActorId() },
+    });
+    try {
+      // #1144 — one activation of this plugin at a time across processes.
+      await runActivationSerialized(host.infra, host.systemActorId, def.slug, () =>
+        timedStep("activate", () => onActivate(ctx)),
+      );
+    } catch (e) {
+      loadedPlugins.unload(def.slug);
+      throw new PluginLoadError(
+        "activate",
+        new Error(`plugin "${def.slug}" onActivate failed`, { cause: e }),
+      );
+    }
+  }
+
+  // Epic #1107 — the plugin's list types go live with it, like its
+  // skills: core's own op writes them (validated against every list of
+  // the type, snapshotted, owned by this plugin), refreshed from the
+  // verified manifest on every load. Availability then follows the
+  // plugin's status (`plugin_list_type_available`), so a disable
+  // archives them without touching a row.
+  if (def.listTypes && def.listTypes.length > 0) {
+    await timedStep("list types", () =>
+      inPhase("activate", async () => {
+        const r = await execute(
+          host.infra.registry,
+          host.infra.adapter,
+          {
+            actorId: host.systemActorId,
+            actorKind: "system",
+            requestId: `plugin-list-types-${def.slug}`,
+          },
+          "list_types.sync_plugin_types",
+          { pluginId, listTypes: def.listTypes },
+        );
+        if (!r.ok) {
+          loadedPlugins.unload(def.slug);
+          urlContributionsRegistry.unregisterPlugin(def.slug);
+          throw new Error(
+            `plugin "${def.slug}" list types could not be stored: ${"message" in r.error ? (r.error as { message: string }).message : r.error.kind}`,
+          );
+        }
+      }),
+    );
+  }
+
+  // Register tools + workers + prompt-context renderers. A reload replaces
+  // the tools an earlier load registered, so a dropped tool leaves nothing.
+  pluginToolsRegistry.unregisterPlugin(def.slug);
+  for (const tool of def.tools ?? []) {
+    pluginToolsRegistry.register(def.slug, tool);
+  }
+  // The same for live list sources: a version that drops one, or all of
+  // them, leaves none of the earlier version's answering through an entry
+  // it no longer has. Their declared names stay, for diagnostics.
+  pluginListSourcesRegistry.unregisterPlugin(def.slug);
+  if (def.listSources && def.listSources.length > 0 && def.listSourcesOperation) {
+    pluginListSourcesRegistry.register(def.slug, def.listSources, def.listSourcesOperation);
+  }
+  for (const renderer of def.promptContext ?? []) {
+    pluginPromptContextRegistry.register({
+      pluginSlug: def.slug,
+      label: renderer.label,
+      render: () =>
+        // Render with a fresh ctx every turn — handles get the live infra.
+        Promise.resolve(
+          makePluginContext({
+            plugin: lp,
+            infra: host.infra,
+            invocation: { origin: "system", actorId: hostSystemActorId() },
+          }),
+        ).then((ctx) => Promise.resolve(renderer.render(ctx as PluginContext))),
+    });
+  }
+  // Always, also without workers: scheduling replaces what an earlier load
+  // of the plugin registered, so a release that drops a worker (or fixes
+  // the cron of one that was off the schedule, #1728) leaves nothing stale.
+  const unscheduledWorkers = pluginWorkerScheduler.schedule({
+    pluginSlug: def.slug,
+    workers: def.workers ?? [],
+    dispatch: runPluginOperation,
+    pluginActorId,
+  });
+  // #1720 — a cron croner refuses (an artifact approved under an older
+  // croner; every review refuses one now) keeps only that worker off the
+  // schedule. The plugin loads; the problem is the plugin's, recorded
+  // here for its history and reported in its health for as long as the
+  // worker is off (#1728, the runtime record), never a failed load (#1008).
+  for (const w of unscheduledWorkers) {
+    await recordPluginError({
+      infra: host.infra,
+      systemActorId: host.systemActorId,
+      slug: def.slug,
+      pluginId,
+      phase: "worker",
+      error: new Error(
+        `worker "${w.workerName}" is not scheduled: its cron "${w.cron}" is not a pattern the scheduler accepts (${w.reason}). The plugin's other workers run; this one runs once a release of the plugin fixes its pattern.`,
+      ),
+    });
+  }
 }
 
 /**

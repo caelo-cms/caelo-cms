@@ -75,10 +75,14 @@ export type AiCapRefusal =
     }
   | {
       readonly kind: "plugin-budget";
+      /** Which cap bound: the Owner's, or the one approved with the running version (#1729). */
+      readonly source: "owner" | "grant";
       readonly capMicrocents: number;
       readonly spentMicrocents: number;
       readonly requestedMicrocents: number;
     }
+  /** A runtime-installed plugin's running version holds no AI grant with a daily cap (#1729 Q8 A). */
+  | { readonly kind: "plugin-grant-cap" }
   /** A per-session cap is set and the call has no session to count against. */
   | { readonly kind: "session-required"; readonly operationType: "text" | "image" };
 
@@ -153,20 +157,26 @@ export async function checkAiCaps(
     }
   }
   if (spender.kind !== "actor") {
-    const plugin = (await tx.execute(sql`
-      SELECT ai_cost_cap_microcents AS cap FROM plugins WHERE id = ${spender.pluginId}::uuid
-    `)) as unknown as { cap: string | null }[];
-    const cap = plugin[0]?.cap;
-    if (cap !== null && cap !== undefined) {
+    const cap = await readPluginAiCap(tx, spender.pluginId);
+    // A runtime-installed plugin reaches `ctx.ai` only through its AI grant,
+    // and that grant carries the daily cap the Owner approved: text without
+    // one never runs. Images (`image_generation`) predate the grant cap and
+    // keep the Owner's cap; the grant's cap bounds them too once it exists.
+    if (cap.external && operationType === "text" && cap.grantCapMicrocents === null) {
+      return { kind: "plugin-grant-cap" };
+    }
+    const binding = bindingPluginCap(cap);
+    if (binding) {
       const usage = (await tx.execute(sql`
         SELECT coalesce(sum(cost_estimate_microcents), 0)::bigint AS spent FROM ai_calls
         WHERE plugin_id = ${spender.pluginId}::uuid AND created_at > now() - interval '24 hours' ${exclude}
       `)) as unknown as { spent: string }[];
       const spent = num(usage[0]?.spent);
-      if (spent + amount > num(cap)) {
+      if (spent + amount > binding.capMicrocents) {
         return {
           kind: "plugin-budget",
-          capMicrocents: num(cap),
+          source: binding.source,
+          capMicrocents: binding.capMicrocents,
           spentMicrocents: spent,
           requestedMicrocents: amount,
         };
@@ -174,6 +184,59 @@ export async function checkAiCaps(
     }
   }
   return null;
+}
+
+/**
+ * A plugin's own daily AI caps (#1729 Q8 A): the Owner's
+ * (`plugins.ai_cost_cap_microcents`, none by default) and, for a
+ * runtime-installed plugin, the one in the `ai_provider` receipt of the
+ * version it runs (`capabilityConstraints.ai_provider.maxDailyCostMicrocents`,
+ * required at staging). The receipt is the authority, never the manifest:
+ * receipts are immutable and a revoked one no longer counts.
+ */
+export interface PluginAiCap {
+  /** Whether the plugin is runtime-installed (its grants are per-artifact receipts). */
+  readonly external: boolean;
+  readonly ownerCapMicrocents: number | null;
+  /** The cap approved with the running version, or null when it holds none. */
+  readonly grantCapMicrocents: number | null;
+}
+
+/** Reads {@link PluginAiCap}; an unknown plugin has neither cap. */
+export async function readPluginAiCap(
+  tx: TransactionRunner,
+  pluginId: string,
+): Promise<PluginAiCap> {
+  // The running version is the active installation version; its unrevoked
+  // `ai_provider` receipt is the grant (index: plugin_current_grants).
+  const rows = (await tx.execute(sql`
+    SELECT p.tier, p.ai_cost_cap_microcents AS owner_cap,
+      (SELECT min(CASE WHEN jsonb_typeof(g.constraints -> 'maxDailyCostMicrocents') = 'number'
+                       THEN (g.constraints ->> 'maxDailyCostMicrocents')::numeric END)::bigint
+         FROM plugin_installation_versions v
+         JOIN plugin_capability_grants g
+           ON g.plugin_id = v.plugin_id AND g.artifact_digest = v.artifact_digest
+        WHERE v.plugin_id = p.id AND v.status = 'active'
+          AND g.capability = 'ai_provider' AND g.revoked_at IS NULL) AS grant_cap
+    FROM plugins p WHERE p.id = ${pluginId}::uuid
+  `)) as unknown as { tier: number; owner_cap: string | null; grant_cap: string | null }[];
+  const row = rows[0];
+  return {
+    external: row?.tier === 2,
+    ownerCapMicrocents: row?.owner_cap == null ? null : num(row.owner_cap),
+    grantCapMicrocents: row?.grant_cap == null ? null : num(row.grant_cap),
+  };
+}
+
+/** The lower of the plugin's caps and which one it is, or null when neither is set. */
+export function bindingPluginCap(
+  cap: PluginAiCap,
+): { readonly capMicrocents: number; readonly source: "owner" | "grant" } | null {
+  const { ownerCapMicrocents: owner, grantCapMicrocents: grant } = cap;
+  if (grant !== null && (owner === null || grant < owner)) {
+    return { capMicrocents: grant, source: "grant" };
+  }
+  return owner === null ? null : { capMicrocents: owner, source: "owner" };
 }
 
 /** What a new reservation records. */
@@ -361,8 +424,14 @@ export function describeAiCapRefusal(refusal: AiCapRefusal, what: string): strin
       const who = refusal.scope === "day-global" ? "The site's" : "This person's";
       return `AiBudgetReached (${refusal.scope}): ${who} daily ${kind} budget is reached (${figures} in the last 24 hours). Spend frees up as calls age out of the 24 hours. ${raise}.`;
     }
-    case "plugin-budget":
-      return `AiBudgetReached (plugin): the plugin's own AI cap is reached (${usd(refusal.spentMicrocents)} of ${usd(refusal.capMicrocents)} in the last 24 hours; ${what} could cost up to ${usd(refusal.requestedMicrocents)}). The Owner can raise it in Settings → Plugins (the AI can propose it with propose_set_plugin_ai_cost_cap).`;
+    case "plugin-budget": {
+      const figures = `${usd(refusal.spentMicrocents)} of ${usd(refusal.capMicrocents)} in the last 24 hours; ${what} could cost up to ${usd(refusal.requestedMicrocents)}`;
+      return refusal.source === "grant"
+        ? `AiBudgetReached (plugin): the daily AI cap approved with this plugin version is reached (${figures}). Spend frees up as calls age out of the 24 hours. A higher cap needs a new version that declares it (capabilityConstraints.ai_provider.maxDailyCostMicrocents) and the Owner's approval at Settings → Plugins → Installations.`
+        : `AiBudgetReached (plugin): the plugin's own AI cap is reached (${figures}). The Owner can raise it in Settings → Plugins (the AI can propose it with propose_set_plugin_ai_cost_cap).`;
+    }
+    case "plugin-grant-cap":
+      return `AiBudgetReached (plugin): this runtime-installed plugin's approved version has no daily AI cap, so ${what} does not run. Submit a version that declares capabilityConstraints.ai_provider.maxDailyCostMicrocents; the Owner approves it at Settings → Plugins → Installations.`;
     case "session-required":
       return `AiBudgetReached (session): a per-chat ${refusal.operationType === "image" ? "image" : "AI text"} budget is set, so ${what} runs only inside a chat.`;
   }

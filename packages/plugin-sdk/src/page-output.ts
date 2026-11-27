@@ -53,6 +53,24 @@ export interface PageOutputModule {
   readonly contentPlacementCount: number;
 }
 
+/** A heading level, `h1` → 1 … `h6` → 6. */
+export type HeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
+
+const HEADING_TAG = /^h([1-6])$/;
+
+/**
+ * The level of a heading element, or null for any other element. One rule
+ * for every fact core reads from a page: the observer's
+ * {@link PageOutputText.heading} and the audit's `PluginAuditHeading.level`.
+ *
+ * @param tag the element name, lower-case (as an HTML parser reports it).
+ * @example headingLevel("h2") // → 2; headingLevel("header") // → null
+ */
+export function headingLevel(tag: string): HeadingLevel | null {
+  const m = HEADING_TAG.exec(tag);
+  return m ? (Number(m[1]) as HeadingLevel) : null;
+}
+
 /** One visible text run. */
 export interface PageOutputText {
   readonly text: string;
@@ -63,7 +81,7 @@ export interface PageOutputText {
   readonly pluginSlug: string | null;
   /** `text`, a visible attribute (`alt`, `placeholder`, …), or `literal` (code, `translate="no"`). */
   readonly source: string;
-  /** 1–6 when the run is inside a heading, else null. */
+  /** 1–6 when the run is inside a heading ({@link headingLevel}), else null. */
   readonly heading: number | null;
   /** The `id` of the nearest heading or section at or before the run: the link target of its section. */
   readonly anchor: string | null;

@@ -55,6 +55,7 @@ import {
   uuidArray,
 } from "@caelo-cms/query-api";
 import {
+  anyEndsOutsideContent,
   applyDocumentLanguage,
   buildMediaUrl,
   ComposeError,
@@ -80,6 +81,7 @@ import {
   type PaginationRequest,
   pagedPath,
   pagedUrl,
+  pageFrame,
   pageListOverlayScope,
   paginationMarkers,
   parsePagedPath,
@@ -494,7 +496,17 @@ async function renderPreview(
   // #1257 — one render of the page body. A paginated overview may render
   // twice (the pager came before the list, or a follow-up page is asked
   // for): see `renderFirstPage` in shared `lists/paginated-render.ts`.
-  const renderBody = async (pagination?: PaginationRequest) => {
+  const renderBody = async (
+    pagination?: PaginationRequest,
+    /** #1729 — part of the page ends outside content: refuse every plugin value. */
+    refuseAll = false,
+  ): Promise<{
+    lists: ReturnType<typeof listContext.forPage>;
+    composed: ReturnType<typeof composePageWithLayout>;
+    pageLinkMarkers: string[];
+    pageListMarkers: string[];
+    fieldPathMarkers: string[];
+  }> => {
     const lists = listContext.forPage(pageId, {
       linkResolver,
       pluginSources: resolvedSources.get(pageId) ?? {},
@@ -510,6 +522,17 @@ async function renderPreview(
     // or of the chrome: loud on the missing-content surface too.
     const pageListMarkers: string[] = [];
     const fieldPathMarkers: string[] = [];
+    // #1729 — where the page's modules stand, for their plugins' values:
+    // a slot outside plain content, or a part of the page that ends
+    // outside it, refuses them (shared page-reading.ts). The templates the
+    // render used are the renderer's own (every module it touched, through
+    // any field or list entry); the composer does the same for the layout's.
+    const frame = pageFrame({
+      templateHtml: pageRow.template_html,
+      layoutHtml: pageRow.layout_html,
+    });
+    const open = refuseAll || frame.open;
+    const pageTemplates: string[] = [];
     for (const m of modRows) {
       const key = `${m.block_name}#${m.position}`;
       const binding = placementBindings.get(key);
@@ -525,7 +548,12 @@ async function renderPreview(
         renderThemeAssets,
         lists,
         linkResolver,
+        frame.refusalFor(m.block_name, false, open),
       );
+      for (const id of result.touchedModuleIds) {
+        const used = resolver.getModule(id);
+        if (used) pageTemplates.push(used.html);
+      }
       const html = markers
         ? finalizeEditMarkers(
             result.html,
@@ -557,6 +585,7 @@ async function renderPreview(
         slug: string;
         displayName: string;
         html: string;
+        rendered?: boolean;
         css: string;
         js: string;
       }[]
@@ -568,6 +597,7 @@ async function renderPreview(
         slug: r.slug,
         displayName: r.display_name,
         html: htmlByRow.get(r) ?? "",
+        rendered: true,
         css: r.css,
         js: r.js,
       });
@@ -599,7 +629,11 @@ async function renderPreview(
     // values substituted into `html`; layout modules carry `fields`, whose
     // defaults the composer substitutes.
     const candidates = new Map<string, DeferralCandidate>();
-    for (const m of [...blocks, ...layoutBlocks].flatMap((b) => b.modules)) {
+    const pageAndLayoutModules: readonly (
+      | (typeof blocks)[number]["modules"][number]
+      | (typeof layoutBlocks)[number]["modules"][number]
+    )[] = [...blocks.flatMap((b) => b.modules), ...layoutBlocks.flatMap((b) => b.modules)];
+    for (const m of pageAndLayoutModules) {
       if (candidates.has(m.moduleId)) continue;
       candidates.set(m.moduleId, {
         moduleId: m.moduleId,
@@ -631,7 +665,11 @@ async function renderPreview(
       layoutBlocks,
       layoutSlug: pageRow.layout_slug,
       linkResolver,
+      refusePluginValues: open || anyEndsOutsideContent(pageTemplates),
     });
+    // A layout module, or a page module, ends outside content: render the
+    // page modules again, refusing their plugin values too.
+    if (!open && composed.openMarkup) return renderBody(pagination, true);
     return { lists, composed, pageLinkMarkers, pageListMarkers, fieldPathMarkers };
   };
   let body = await renderBody();
@@ -756,7 +794,7 @@ async function renderPreview(
   // #449 — plugin client assets. The deploy LINKS these files; the preview
   // iframe inlines the identical bytes (same resolver), so the editor can
   // never show behaviour the deployed site won't have.
-  html = injectPluginAssets(html, await collectBuildAssets([pageId], renderScope), "inline");
+  html = injectPluginAssets(html, await collectBuildAssets(renderScope), "inline");
 
   // issue #156 — unknown `var(--…)` references in the page's CSS bundle
   // (layout + template + placed modules), scanned as one bundle so custom
@@ -788,6 +826,10 @@ async function renderPreview(
       ...fontMarkers,
       ...cssVarMarkers,
       ...seoMarkers,
+      // #1729 — what core refused from a plugin's head entries, sitemap
+      // adjustments or default share image: the page renders without it.
+      ...(contributions?.refused.get(pageId) ?? []),
+      ...(shareImages.get(pageId)?.refused ? [shareImages.get(pageId)?.refused as string] : []),
       // #1008 — an active plugin this server could not load renders
       // without its contribution; loud here (and Publish live refuses).
       ...pluginsNotRunningHere().map((p) => pluginNotRunningMarker(p.slug)),

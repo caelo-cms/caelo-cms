@@ -184,6 +184,8 @@ function consentPurposesLine(raw: unknown): string {
  */
 export function pluginBackgroundLines(h: {
   consumerBackoff: { consecutiveFailures: number; nextRetryAt: string; lastError: string } | null;
+  /** #1729 — a pending rebuild of its change consumer. */
+  consumerRebuild?: { resumable: boolean; since: string } | null;
   callCost: {
     since: string | null;
     calls: number;
@@ -196,6 +198,12 @@ export function pluginBackgroundLines(h: {
   if (b) {
     lines.push(
       `change consumer backing off: failed ${b.consecutiveFailures}x in a row, retried at ${b.nextRetryAt} (other plugins unaffected): ${b.lastError}`,
+    );
+  }
+  const r = h.consumerRebuild;
+  if (r) {
+    lines.push(
+      `change consumer rebuilding (last progress ${r.since}${r.resumable ? ", resumes from its stored cursor at the next drain" : ""}): no site change reaches it until the rebuild is done (other plugins unaffected)`,
     );
   }
   const c = h.callCost;
@@ -299,6 +307,10 @@ export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
       const s = spend.value as OpValue<typeof aggregatePluginAiSpendOp>;
       lines.push(
         `AI spend last 24h: ${usdFromMicrocents(s.last24hMicrocents)} over ${s.last24hCalls} calls; cap ${usdFromMicrocents(s.capMicrocents)}` +
+          // #1729 — an installed plugin's approved cap; the Owner can only set a lower one.
+          (s.approvedCapMicrocents !== null
+            ? ` (approved with this version ${usdFromMicrocents(s.approvedCapMicrocents)}, the Owner's ${usdFromMicrocents(s.ownerCapMicrocents)})`
+            : "") +
           (s.capExceeded ? " — CAP REACHED (the plugin's AI calls are refused)" : ""),
       );
     } else {

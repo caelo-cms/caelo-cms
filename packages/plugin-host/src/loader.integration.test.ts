@@ -50,6 +50,7 @@ let infra: PluginHostInfra;
 // A simple cms_admin op the plugin will call via ctx.cms.call(...).
 const echoOp = defineOperation({
   name: "test_p115.echo",
+  pluginAccess: "read",
   readScope: "request",
   actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",

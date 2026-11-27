@@ -13,6 +13,7 @@ import type { LinkPageVariant } from "../link-refs.js";
 import type { ListItem } from "./items.js";
 import type { ListTypeDef } from "./list-type.js";
 import type { PageTypeDef } from "./page-type.js";
+import type { PluginMediaFacts } from "./plugin-values.js";
 
 /** A list type as loaded (draft view in previews). */
 export interface LoadedListType {
@@ -78,12 +79,25 @@ export interface ListVariantOverlay {
   readonly values: ReadonlyMap<string, unknown>;
   /** Addresses of hidden entries: `list/<listId>/item/<itemId>` or `instance/<id>/<field>/item/<itemId>`. */
   readonly hidden: ReadonlySet<string>;
+  /**
+   * #1729 — the plugin that set each value (address → plugin slug), named
+   * by a refused value's marker. Absent: the values are core's own.
+   */
+  readonly owners?: ReadonlyMap<string, string>;
+  /** #1729 — what the media table says of the media the values name (§4.5). */
+  readonly media?: ReadonlyMap<string, PluginMediaFacts>;
 }
 
 /** An entry a plugin list source produced for one page. Values follow the source's node definition. */
 export interface PluginSourceEntry {
   readonly id: string;
   readonly values: Readonly<Record<string, unknown>>;
+  /**
+   * #1729 — the plugin that answered it. Its `id` is that plugin's value
+   * too (`{{id}}` is checked where it lands); unset, the plugin is unknown
+   * and the id is still a plugin's.
+   */
+  readonly plugin?: string;
 }
 
 export interface ListRenderData {

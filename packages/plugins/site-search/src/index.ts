@@ -459,7 +459,7 @@ export default definePlugin({
   },
   auditFindingsOperation: "audit",
   skills: SITE_SEARCH_SKILLS,
-  buildAssets: () => ({ "runtime.js": RUNTIME_JS, "runtime.css": RUNTIME_CSS }),
+  clientFiles: { "runtime.js": RUNTIME_JS, "runtime.css": RUNTIME_CSS },
   operations: {
     observe: async (ctx, args) => {
       const a = args as PageOutputObserverArgs;

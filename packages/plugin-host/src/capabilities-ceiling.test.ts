@@ -39,7 +39,6 @@ const FAKE_INFRA = {
       model: "test-model",
     }),
   },
-  emitSnapshot: (async () => ({ siteSnapshotId: "s" })) as never,
 } satisfies PluginHostInfra;
 
 function makeLoaded(overrides: Partial<LoadedPlugin>): LoadedPlugin {
@@ -50,7 +49,7 @@ function makeLoaded(overrides: Partial<LoadedPlugin>): LoadedPlugin {
     schema: {},
     operations: { noop: async () => ({}) },
     // The over-reach under test: every elevated capability requested.
-    requestedCapabilities: ["cms_admin", "ai_provider", "snapshots", "email", "change_journal"],
+    requestedCapabilities: ["cms_admin", "ai_provider", "email", "change_journal"],
   } as unknown as PluginDefinition<PluginContextTier1>;
   return {
     pluginId: "11111111-1111-4111-8111-111111111111",
@@ -73,7 +72,6 @@ describe("#388 — provenance grantability ceiling at the capability factory", (
     })) as PluginContextTier1;
     expect(ctx.cms).toBeDefined();
     expect(ctx.ai).toBeDefined();
-    expect(ctx.snapshots).toBeDefined();
     expect(ctx.email).toBeDefined();
   });
 
@@ -87,7 +85,6 @@ describe("#388 — provenance grantability ceiling at the capability factory", (
     expect(ctx.captcha).toBeDefined();
     expect(ctx.cms).toBeUndefined();
     expect(ctx.ai).toBeUndefined();
-    expect(ctx.snapshots).toBeUndefined();
     expect(ctx.email).toBeUndefined();
   });
 

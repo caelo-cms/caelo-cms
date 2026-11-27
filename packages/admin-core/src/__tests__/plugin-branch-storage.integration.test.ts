@@ -37,7 +37,7 @@ import {
   type PluginInvocation,
 } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { type ExecutionContext, pluginValueOf } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { lockPluginRow } from "../locks.js";
@@ -312,7 +312,7 @@ describe("branch-aware plugin storage", () => {
     const listed = async (chatBranchId: string | null) =>
       (
         (await resolveListSources([PAGE], { chatBranchId }, "directory")).get(PAGE)?.pbs_notes ?? []
-      ).map((i) => i.values.label);
+      ).map((i) => pluginValueOf(i.values.label)?.value ?? i.values.label);
     expect(await listed(a.chatBranchId)).toEqual(["a-new", "seed-a"]);
     expect(await listed(MAIN_RENDER.chatBranchId)).toEqual(["seed"]);
 

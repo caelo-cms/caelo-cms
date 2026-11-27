@@ -45,7 +45,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { type ExecutionContext, pluginValueOf } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { lockPluginRow } from "../locks.js";
 import { registerAdminOps } from "../register.js";
@@ -245,7 +245,9 @@ async function preview(
         hreflang: (contributed.head.get(pageId) ?? []).map((e) =>
           e.kind === "link" ? `${e.hreflang} ${e.href}` : JSON.stringify(e),
         ),
-        switcher: (sources.get(pageId)?.language_links ?? []).map((i) => String(i.values.locale)),
+        switcher: (sources.get(pageId)?.language_links ?? []).map((i) =>
+          String(pluginValueOf(i.values.locale)?.value ?? i.values.locale),
+        ),
       };
     })
     .finally(() => {
@@ -332,9 +334,14 @@ describe("#1213 — international-site render hooks at scale", () => {
     // and the variant rows re-read by every hook, two whole-site
     // pages.list), 14 since. #1269 adds the host's one journal check of the
     // kept link-resolve answers, and a cold refill reads in a pass of its
-    // own (so it is read after the mark it is kept with): 17. A warm pass
-    // asks the plugin nothing. A new read in a render hook shows up here.
-    expect(smallPreview.calls.length).toBeLessThanOrEqual(17);
+    // own (so it is read after the mark it is kept with): 17. #1729 — core
+    // builds the URLs of the pages hreflang names: its lookup of them
+    // (`pages.public_url_pages`) and their URL annotations in the pass (the
+    // switcher's URLs are read inside the plugin's own core call, under an
+    // id of their own): 19. A warm pass asks the plugin nothing. A new read
+    // in a render hook shows up here.
+    expect(smallPreview.calls.length).toBeLessThanOrEqual(19);
+    expect(smallPreview.calls).toContain("system:pages.public_url_pages");
     expect(smallPreview.calls).toContain("system:plugin_changes.check_mark");
     expect(smallPreview.calls).not.toContain("plugin:pages.list");
   });
@@ -430,10 +437,11 @@ describe("#1213 — international-site render hooks at scale", () => {
 
     const sources = await resolveListSources(ids, MAIN_RENDER, "directory");
     for (const id of ids) {
-      expect((sources.get(id)?.language_links ?? []).map((i) => i.values.locale)).toEqual([
-        "en",
-        "de",
-      ]);
+      expect(
+        (sources.get(id)?.language_links ?? []).map(
+          (i) => pluginValueOf(i.values.locale)?.value ?? i.values.locale,
+        ),
+      ).toEqual(["en", "de"]);
     }
 
     const partition = await resolveLinkVariants(ids, MAIN_RENDER);

@@ -55,6 +55,9 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
   // Single-entity reads: the editor and the AI read these on every turn.
   { op: "pages.get", ctx: "chat", input: (r) => ({ pageId: r.pageId }) },
   { op: "pages.get_with_modules", ctx: "chat", input: (r) => ({ pageId: r.pageId }) },
+  // #1729 — the plugin host's lookup of the pages head alternates name, on
+  // every preview and build: by id (system-only, so measured on main).
+  { op: "pages.public_url_pages", ctx: "system", input: (r) => ({ pageIds: [r.pageId] }) },
   {
     op: "pages_seo.get",
     ctx: "chat",

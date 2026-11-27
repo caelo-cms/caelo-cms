@@ -241,6 +241,7 @@ describe("#1420 — what waits for the Owner is visible and approved in one plac
       manifestDigest: string;
       capabilities: { id: string; label: string; allows: string }[];
       changes: { area: string; added: string[] }[] | null;
+      unchangedSummary: string | null;
     }[];
   }
 
@@ -330,7 +331,10 @@ describe("#1420 — what waits for the Owner is visible and approved in one plac
       if (!r.ok) throw new Error(JSON.stringify(r.error));
       return (r.value as { pluginApprovals: number }).pluginApprovals;
     };
+    // Each viewer's own count: rows other files left behind are counted for
+    // whoever may decide them, which need not be both viewers.
     const before = await count(PLATFORM);
+    const ownerBefore = await count(OWNER);
     await asSystem(async (tx) => {
       // The stage policy checks that the submitter is the acting actor.
       await tx.unsafe(`SET LOCAL caelo.actor_id = '${SYSTEM_ACTOR_ID}'`);
@@ -341,7 +345,49 @@ describe("#1420 — what waits for the Owner is visible and approved in one plac
                  FROM plugins WHERE slug = ${SLUG}`;
     });
     expect(await count(PLATFORM)).toBe(before + 1);
-    expect(await count(OWNER)).toBe(before);
+    expect(await count(OWNER)).toBe(ownerBefore);
+  });
+
+  it("#1729 — names what differs when a release lists no permission and no change", async () => {
+    /** Stops the plugin by an approval of `approved` merged into its manifest. */
+    const stopAgainst = async (approved: string) => {
+      await cleanup();
+      expect((await boot()).loaded.map((l) => l.slug)).toEqual([SLUG]);
+      resetPluginHost();
+      await asSystem(
+        (tx) =>
+          tx`UPDATE plugins SET approved_manifest_digest = ${"0".repeat(64)},
+                                approved_manifest_json = manifest_json || ${approved}::text::jsonb
+             WHERE slug = ${SLUG}`,
+      );
+      await boot();
+      const release = await waiting();
+      expect(release?.capabilities).toEqual([]);
+      expect(release?.changes).toEqual([]);
+      return release;
+    };
+    // The approved manifest carries a flag an older Caelo wrote: only the format differs.
+    const formatOnly = await stopAgainst('{"hasBuildAssets": false}');
+    expect(formatOnly?.unchangedSummary).toBe(
+      "Nothing it may do changed: Caelo now records its declaration in another format.",
+    );
+    const preview = await execute(
+      registry,
+      adapter,
+      { ...OWNER, actorKind: "ai" },
+      "plugins.preview_approve_release",
+      { slug: SLUG, manifestDigest: formatOnly?.manifestDigest },
+    );
+    if (!preview.ok) throw new Error(JSON.stringify(preview.error));
+    expect((preview.value as { preview: string }).preview).toContain(
+      "Caelo now records its declaration in another format.",
+    );
+    expect((await stopAgainst('{"version": "0.1.0"}'))?.unchangedSummary).toBe(
+      "Only the version number changed.",
+    );
+    // A listed change speaks for itself.
+    await stopByUpgrade();
+    expect((await waiting())?.unchangedSummary).toBeNull();
   });
 
   it("says the change is unknown rather than guessing when no manifest was recorded", async () => {

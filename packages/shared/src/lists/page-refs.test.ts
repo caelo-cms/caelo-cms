@@ -134,7 +134,11 @@ const TOPICS_ITEMS: ListItem[] = [
 ];
 
 function data(
-  extra: { pages?: ListPageRecord[]; pageVariants?: Map<string, LinkPageVariant> } = {},
+  extra: {
+    pages?: ListPageRecord[];
+    pageVariants?: Map<string, LinkPageVariant>;
+    overlays?: ListRenderData["overlays"];
+  } = {},
 ) {
   const types = DEFAULT_LIST_TYPES;
   return {
@@ -161,6 +165,7 @@ function data(
     pages: new Map((extra.pages ?? PAGES).map((p) => [p.id, p])),
     media: new Map(),
     ...(extra.pageVariants ? { pageVariants: extra.pageVariants } : {}),
+    ...(extra.overlays ? { overlays: extra.overlays } : {}),
     siteLanguage: "en",
     homePageId: P.home,
   } satisfies ListRenderData;
@@ -585,6 +590,41 @@ describe("language versions", () => {
   it("the German author page lists the German articles naming any version of it", () => {
     expect(titles(resolve(ctxFor(P.annaDe, d), ARTICLES_OF_SELF))).toEqual(["Beitrag eins"]);
     expect(titles(resolve(ctxFor(P.anna, d), ARTICLES_OF_SELF))).toEqual(["Post two", "Post one"]);
+  });
+
+  it("a term's overview page a translation plugin sets leads the trail in that language", () => {
+    // A German topic page, set by the plugin as the German overview page
+    // of the term (its value comes wrapped with its origin, #1729).
+    const seoDe = id(22);
+    const address = `list/${TOPICS_LIST}/item/${T.seo}/landing_page`;
+    const withSeoDe = [...pages, page(seoDe, "SEO (de)")];
+    // No language group: only the plugin's value can lead to the German page.
+    const variants = new Map([...pageVariants, [seoDe, { variant: "de", group: null }]]);
+    const d2 = data({
+      pages: withSeoDe.map((p) => (p.id === P.post1De ? { ...p, terms: [term(T.seo)] } : p)),
+      pageVariants: variants,
+      overlays: new Map([
+        [
+          "de",
+          {
+            values: new Map([[address, { href: ref(seoDe) }]]),
+            hidden: new Set<string>(),
+            owners: new Map([[address, "international-site"]]),
+          },
+        ],
+      ]),
+    });
+    const crumbs: ListFieldSpec = {
+      name: "crumbs",
+      listType: "links",
+      bind: "source",
+      source: { kind: "system", name: "breadcrumbs" },
+      list: `caelo:list/${TOPICS_LIST}`,
+    };
+    expect(titles(resolve(ctxFor(P.post1De, d2), crumbs)).slice(-2)).toEqual([
+      "SEO (de)",
+      "Beitrag eins",
+    ]);
   });
 
   it("the overlay scope holds the named pages' versions in the page's language", () => {

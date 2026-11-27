@@ -28,6 +28,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import {
   createListRenderContext,
   type ExecutionContext,
+  pluginValueOf,
   renderTemplate,
   type SiteDefaultsSetSeoInput,
   siteDefaultsSetSeoInputSchema,
@@ -443,7 +444,13 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     await sysOp("pages.set_status", { pageId: de.pageId, status: "published" });
 
     const lists = await resolveListSources([sourceId], MAIN_RENDER, "directory");
-    const items = lists.get(sourceId)?.language_links ?? [];
+    // Checked values stay the plugin's until they land (#1729): read them plain.
+    const items = (lists.get(sourceId)?.language_links ?? []).map((i) => ({
+      ...i,
+      values: Object.fromEntries(
+        Object.entries(i.values).map(([k, v]) => [k, pluginValueOf(v)?.value ?? v]),
+      ),
+    }));
     // Entries are typed by the source's node definition (epic #1107):
     // the locale code is the stable id, href a link, is_current a boolean.
     expect(items.map((i) => i.id).sort()).toEqual(["de", "en"]);

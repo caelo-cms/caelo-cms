@@ -47,6 +47,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { pluginValueRefusedHint } from "../deploy/render-failures.js";
 import { observeDraftReads } from "../locks.js";
 import {
   assetKey,
@@ -114,6 +115,8 @@ const shareImageOutput = z.object({
   source: z.enum(SHARE_IMAGE_SOURCES),
   assetId: z.string().nullable(),
   url: z.string().nullable(),
+  /** #1729 — why a plugin's default was refused (`plugin-value-refused:…`). */
+  refused: z.string().optional(),
 });
 
 /**
@@ -133,7 +136,18 @@ async function loadShareImages(
     pages.map((p) => ({ pageId: p.pageId, ownAssetId: p.seo?.ogImageAssetId ?? null })),
     { chatBranchId: chatBranchId ?? null, onPluginFailure: sink.onPluginFailure },
   );
-  return { images, warnings: sink.failures().map((f) => f.reason) };
+  // #1729 — a language default the plugin named that is no library image.
+  const refused = [...images.values()].flatMap((i) => (i.refused ? [i.refused] : []));
+  return {
+    images,
+    warnings: [
+      ...sink.failures().map((f) => f.reason),
+      ...[...new Set(refused)].map(
+        (marker) =>
+          `${marker}: the plugin's default share image for this page is refused, so the page shows none — ${pluginValueRefusedHint(marker.slice(marker.indexOf(":") + 1))}`,
+      ),
+    ],
+  };
 }
 
 // ---------------------------------------------------------------------
@@ -142,6 +156,7 @@ async function loadShareImages(
 
 export const pagesSeoGetOp = defineOperation({
   name: "pages_seo.get",
+  pluginAccess: "read",
   readScope: "request",
   // #591 — plugin actors read too: a translation flow carries the source
   // page's description into the variant (§11: reads are open).
@@ -197,6 +212,7 @@ export const pagesSeoShareImagesOp = defineReadOperation({
 
 export const pagesSeoCheckShareImageOp = defineOperation({
   name: "pages_seo.check_share_image",
+  pluginAccess: "read",
   readScope: "request",
   // Why human-only: no AI tool needs it — set_theme_asset and the plugin's
   // set_locale_share_image run this check themselves. #1452: it exists so a
@@ -521,6 +537,7 @@ function optimizedSeo(
  */
 export const pagesSeoApplyTranslationOp = defineOperation({
   name: "pages_seo.apply_translation",
+  pluginAccess: "write",
   readScope: "request",
   // Why system-only: the write half of a translation flow (plugins run
   // it from translate_variant). The AI fills SEO through
@@ -726,6 +743,7 @@ const robotsRulesOutput = z.array(robotsRuleGroupSchema);
 
 export const siteDefaultsGetSeoOp = defineOperation({
   name: "site_defaults.get_seo",
+  pluginAccess: "read",
   readScope: "request",
   // #398 — plugin actors read the base URL to build absolute hreflang
   // targets for host-strategy locales (§11: read surfaces are open).

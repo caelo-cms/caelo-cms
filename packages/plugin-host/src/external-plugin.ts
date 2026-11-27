@@ -1,13 +1,33 @@
 // SPDX-License-Identifier: MPL-2.0
 
+/**
+ * Load external (runtime-installed) definitions as RPC proxies: the source
+ * is never imported by the Bun host. The definition is built from the
+ * reviewed manifest alone — its declarations are carried as data
+ * ({@link externalDeclarations}) and every operation is a sandboxed call.
+ */
+
 import { externalArtifactDigest, validatePlugin } from "@caelo-cms/plugin-sandbox";
-import type { PluginContext, PluginDefinition } from "@caelo-cms/plugin-sdk";
-/** Load external definitions as RPC proxies; source is never imported by the Bun host. */
+import {
+  externalCapabilityRefusal,
+  externalDeclarationRefusals,
+  type PluginContext,
+  type PluginDefinition,
+  type PluginManifest,
+} from "@caelo-cms/plugin-sdk";
 import { z } from "zod";
 import type { PluginHostInfra } from "./dispatch.js";
 import { assertExternalApproval, type ExternalApproval } from "./external-authorization.js";
 import { publicOperationFromManifest } from "./manifest-definition.js";
-import { runSandbox } from "./sandbox-runtime.js";
+import { renderPointDefinition } from "./render-points.js";
+import { ExternalDeclarationUnavailableError } from "./runtime-health.js";
+import {
+  SANDBOX_ANSWER_BYTES,
+  SANDBOX_KIND,
+  type SandboxKind,
+  type SandboxKindCarrier,
+} from "./sandbox-kind.js";
+import { runSandbox, SANDBOX_AI_INTERACTIVE_MS } from "./sandbox-runtime.js";
 
 /** Build a definition containing host-generated handlers for only the reviewed operation names. */
 export function externalPluginDefinition(opts: {
@@ -31,27 +51,18 @@ export function externalPluginDefinition(opts: {
   }
   const manifest = validation.manifest;
   for (const tool of manifest.tools ?? []) z.fromJSONSchema(tool.inputJsonSchema);
+  // #1729 — the status record is the one list of what a runtime-installed
+  // plugin can be granted; staging and approval refuse the rest first.
   for (const capability of manifest.requestedCapabilities ?? []) {
-    if (
-      ![
-        "cms_admin_schema",
-        "chat_runner_tools",
-        "companion_skills",
-        "font_assets",
-        "private_files",
-        "image_generation",
-        "site_media_read",
-        "consent_provider",
-        // Epic #1644 — brokered by the sandbox (collections) or delivered
-        // as arguments (page output); a batch runs in the same sandbox in a job.
-        "collections",
-        "page_output",
-        "batch_jobs",
-        // #1654 — no broker: the gateway runs the declared conversation itself.
-        "visitor_ai",
-      ].includes(capability)
-    )
-      throw new Error(`External capability broker unavailable: ${capability}`);
+    const refusal = externalCapabilityRefusal(capability);
+    if (refusal) throw new Error(`External capability broker unavailable: ${refusal}`);
+  }
+  // #1737 — an artifact an older release approved with a declaration no
+  // installed plugin can make now stops here, at every load: the error is
+  // recorded for the Owner (#1008, Settings → Plugins, get_plugin), and
+  // nothing of the plugin runs, instead of running without it unnoticed.
+  for (const refusal of externalDeclarationRefusals(manifest)) {
+    throw new ExternalDeclarationUnavailableError(refusal);
   }
   if (externalArtifactDigest(opts.manifest, opts.source) !== opts.approval.artifactDigest)
     throw new Error("ExternalPluginArtifactMismatch");
@@ -60,17 +71,84 @@ export function externalPluginDefinition(opts: {
       { pluginId: opts.pluginId, externalApproval: opts.approval },
       opts.infra,
     );
-  const invoke = (operation: string) => (context: PluginContext, args: unknown) =>
-    runSandbox({
+  // An interactive call that may spend the install's AI waits on the model.
+  const spendsAi = (manifest.requestedCapabilities ?? []).some(
+    (c) => c === "image_generation" || c === "ai_provider",
+  );
+  const invoke = (operation: string) => (context: PluginContext, args: unknown) => {
+    const kind = sandboxKindOf(context);
+    const maxResultBytes = (context as PluginContext & SandboxKindCarrier)[SANDBOX_ANSWER_BYTES];
+    return runSandbox({
       source: opts.source,
       manifest,
       operation,
       args,
       context,
       authorize,
-      timeoutMs: manifest.requestedCapabilities?.includes("image_generation") ? 240_000 : 30_000,
+      kind,
+      ...(kind === "interactive" && spendsAi ? { timeoutMs: SANDBOX_AI_INTERACTIVE_MS } : {}),
+      ...(maxResultBytes ? { maxResultBytes } : {}),
     });
+  };
+  // #1729 (Q3 A) — the composition points the manifest announces, each a
+  // reserved entry the child resolves from the plugin's own definition.
+  const points = renderPointDefinition(manifest, invoke);
   return Object.freeze({
+    ...externalDeclarations(manifest),
+    ...points.keys,
+    operations: Object.freeze({
+      ...Object.fromEntries(manifest.operations.map((name) => [name, invoke(name)])),
+      ...points.operations,
+    }),
+    // No `staticRender`: refused above until the build can bake it (#1737);
+    // the child still answers `$staticRender` for that follow-up.
+    // #1729 (Q1) — create-time defaults, run on main as the plugin actor
+    // each time the host brings the plugin up, like a shipped `onActivate`.
+    ...(manifest.hasOnActivate
+      ? {
+          onActivate: async (context: PluginContext) => {
+            await invoke("$onActivate")(context, {});
+          },
+        }
+      : {}),
+  });
+}
+
+/**
+ * What a call is for (#1729 Q10): the caller's explicit kind (a journal
+ * batch, a rebuild chunk), else the invocation's origin. A render with a
+ * `renderId` is one editor preview pass; any other render (a build, a Stage
+ * audit, a link migration) has the build budget.
+ */
+export function sandboxKindOf(context: PluginContext): SandboxKind {
+  const explicit = (context as PluginContext & SandboxKindCarrier)[SANDBOX_KIND];
+  if (explicit) return explicit;
+  switch (context.invocation.origin) {
+    case "worker":
+      return "worker";
+    case "batch":
+      return "batch";
+    case "render":
+      return context.invocation.renderId ? "preview" : "build";
+    default:
+      return "interactive";
+  }
+}
+
+/** The manifest's declarations, as a definition carries them: data only, no operation. */
+export type ExternalDeclarations = Omit<
+  PluginDefinition<PluginContext>,
+  "operations" | "staticRender"
+>;
+
+/**
+ * Everything of a reviewed external manifest the host consumes as data,
+ * mapped onto the definition shape a shipped plugin has (one plugin model).
+ * Pure, so the parity test (`external-capability-parity.test.ts`) can check
+ * that each brokered capability's manifest fields reach the definition.
+ */
+export function externalDeclarations(manifest: PluginManifest): ExternalDeclarations {
+  return {
     slug: manifest.slug,
     version: manifest.version,
     tier: 2,
@@ -83,9 +161,39 @@ export function externalPluginDefinition(opts: {
     requestedCapabilities: manifest.requestedCapabilities,
     tools: manifest.tools,
     skills: manifest.skills,
-    operations: Object.freeze(
-      Object.fromEntries(manifest.operations.map((name) => [name, invoke(name)])),
-    ),
+    // #1729 — scheduled on the tick like a shipped plugin's; each run is a
+    // sandboxed call of the background pool (`worker` budget).
+    ...(manifest.workers ? { workers: manifest.workers } : {}),
+    // #1729 — pure data: core stores them as types the plugin owns, available
+    // while it runs (`list_types.sync_plugin_types`), slugs prefixed with
+    // the plugin's own.
+    ...(manifest.listTypes ? { listTypes: manifest.listTypes } : {}),
+    // #1729 — the names a module iterates; the entries come from the
+    // `$listSources` entry (render-points.ts), checked like a shipped
+    // plugin's (plugin-values.ts).
+    ...(manifest.listSources ? { listSources: manifest.listSources } : {}),
+    // #1729 — the kinds a plugin adds to the head and sitemap; the entries
+    // come from the `$contributions` entry (and a default share image from
+    // `$shareImages`), held to the vocabulary every plugin is
+    // (head-vocabulary.ts, share-images.ts).
+    ...(manifest.contributes ? { contributes: manifest.contributes } : {}),
+    // #1729 — the reviewed client files (bytes bound to the artifact
+    // digest) and the grant's limits, from which the build reads the
+    // origins the files may reach; the manifest carries the same
+    // constraints the receipt records.
+    ...(manifest.clientFiles ? { clientFiles: manifest.clientFiles } : {}),
+    ...(manifest.capabilityConstraints
+      ? { capabilityConstraints: manifest.capabilityConstraints }
+      : {}),
+    // #1729 — what the `$linkResolve` answer is computed from: core keeps
+    // the answer per render scope and asks again only after a change to
+    // these tables, so a preview does not spawn a sandbox per page chunk.
+    ...(manifest.linkResolveReads ? { linkResolveReads: manifest.linkResolveReads } : {}),
+    // #1729 — reviewed markup a `$deferrals` verdict names (deferrals.ts):
+    // the verdict carries a name and text, never markup of its own.
+    ...(manifest.deferralPlaceholders
+      ? { deferralPlaceholders: manifest.deferralPlaceholders }
+      : {}),
     // #1332 — the reviewed contract, with the input schema compiled from
     // the manifest's JSON Schema: the host validates a visitor's body
     // before the sandbox ever sees it.
@@ -94,6 +202,11 @@ export function externalPluginDefinition(opts: {
       : {}),
     ...(manifest.tableKinds ? { tableKinds: manifest.tableKinds } : {}),
     ...(manifest.requires ? { requires: manifest.requires } : {}),
+    // #1729 — reviewed manifest data: the only mail an installed plugin can
+    // queue (the outbox drain renders it from here), and the unsubscribe
+    // link its tokens are signed for.
+    ...(manifest.mailTemplates ? { mailTemplates: manifest.mailTemplates } : {}),
+    ...(manifest.mailUnsubscribe ? { mailUnsubscribe: manifest.mailUnsubscribe } : {}),
     // Admin panels are reviewed manifest data: an installed plugin gets
     // the same admin pages a shipped one declares (one plugin model).
     ...(manifest.adminPanels ? { adminPanels: manifest.adminPanels } : {}),
@@ -110,9 +223,6 @@ export function externalPluginDefinition(opts: {
     ...(manifest.bakedData ? { bakedData: manifest.bakedData } : {}),
     ...(manifest.writeHintsOperation ? { writeHintsOperation: manifest.writeHintsOperation } : {}),
     ...(manifest.changeConsumer ? { changeConsumer: manifest.changeConsumer } : {}),
-    ...(manifest.hasStaticRender
-      ? { staticRender: invoke("$staticRender") as PluginDefinition["staticRender"] }
-      : {}),
     // Epic #1644 — reviewed manifest data: an installed plugin keeps
     // configuration, collections, page output and batch jobs like a shipped
     // one (one plugin model); its observer and batch code run in the sandbox.
@@ -129,5 +239,15 @@ export function externalPluginDefinition(opts: {
     ...(manifest.aiChatOperations ? { aiChatOperations: manifest.aiChatOperations } : {}),
     ...(manifest.pageOutputObserver ? { pageOutputObserver: manifest.pageOutputObserver } : {}),
     ...(manifest.batchOperations ? { batchOperations: manifest.batchOperations } : {}),
-  });
+    // #1729 — data the host consumes for a shipped plugin too: a list-type
+    // extension core validates, the private columns published to visitors
+    // (#635), and the Web Component the plugin's markup mounts.
+    ...(manifest.listExt ? { listExt: manifest.listExt } : {}),
+    ...(manifest.visitorProjection ? { visitorProjection: manifest.visitorProjection } : {}),
+    ...(manifest.component ? { component: manifest.component } : {}),
+    // #1729 (decision Q7 A) — the `host` / `path-prefix` slots as tables the
+    // host reads while it composes addresses (url-tables.ts); no plugin
+    // code runs on the URL path, so no encode/decode crosses from the source.
+    ...(manifest.urlTables ? { urlTables: manifest.urlTables } : {}),
+  };
 }

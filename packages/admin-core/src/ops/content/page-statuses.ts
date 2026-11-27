@@ -36,6 +36,7 @@ const MAX_PAGE_IDS = 1000;
 
 export const listPageStatusesOp = defineOperation({
   name: "pages.list_statuses",
+  pluginAccess: "read",
   readScope: "request",
   // Why system-only (plugins included): a render-time building block like
   // `pages.resolve_public_urls`, called by plugin render hooks with the ids

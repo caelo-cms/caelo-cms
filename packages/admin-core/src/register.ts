@@ -213,7 +213,7 @@ import {
   forkPlacementPathsOp,
 } from "./ops/content/placement-fork-paths.js";
 import { renderPagePreviewOp } from "./ops/content/preview.js";
-import { resolvePublicUrlsOp } from "./ops/content/public-urls.js";
+import { publicUrlPagesOp, resolvePublicUrlsOp } from "./ops/content/public-urls.js";
 import { pageConflictsRedirectOp } from "./ops/content/redirect-page-conflicts.js";
 import { listSharedContentOp } from "./ops/content/shared-content.js";
 import { setTemplateBlocksOp } from "./ops/content/template_blocks.js";
@@ -397,6 +397,7 @@ import {
   listCropsOp,
   mediaDeleteManyOp,
   mediaDeleteOp,
+  mediaDescribeManyOp,
   mediaGetOp,
   mediaGetSettingsOp,
   mediaListOp,
@@ -821,10 +822,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(inspectFontOp);
   registry.register(resolveFontOp);
   registry.register(readFontOp);
-  registry.register(stagePluginInstallationOp);
-  registry.register(approvePluginInstallationOp);
+  registry.register(stagePluginInstallationOp(registry));
+  registry.register(approvePluginInstallationOp(registry));
   registry.register(getApprovedPluginInstallationOp);
-  registry.register(finalizePluginInstallationOp);
+  registry.register(finalizePluginInstallationOp(registry));
   registry.register(revokePluginCapabilityOp);
   registry.register(listPluginInstallationsOp);
   registry.register(createFirstOwnerOp);
@@ -932,6 +933,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(planPageMovesOp);
   registry.register(listSharedContentOp);
   registry.register(resolvePublicUrlsOp);
+  registry.register(publicUrlPagesOp);
   registry.register(listPageStatusesOp);
   registry.register(listRecentlyEditedPagesOp);
   registry.register(canonicaliseLinkValuesOp);
@@ -1604,6 +1606,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mediaUploadOp);
   registry.register(mediaListOp);
   registry.register(mediaGetOp);
+  registry.register(mediaDescribeManyOp);
   registry.register(mediaUpdateAltOp);
   registry.register(mediaSetSourceOp);
   registry.register(mediaSetVisibilityOp);

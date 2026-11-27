@@ -1305,3 +1305,34 @@ export const mediaDeleteManyOp = defineOperation({
     return ok({ deleted, blocked });
   },
 });
+
+// ---------------------------------------------------------------------
+// media.describe_many (#1729) — what the plugin host checks of a media
+// value a plugin hands a page (docs/dev/external-plugin-brokers.md §4.5):
+// that the asset exists, is in the library (not a reference image) and is
+// an image. System only: the host asks it for the ids one answer names.
+// ---------------------------------------------------------------------
+
+export const mediaDescribeManyOp = defineOperation({
+  name: "media.describe_many",
+  readScope: "request",
+  // Why system-only: the plugin host asks it for the ids one render answer
+  // names; a person or the AI reads media through media.list / media.get.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({ ids: z.array(z.string().uuid()).max(1000) }).strict(),
+  output: z.object({
+    assets: z.array(
+      z.object({ id: z.string(), visibility: z.enum(["library", "reference"]), mime: z.string() }),
+    ),
+  }),
+  handler: async (_ctx, input, tx) => {
+    if (input.ids.length === 0) return ok({ assets: [] });
+    const rows = (await tx.execute(sql`
+      SELECT id::text AS id, visibility, mime
+      FROM media_assets
+      WHERE id = ANY(${uuidArray(input.ids)})
+    `)) as unknown as { id: string; visibility: "library" | "reference"; mime: string }[];
+    return ok({ assets: rows.map((r) => ({ id: r.id, visibility: r.visibility, mime: r.mime })) });
+  },
+});

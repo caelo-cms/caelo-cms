@@ -162,6 +162,7 @@ async function pendingViewAddresses(
 
 export const createRedirectOp = defineOperation({
   name: "redirects.create",
+  pluginAccess: "write",
   readScope: "request",
   // `plugin`: a URL-contributing plugin owns URL shapes core cannot derive —
   // `international-site` writes the `/<default locale>` → `/` 301 when it

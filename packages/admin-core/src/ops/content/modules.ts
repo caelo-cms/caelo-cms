@@ -214,6 +214,7 @@ export const listModulesUsageOp = defineOperation({
 export const listModulesOp = withHumanisedLinks(
   defineOperation({
     name: "modules.list",
+    pluginAccess: "read",
     readScope: "request",
     // CLAUDE.md §11: read surfaces are open to AI. The AI uses this
     // to plan cross-module changes (e.g. "find every module with a

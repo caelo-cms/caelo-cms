@@ -54,7 +54,7 @@ const helloManifest = {
   },
   tableKinds: { greetings: "visitor-state" },
   operations: ["submit", "list"],
-  hasStaticRender: true,
+  hasStaticRender: false,
 };
 
 const helloSource = `

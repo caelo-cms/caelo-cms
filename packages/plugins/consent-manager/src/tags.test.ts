@@ -10,12 +10,11 @@
 import { describe, expect, it } from "bun:test";
 import {
   assertInlineSnippetIsJs,
-  buildTagInjector,
   declarationGaps,
   fieldsOfRow,
-  jsonForInlineScript,
   legacySnippetNextStep,
   resolveTagColumns,
+  TAG_INJECTOR,
   type TagRow,
   tagCode,
 } from "./tags.js";
@@ -25,32 +24,12 @@ const META_EVENTS_MANAGER =
   "<script>!function(f,b,e,v){/* fbq bootstrap */}(window,document,'script');fbq('init','123');</script>" +
   '<noscript><img height="1" width="1" src="https://www.facebook.com/tr?id=123&ev=PageView"/></noscript>';
 
-describe("jsonForInlineScript", () => {
-  it("cannot close the surrounding <script>", () => {
-    const out = jsonForInlineScript({ inline: "a</script><img src=x onerror=alert(1)>" });
-    expect(out).not.toContain("</");
-    expect(JSON.parse(out)).toEqual({ inline: "a</script><img src=x onerror=alert(1)>" });
-  });
-
-  it("escapes the JS line separators", () => {
-    expect(jsonForInlineScript("a b c")).toBe('"a\\u2028b\\u2029c"');
-  });
-});
-
-describe("buildTagInjector", () => {
-  it("keeps tag data from terminating the inline runtime", () => {
-    const js = buildTagInjector([
-      {
-        name: "t",
-        category: "marketing",
-        position: "body_end",
-        src: "",
-        inline: "x='</script>';",
-        cookies: [{ name: "</script>", prefix: false }],
-        scope: { include: ["/</script>"], exclude: [], locales: null },
-      },
-    ]);
-    expect(js).not.toContain("</script>");
+describe("TAG_INJECTOR", () => {
+  it("reads the site's tags from the build data, never from its own text (#1729)", () => {
+    // The file is reviewed with the plugin; a tag's text reaches the page
+    // only in the data block core escapes (plugin-host client-assets.ts).
+    expect(TAG_INJECTOR).toContain("var TAGS = CONFIG.tags || [];");
+    expect(/<\/script|<!--/i.test(TAG_INJECTOR)).toBe(false);
   });
 });
 

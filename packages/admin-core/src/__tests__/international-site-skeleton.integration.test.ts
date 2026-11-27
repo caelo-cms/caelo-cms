@@ -125,6 +125,7 @@ describe("#394 — international-site skeleton on the foundation", () => {
       tier: 1,
       schema: {},
       operations: { noop: async () => ({}) },
+      requestedCapabilities: ["url_slots"],
       urlContributions: [
         {
           slot: "path-prefix",

@@ -26,7 +26,8 @@ Derivation means the CSP allows what the site's authors put in a page. It defend
 
 What runs after load cannot be read from markup:
 
-- A plugin says it itself, as the reserved `csp-sources.json` of `buildAssets` (`pluginCspSourcesSchema`): origins per kind and the exact text of inline scripts its runtime injects. The Owner sees it per plugin in `get_security_headers` and the Settings page. Today consent-manager uses it for tracking tags, with the hosts a known vendor goes on to contact (`csp-sources.ts`). A tag container (GTM) can load anything, so what it loads beyond Google's own hosts shows as a violation.
+- A plugin's grant names them (#1729): `capabilityConstraints.client_assets.origins`, the third-party origins its reviewed client files may reach, shown on the approval card. The build adds them as the plugin's sources (`pluginCspSourcesSchema`), with the gateway's stream origin for a visitor conversation. Nothing else of a plugin widens the CSP, except the consent provider's tags: its build data carries their sources (origins per kind and the exact text of inline snippets), each tag an Owner approval of its own (`add_tracking_tag`), with the hosts a known vendor goes on to contact (`csp-sources.ts`). Any other plugin's build data that names sources fails the build. The Owner sees the sources per plugin in `get_security_headers` and the Settings page. A tag container (GTM) can load anything, so what it loads beyond Google's own hosts shows as a violation.
+- A client file's URL of another site that the grant does not name is refused at review. One the file computes at runtime the review cannot read; under `enforce` the CSP blocks it in the browser (`apps/admin/e2e/plugin-client-assets.browser.ts`), under `report_only` the audit sees the violation on the pages it opens.
 - The rest goes into the policy's `extraSources`.
 
 ### Why `script-src` has no `'unsafe-inline'`

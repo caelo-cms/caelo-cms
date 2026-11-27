@@ -37,6 +37,7 @@ import {
   type NestedRenderResolver,
   renderPlacedModule,
 } from "./nested-module-render.js";
+import { anyEndsOutsideContent, type PageFrame, pageFrame } from "./page-reading.js";
 import {
   applySlotReplacements,
   extractInnerOfTopLevelContentSlot,
@@ -57,6 +58,13 @@ export interface ComposeModule {
   readonly slug: string;
   readonly displayName: string;
   readonly html: string;
+  /**
+   * #1729 — `html` is the module's rendered output, not its template: the
+   * caller (the editor preview) rendered and placed it, and passes its
+   * placement verdict as `refusePluginValues`. The composer leaves such a
+   * module out of the page's placement reading, which reads templates.
+   */
+  readonly rendered?: boolean;
   readonly css: string;
   readonly js: string;
   /**
@@ -298,6 +306,21 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
       "composePagePreview cannot withhold modules; compose pages with deferrals through composePageWithLayout",
     );
   }
+  // #1729 — where the page's modules stand, for their plugins' values. A
+  // module the render embeds is known only once it rendered: when one of
+  // them ends outside content, the page renders again refusing them all.
+  const frame = pageFrame({ templateHtml: input.templateHtml });
+  const first = composePagePreviewOnce(input, frame, frame.open);
+  return first.open && !frame.open
+    ? composePagePreviewOnce(input, frame, true).output
+    : first.output;
+}
+
+function composePagePreviewOnce(
+  input: ComposeInput,
+  frame: PageFrame,
+  open: boolean,
+): { readonly output: ComposeOutput; readonly open: boolean } {
   const contentByName = new Map<string, string>();
   const allCss: string[] = [];
   const allJs: string[] = [];
@@ -307,13 +330,15 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
   const nestedAssetIds: string[] = [];
   // Template CSS first so module CSS can override it via source-order specificity.
   if (input.templateCss.trim().length > 0) allCss.push(input.templateCss);
+  const used = new RenderedTemplates(input.nestedModules);
 
   for (const block of input.blocks) {
     // P6.7 — tag every module's outermost element with
     // `data-caelo-module-id="<uuid>"` so the live-edit overlay's iframe
     // hover affordances can identify the clicked module.
     const renderedModuleHtml = block.modules.map((m) => {
-      const rendered = renderModuleFields(m, input);
+      const rendered = renderModuleFields(m, input, frame.refusalFor(block.blockName, false, open));
+      used.add(m, rendered);
       recordFailures(moduleFailures, block.blockName, m, rendered.failures);
       nestedAssetIds.push(...rendered.nestedModuleIds);
       return stampPlacement(tagModuleId(rendered.html, m.moduleId), m, input);
@@ -388,10 +413,13 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
   }
 
   return {
-    html,
-    replacedSlots: replaced.replacedSlots,
-    missingSlots: replaced.missingSlots,
-    moduleFailures,
+    output: {
+      html,
+      replacedSlots: replaced.replacedSlots,
+      missingSlots: replaced.missingSlots,
+      moduleFailures,
+    },
+    open: open || used.anyEndsOutsideContent(),
   };
 }
 
@@ -457,6 +485,8 @@ function renderModuleFields(
     readonly nestedModules?: NestedRenderResolver;
     readonly linkResolver?: LinkResolver;
   },
+  /** #1729 — refuse the module's plugin values with this rule (`page-reading.ts`). */
+  refusePluginValues?: string,
 ): RenderedModuleFields {
   // The substitution engine (renderTemplate) already unwraps CDATA
   // guards; cover the no-op early-return path so a chrome module with no
@@ -498,6 +528,7 @@ function renderModuleFields(
         ...(input.lists ? { lists: input.lists } : {}),
         ...(m.contentInstanceId ? { contentInstanceId: m.contentInstanceId } : {}),
         ...(input.linkResolver ? { linkResolver: input.linkResolver } : {}),
+        ...(refusePluginValues !== undefined ? { refusePluginValues } : {}),
       },
     );
     return { html: r.html, failures: r.failures, nestedModuleIds: [...r.touchedModuleIds] };
@@ -510,12 +541,48 @@ function renderModuleFields(
     listHolder: { contentInstanceId: m.contentInstanceId ?? null },
     themeAssets,
     linkResolver: input.linkResolver,
+    ...(refusePluginValues !== undefined ? { refusePluginValues } : {}),
   });
   return {
     html: r.html,
     failures: r.missingSlots.map((reason) => ({ field: "", reason })),
     nestedModuleIds: [],
   };
+}
+
+/**
+ * #1729 — the templates a compose rendered: each module's own (unless it
+ * arrived `rendered`: its caller placed it and passes the verdict as
+ * `refusePluginValues`; its per-page output is never read or kept here),
+ * and the template of every module the renderer embedded in it, at any
+ * depth and through any field or list entry, as the renderer reports them
+ * (`nestedModuleIds`, resolved through the same resolver).
+ */
+class RenderedTemplates {
+  private readonly templates: string[] = [];
+  constructor(private readonly resolver: NestedRenderResolver | undefined) {}
+
+  add(m: ComposeModule, rendered: RenderedModuleFields): void {
+    if (m.rendered !== true) this.templates.push(m.html);
+    for (const id of rendered.nestedModuleIds) {
+      const nested = this.resolver?.getModule(id);
+      if (nested) this.templates.push(nested.html);
+    }
+  }
+
+  /**
+   * Markup the composer puts on the page as it is: a withheld module's
+   * placeholder (the site module the plugin names, rendered by the plugin
+   * host, or the plugin's own) and an editor notice. The same for every
+   * page that shows it, so reading it costs one analysis per placeholder.
+   */
+  addInserted(html: string): void {
+    this.templates.push(html);
+  }
+
+  anyEndsOutsideContent(): boolean {
+    return anyEndsOutsideContent(this.templates);
+  }
 }
 
 function recordFailures(
@@ -659,6 +726,11 @@ export interface ComposeWithLayoutInput extends ComposeInput {
   readonly layoutBlocks: readonly ComposeLayoutBlock[];
   /** Optional layout slug carried into ComposeError messages. */
   readonly layoutSlug?: string;
+  /**
+   * #1729 — the caller found part of the page ending outside plain content
+   * (its pre-rendered modules): refuse every plugin value the composer renders.
+   */
+  readonly refusePluginValues?: boolean;
 }
 
 /**
@@ -725,9 +797,33 @@ export interface ComposeWithLayoutOutput extends ComposeOutput {
    * the page itself shows changed (docs/dev/search-engine-feed.md).
    */
   readonly contentHtml: string;
+  /**
+   * #1729 — part of the page ends outside plain content (the template in
+   * the layout, a module, a module it embeds, or the caller's
+   * `refusePluginValues`), so every plugin value on it was refused with
+   * `context-open-markup`. A caller that rendered modules itself renders
+   * them again refusing theirs.
+   */
+  readonly openMarkup: boolean;
 }
 
 export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeWithLayoutOutput {
+  // #1729 — where the page's modules stand, for their plugins' values: a
+  // slot outside plain content, or a part of the page that ends outside
+  // it, refuses them (page-reading.ts). A module the render embeds is known
+  // only once it rendered: when one ends outside content, the page renders
+  // again refusing them all (rare: no real module does).
+  const frame = pageFrame({ templateHtml: input.templateHtml, layoutHtml: input.layoutHtml });
+  const open = input.refusePluginValues === true || frame.open;
+  const first = composePageWithLayoutOnce(input, frame, open);
+  return first.openMarkup && !open ? composePageWithLayoutOnce(input, frame, true) : first;
+}
+
+function composePageWithLayoutOnce(
+  input: ComposeWithLayoutInput,
+  frame: PageFrame,
+  open: boolean,
+): ComposeWithLayoutOutput {
   // No-fallbacks (CLAUDE.md §2): validate the layout declares a
   // `content` slot up-front, before rendering. The htmlparser2-based
   // walk handles attribute quoting / ordering uniformly; a layout
@@ -763,14 +859,17 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeWit
   if (input.layoutCss.trim().length > 0) cssParts.push(input.layoutCss);
   if (input.templateCss.trim().length > 0) cssParts.push(input.templateCss);
 
+  const used = new RenderedTemplates(input.nestedModules);
+
   // 1. Render the page modules into the template (slot replacement only;
   //    no head/body manipulation here — that belongs to the layout).
   const templateContentByName = new Map<string, string>();
-  const renderPlaced = (blockName: string, m: ComposeModule): string => {
+  const renderPlaced = (blockName: string, m: ComposeModule, inLayout: boolean): string => {
     const deferral = input.deferredModules?.[m.moduleId];
     // Nested modules rendered inside THIS placement when it is withheld.
     const gatedNestedIds = new Set<string>();
-    const rendered = renderModuleFields(m, input);
+    const rendered = renderModuleFields(m, input, frame.refusalFor(blockName, inLayout, open));
+    used.add(m, rendered);
     const baseHtml = rendered.html;
     recordFailures(moduleFailures, blockName, m, rendered.failures);
     for (const id of rendered.nestedModuleIds) {
@@ -796,10 +895,14 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeWit
     const tagged = stampPlacement(tagModuleId(baseHtml, m.moduleId), m, input);
     if (!deferral) return tagged;
     if (deferral.omit) {
-      if (deferral.editorNotice) deferredCss.add(deferral.editorNotice.css);
+      if (deferral.editorNotice) {
+        deferredCss.add(deferral.editorNotice.css);
+        used.addInserted(deferral.editorNotice.html);
+      }
       return omittedModuleNotice(m, deferral);
     }
     deferredCss.add(deferral.placeholderCss);
+    used.addInserted(deferral.placeholderHtml);
     const gatedNested = [...gatedNestedIds].map((id) => {
       const nested = input.nestedModules?.getModule(id);
       // renderModuleFields resolved every id it reports through this
@@ -832,7 +935,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeWit
     }
   };
   for (const block of input.blocks) {
-    const renderedModuleHtml = block.modules.map((m) => renderPlaced(block.blockName, m));
+    const renderedModuleHtml = block.modules.map((m) => renderPlaced(block.blockName, m, false));
     templateContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
     for (const m of block.modules) collectAssets(m);
     flushNestedAssets();
@@ -850,7 +953,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeWit
   layoutContentByName.set("content", innerBody);
   for (const block of input.layoutBlocks) {
     if (block.blockName === "content") continue; // reserved for the page body
-    const renderedModuleHtml = block.modules.map((m) => renderPlaced(block.blockName, m));
+    const renderedModuleHtml = block.modules.map((m) => renderPlaced(block.blockName, m, true));
     layoutContentByName.set(block.blockName, renderedModuleHtml.join("\n"));
     for (const m of block.modules) collectAssets(m);
     flushNestedAssets();
@@ -936,5 +1039,6 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeWit
     missingSlots: [...missingSet],
     moduleFailures,
     contentHtml: innerBody,
+    openMarkup: open || used.anyEndsOutsideContent(),
   };
 }

@@ -159,6 +159,7 @@ async function samplePagesOfType(
 
 export const listPageTypesOp = defineOperation({
   name: "page_types.list",
+  pluginAccess: "read",
   readScope: "request",
   // Why plugin: the `lists` read grant (docs/lists.md §9) — a translation
   // plugin reads property definitions (and their `ext`) through named ops.
@@ -194,6 +195,7 @@ export const listPageTypesOp = defineOperation({
 
 export const getPageTypeOp = defineOperation({
   name: "page_types.get",
+  pluginAccess: "read",
   readScope: "request",
   // Why plugin: the `lists` read grant (see page_types.list).
   actorScope: ["human", "ai", "plugin", "system"],

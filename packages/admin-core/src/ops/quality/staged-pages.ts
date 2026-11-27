@@ -31,6 +31,7 @@ export const STAGED_PAGES_MAX_PER_CALL = 1000;
 
 export const stagedPagesOp = defineOperation({
   name: "quality_audits.staged_pages",
+  pluginAccess: "read",
   readScope: "request",
   // Why system-only: the read behind a plugin's Stage-audit batch calls
   // (#1721, plugin SDK `batchPages: "own"`); the job and the system read
