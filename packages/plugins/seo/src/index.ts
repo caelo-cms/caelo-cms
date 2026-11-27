@@ -24,6 +24,8 @@
 import { definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 import { SEO_CONFIG } from "./config.js";
 import { AUDIT_OPERATION, SEO_OPERATIONS, WRITE_HINTS_OPERATION } from "./operations.js";
+import { MAPPINGS_TABLE } from "./schema/mapping.js";
+import { STRUCTURED_DATA_OPERATION } from "./schema/operations.js";
 import { SEO_SKILLS } from "./skills.js";
 import { SEO_TOOLS } from "./tools.js";
 
@@ -31,19 +33,36 @@ export default definePlugin<PluginContextTier1>({
   slug: "seo",
   version: "1.0.0",
   tier: 1,
-  requestedCapabilities: ["cms_admin", "cms_admin_schema", "chat_runner_tools", "companion_skills"],
+  requestedCapabilities: [
+    "cms_admin",
+    "cms_admin_schema",
+    "chat_runner_tools",
+    "companion_skills",
+    "structured_data",
+  ],
   capabilityReasons: {
     cms_admin:
       "Reads pages, page types, lists and redirects to suggest topic pages and links, and to check the staged site.",
     cms_admin_schema: "Keeps the schema mapping per page type as draft data of its own.",
     chat_runner_tools: "Gives the AI tools to set up structured data, author and topic pages.",
     companion_skills: "Teaches the AI how to set up structured data, author and topic pages.",
+    structured_data:
+      "Describes articles, their authors and reviewers, author pages and overview pages in each page's structured data.",
   },
   // No visitor-facing surface: everything this plugin knows reaches a page
   // as data core serializes.
   schema: {},
   publicOperations: [],
+  adminSchema: {
+    /** #1756 — the schema mapping of each page type (schema/mapping.ts). */
+    [MAPPINGS_TABLE]: { page_type: "string", schema_type: "string", roles: "jsonb" },
+  },
+  indexes: {
+    adminSchema: { [MAPPINGS_TABLE]: [["page_type"]] },
+  },
+  aiReadableTables: [MAPPINGS_TABLE],
   config: SEO_CONFIG,
+  structuredDataOperation: STRUCTURED_DATA_OPERATION,
   auditFindingsOperation: AUDIT_OPERATION,
   writeHintsOperation: WRITE_HINTS_OPERATION,
   tools: SEO_TOOLS,

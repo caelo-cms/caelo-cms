@@ -92,6 +92,7 @@ describe("CheckRegistry", () => {
       ["references", "findings"],
       ["security-headers", "findings"],
       ["render", "findings"],
+      ["structured-data", "findings"],
     ]);
     expect(r.findingChecks().map((e) => [e.id, e.scope, e.source])).toEqual([
       ["structure", "site", { kind: "core" }],
@@ -99,6 +100,7 @@ describe("CheckRegistry", () => {
       ["references", "site", { kind: "core" }],
       ["security-headers", "site", { kind: "core" }],
       ["render", "site", { kind: "core" }],
+      ["structured-data", "site", { kind: "core" }],
     ]);
     expect(r.lighthouse()?.id).toBe("lighthouse");
   });

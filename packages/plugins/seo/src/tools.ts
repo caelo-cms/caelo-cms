@@ -11,6 +11,7 @@
  */
 
 import type { PluginToolSpec } from "@caelo-cms/plugin-sdk";
+import { SCHEMA_TOOLS } from "./schema/operations.js";
 
 /** Every tool the plugin registers while it is active. */
-export const SEO_TOOLS: readonly PluginToolSpec[] = [];
+export const SEO_TOOLS: readonly PluginToolSpec[] = [...SCHEMA_TOOLS];

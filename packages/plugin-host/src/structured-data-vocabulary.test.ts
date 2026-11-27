@@ -267,3 +267,16 @@ describe("structured-data vocabulary (#1753)", () => {
     }
   });
 });
+
+describe("the seo plugin's answer on a blog passes the vocabulary (#1756)", () => {
+  it("has no refusal for an article, an author page and a topic page", async () => {
+    const { structuredDataAnswer } = await import("../../plugins/seo/src/schema/nodes.js");
+    const blog = await import("../../plugins/seo/test/fixture-blog.js");
+    for (const page of [blog.article, blog.anna, blog.topic]) {
+      const answer = structuredDataAnswer({ args: blog.argsFor([page]), mappings: blog.mappings });
+      const checked = checkStructuredDataAnswer(answer, new Set([page.pageId]));
+      expect(checked.refusals).toEqual([]);
+      expect(checked.pages.has(page.pageId)).toBe(true);
+    }
+  });
+});

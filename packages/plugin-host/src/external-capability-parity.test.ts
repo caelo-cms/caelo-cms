@@ -122,6 +122,7 @@ async function fixtureManifest(): Promise<PluginManifest> {
   const newsletter = await shipped("newsletter");
   const consent = await shipped("consent-manager");
   const international = await shipped("international-site");
+  const seo = await shipped("seo");
   return {
     ...search,
     ...assistant,
@@ -150,6 +151,7 @@ async function fixtureManifest(): Promise<PluginManifest> {
     changeConsumer: consent.changeConsumer,
     contributes: international.contributes,
     hasShareImages: international.hasShareImages,
+    hasStructuredData: seo.hasStructuredData,
     urlTables: URL_TABLES,
     urlContributions: [{ slot: "host" }, { slot: "path-prefix" }],
     tier: 2,
@@ -168,6 +170,7 @@ const DEFINITION_KEY: Partial<Record<keyof PluginManifest, string>> = {
   hasBuildData: "buildDataOperation",
   hasListResolve: "listResolveOperation",
   hasContentVariants: "contentVariantsOperation",
+  hasStructuredData: "structuredDataOperation",
   // #1729 (Q7 A) — the slot claims of an installed plugin are its tables:
   // the host builds the encoders from them (url-tables.ts).
   urlContributions: "urlTables",
@@ -395,6 +398,30 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
     });
     expect(await renderPoint(source, manifest, "$shareImages", { pageIds: [ID] })).toEqual({
       images: { [ID]: ID },
+    });
+  },
+  // #1753 — the reserved entry answers through the operation the definition
+  // names, as a render call with the page records core sends.
+  structured_data: async () => {
+    const { hasStructuredData } = await fixtureManifest();
+    expect(hasStructuredData).toBe(true);
+    const manifest = { ...probe, hasStructuredData } as PluginManifest;
+    expect(renderPointDefinition(manifest, () => null).keys).toEqual({
+      structuredDataOperation: "$structuredData",
+    });
+    const source = `export default {slug:"parity-probe",version:"1.0.0",tier:2,structuredDataOperation:"graph",
+      operations:{graph:async(ctx,args)=>({pages:{[args.pages[0].pageId]:{nodes:[{type:"Thing",id:{fragment:"x"},properties:{name:ctx.invocation.origin}}]}}})}};`;
+    expect(
+      await renderPoint(source, manifest, "$structuredData", {
+        pages: [{ pageId: ID, pageType: "article" }],
+        related: [],
+        pageTypes: {},
+        site: { organization: false, name: null },
+      }),
+    ).toEqual({
+      pages: {
+        [ID]: { nodes: [{ type: "Thing", id: { fragment: "x" }, properties: { name: "render" } }] },
+      },
     });
   },
   link_resolve: async () => {

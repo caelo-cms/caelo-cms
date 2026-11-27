@@ -118,6 +118,7 @@ function chunkArgs(
     pageTypes: Object.fromEntries(
       Object.entries(input.pageTypes).filter(([slug]) => types.has(slug)),
     ),
+    site: input.site,
   };
 }
 

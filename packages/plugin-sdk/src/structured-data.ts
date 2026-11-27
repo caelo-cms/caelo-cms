@@ -255,4 +255,11 @@ export interface StructuredDataArgs {
   readonly pageTypes: Readonly<
     Record<string, { readonly properties: readonly StructuredDataPropertyDef[] }>
   >;
+  /** What the site's core nodes are: a `{ref: "organization"}` needs the Organization. */
+  readonly site: {
+    /** The site has an Organization node (`<site>/#organization`). */
+    readonly organization: boolean;
+    /** The site's name (`site_defaults.site_name`), null when it has none. */
+    readonly name: string | null;
+  };
 }
