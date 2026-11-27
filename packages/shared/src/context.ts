@@ -74,6 +74,15 @@ export interface ExecutionContext {
    */
   readonly renderLiveUrls?: LiveBuildUrls;
   /**
+   * #1705 — whom a plugin's private-storage snapshot names when that is
+   * not the caller (`actorId`, the plugin's own actor): the host system
+   * actor for the plugin's change-journal batch or rebuild, which
+   * re-derives the plugin's own rows from committed changes. The shared
+   * draft's conflict check tells that system work apart from a chat's or a
+   * person's change by it (`locks.ts`). Set by the plugin host only.
+   */
+  readonly snapshotActorId?: string;
+  /**
    * P10.5: parent attribution for subagent invocations. When the
    * `spawn_subagent` tool calls runChatTurn for the child, it carries
    * these fields so the existing ai_calls + audit_events writers

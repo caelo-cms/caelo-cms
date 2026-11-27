@@ -13,10 +13,10 @@
  * The host cannot know which rows the plugin's operation will write, but
  * the call names what it is about: the ids among its arguments
  * (`allow_external_embed`'s `moduleId`). So this names the plugin's rows
- * about those ids that another chat changed and this chat has not seen
+ * about those ids that someone else changed and this chat has not seen
  * (`plugins.unseen_draft_rows`), and the card is not shown until the AI has
  * read them with the read a conflict names. Rows the plugin's own change
- * consumer re-derived are no chat's change and never named (locks.ts). A
+ * consumer re-derived are no one's change and never named (locks.ts). A
  * row the call writes that names none of the ids, and whatever changes
  * after the card is shown, still refuses at the apply: an approval never
  * overwrites a change the chat did not see.
@@ -95,7 +95,7 @@ export async function stalePluginViewBeforeApproval(input: {
     .join("; ");
   const more = rows.length > ROWS_NAMED ? ` and ${rows.length - ROWS_NAMED} more` : "";
   return (
-    `${input.toolName} was NOT shown to the operator: another chat changed the plugin "${input.pluginSlug}"'s records about what this call names, in the shared draft after this chat last looked at them (${named}${more}), ` +
+    `${input.toolName} was NOT shown to the operator: the plugin "${input.pluginSlug}"'s records about what this call names were changed in the shared draft after this chat last looked at them (${named}${more}), ` +
     "so the approved call could not apply. " +
     `Read them with get_plugin_draft_rows({rowIds:${JSON.stringify(rows.map((row) => row.id))}}), check they do not change what you propose, then call ${input.toolName} again. ` +
     "Do not ask the operator about this — no approval was requested and none is pending."

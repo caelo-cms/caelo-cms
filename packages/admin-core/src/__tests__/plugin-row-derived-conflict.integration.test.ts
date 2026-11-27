@@ -321,18 +321,21 @@ describe("a plugin row its change consumer derived on the draft (#1705)", () => 
     const a = await draftChat("own-a");
     const moduleId = await addModule(a);
     await consume();
-    // The consumer wrote the row on the shared draft, with no chat behind it.
+    // The consumer wrote the row on the shared draft, with no chat behind
+    // it, as the system actor: what the conflict check tells apart.
+    const rowId = await verdictRowId(a, moduleId);
     const head = await withSystemSql(
       (tx) => tx`
-        SELECT d.owner_chat_session_id FROM draft_pending_entities d
+        SELECT d.owner_chat_session_id, a.kind AS actor_kind
+        FROM draft_pending_entities d
+        JOIN site_snapshots ss ON ss.id = d.site_snapshot_id
+        JOIN actors a ON a.id = ss.actor_id
         WHERE d.entity_kind = 'pluginRow' AND d.table_name = 'verdicts'
           AND d.chat_branch_id = ${a.ai.chatBranchId as string}::uuid
+          AND d.entity_id = ${rowId}::uuid
       `,
     );
-    expect(head.length).toBeGreaterThan(0);
-    expect(
-      head.every((r: { owner_chat_session_id: string | null }) => r.owner_chat_session_id === null),
-    ).toBe(true);
+    expect([...head]).toEqual([{ owner_chat_session_id: null, actor_kind: "system" }]);
 
     landed(await decide(a.approved, moduleId, "allowed"));
   });
@@ -360,6 +363,32 @@ describe("a plugin row its change consumer derived on the draft (#1705)", () => 
     if (!edit.ok) throw new Error(`modules.update: ${JSON.stringify(edit.error)}`);
     await consume();
     landed(await decide(a.approved, moduleId, "allowed"));
+  });
+
+  it("a person's change without a chat still conflicts, and is named before the card", async () => {
+    const a = await draftChat("person-a");
+    const b = await draftChat("person-b");
+    const moduleId = await addModule(a);
+    await consume();
+    // A write on the branch with no chat task that is not the plugin's
+    // change-journal work: the shape a person's change outside a chat has.
+    // Only the consumer's re-derive is exempt; this is someone's work.
+    const person: PluginInvocation = {
+      origin: "approved",
+      actorId: HUMAN,
+      chatBranchId: a.ai.chatBranchId as string,
+    };
+    landed(await decide(person, moduleId, "gated"));
+    const rowId = await verdictRowId(a, moduleId);
+
+    const refusal = await beforeCard(b, moduleId);
+    expect(refusal).toContain(`get_plugin_draft_rows({rowIds:["${rowId}"]})`);
+    expect(refusal).toContain("a change made outside a chat");
+    expect(conflictOf(await decide(b.approved, moduleId, "allowed"))).toContain(
+      "a change made outside a chat",
+    );
+    await readRows(b, [rowId]);
+    landed(await decide(b.approved, moduleId, "allowed"));
   });
 
   it("another chat's decision still conflicts, is named before the card, and clears with the named read", async () => {

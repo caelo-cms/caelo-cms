@@ -38,6 +38,7 @@ import { defineOperation, textArray, uuidArray } from "@caelo-cms/query-api";
 import { err, getPluginDraftRowsToolInput, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { isSystemActorSql } from "../../locks.js";
 
 const draftRow = z.object({
   id: z.string().uuid(),
@@ -164,9 +165,10 @@ const unseenRow = z.object({
  * (`ai/plugin-approval-staleness.ts`) with the ids the call names, so the
  * Owner is not asked to approve a call that would then refuse to apply. A
  * row the call writes that names none of them is still checked when the
- * approved call writes it. Rows the plugin's change consumer re-derived
- * carry no chat and are never named, as the conflict check never counts
- * them.
+ * approved call writes it. It names exactly the changes that check counts:
+ * every other chat's and every change without a chat, except the plugin's
+ * own change-journal batch re-deriving the row (system actor, no chat
+ * task; `isSystemActorSql`), which the conflict check never counts.
  *
  * Empty outside a draft chat (no draft to be stale against).
  */
@@ -209,18 +211,19 @@ export const unseenDraftRowsOp = defineOperation({
       SELECT DISTINCT ON (d.entity_id, d.entity_sub)
              d.entity_id::text AS id, d.table_name,
              to_char(d.header_created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS changed_at,
-             cs.title AS chat_title
+             cs.title AS chat_title, d.owner_chat_session_id IS NULL AS outside_chat
       FROM me
       JOIN draft_pending_entities d
         ON d.chat_branch_id = ${ctx.chatBranchId}::uuid
        AND d.entity_kind = 'pluginRow'
        AND d.plugin_id = ${plugin.pluginId}::uuid
       JOIN plugin_row_snapshots prs ON prs.id = d.snapshot_row_id
+      JOIN site_snapshots ss ON ss.id = d.site_snapshot_id
       LEFT JOIN chat_sessions cs ON cs.id = d.owner_chat_session_id
       LEFT JOIN draft_entity_observations o
         ON o.chat_session_id = me.owner AND o.entity_kind = 'pluginRow' AND o.entity_id = d.entity_id
-      WHERE d.owner_chat_session_id IS NOT NULL
-        AND d.owner_chat_session_id <> me.owner
+      WHERE d.owner_chat_session_id IS DISTINCT FROM me.owner
+        AND NOT (d.owner_chat_session_id IS NULL AND ${isSystemActorSql(sql`ss.actor_id`)})
         AND d.header_created_at > COALESCE(o.seen_at, '-infinity'::timestamptz)
         AND (
           d.entity_id = ANY(${uuidArray(ids)})
@@ -236,13 +239,17 @@ export const unseenDraftRowsOp = defineOperation({
       table_name: string;
       changed_at: string;
       chat_title: string | null;
+      outside_chat: boolean;
     }[];
     return ok({
       rows: rows.map((r) => ({
         id: r.id,
         table: r.table_name,
         changedAt: r.changed_at,
-        changedByChat: r.chat_title ?? "a chat that was deleted since",
+        // The conflict message's words for the same change (locks.ts).
+        changedByChat: r.outside_chat
+          ? "a change made outside a chat"
+          : (r.chat_title ?? "a chat that was deleted since"),
       })),
     });
   },
