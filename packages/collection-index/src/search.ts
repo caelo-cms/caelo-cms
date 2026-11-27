@@ -38,7 +38,7 @@
 
 import { type AnalyzerOptions, analyze, queryVariants, STEM_PREFIX, stemWord } from "./analyze.js";
 import { compoundTailInitials, splitCompound } from "./compound.js";
-import { DEFAULT_PROBE, listScore, nearestLists } from "./partitions.js";
+import { defaultProbe, listScore, nearestLists } from "./partitions.js";
 import type { OpenRelease } from "./release.js";
 import { keywordTerm, langTerm } from "./schema.js";
 import { docPosition, type ParsedDocs, type PostingList, VECTORS_PER_BLOCK } from "./segment.js";
@@ -627,7 +627,7 @@ export interface VectorQuery {
   readonly minSimilarity: number;
   /** Binary candidates rescored with int8 per flat segment (default `defaultRescore` of its size). */
   readonly rescore?: number;
-  /** Lists scored per partitioned segment (default `DEFAULT_PROBE`). */
+  /** Lists scored per partitioned segment (default `defaultProbe` of its list count). */
   readonly probe?: number;
 }
 
@@ -667,7 +667,9 @@ export async function searchVectors(release: OpenRelease, q: VectorQuery): Promi
         // #1783 — the nearest lists, read in one round, every passage in them scored with int8.
         const centroids = await seg.reader.centroids();
         const lists = await Promise.all(
-          nearestLists(centroids, query, q.probe ?? DEFAULT_PROBE).map((li) => seg.reader.list(li)),
+          nearestLists(centroids, query, q.probe ?? defaultProbe(centroids.count)).map((li) =>
+            seg.reader.list(li),
+          ),
         );
         for (const list of lists) {
           for (let r = 0; r < list.count; r++) {

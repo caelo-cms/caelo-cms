@@ -175,21 +175,37 @@ The findings were the same in every run (15,004 before filing, one hash). A batc
 
 ## Collections: the search engine at 50,000 pages (#1652)
 
-The collection engine (`packages/collection-index`, `plugin-collections.md`) has its own harness, since it runs without the admin: `bun run packages/collection-index/bench/run.ts` (`BENCH_PAGES`, default 50,000 synthetic pages: Zipf-distributed vocabulary, 70 % English, 30 % German, log-normal page length with a median of 550 words, shared blocks). Measured on one core (M3 Pro, Bun 1.4.4):
+The collection engine (`packages/collection-index`, `plugin-collections.md`) has its own harness, since it runs without the admin: `bun run packages/collection-index/bench/run.ts` (`BENCH_PAGES`, default 50,000 synthetic pages: Zipf-distributed vocabulary, 70 % English, 30 % German, log-normal page length with a median of 550 words, shared blocks). Measured on one core (M3 Pro, Bun 1.4.4), with segment format 3 (#1777, 2026-11-27):
 
 | Measure | Value | Target |
 |---|---|---|
-| Full build, streamed to disk | 104 s (480 pages/s), peak heap growth 1.3 GB | inside the index job's 4 GiB |
-| Index on disk | 339 MB in 4,776 files, largest term shard 0.2 MB | — |
-| Warm query, words (1,500 queries) | p50 1.7 ms, p95 7.5 ms, p99 10.5 ms | p95 < 30 ms |
-| Warm query, search as you type | p50 3.6 ms, p95 17 ms | p95 < 30 ms |
-| Cold query, object store (30 ms per file) | p50 125 ms, p95 147 ms; 18–21 files, 2.2–2.4 MB | first query < 300 ms |
+| Full build, streamed to disk | 124 s (403 pages/s), peak heap growth 1.2 GB | inside the index job's 4 GiB |
+| Index on disk | 346 MB in 10,091 files (6,878 store blocks of about 64 KiB), largest term shard 0.2 MB | — |
+| Warm query, words (1,500 queries) | p50 1.7 ms, p95 7.5 ms, p99 9.9 ms | p95 < 30 ms |
+| Warm query, search as you type | p50 3.1 ms, p95 15.5 ms | p95 < 30 ms |
+| Cold query, object store (30 ms per file) | p50 133 ms, p95 226 ms; 18–21 files, 1.8–2.0 MB | first query < 300 ms |
 | Answer, 10 hits with snippets | 4.6 KB before compression | < 10 KB |
-| Delta of 1 / 100 / 1,000 changed pages | 0.25 s / 0.48 s / 2.1 s; 0 / 1.7 / 10 MB written | per Stage, seconds |
-| Fully cached index in memory | 240 MB | within the gateway's 2 GiB with `CAELO_COLLECTIONS_CACHE_MB=256`, next to the query model |
+| Delta of 1 / 100 / 1,000 changed pages | 0.31 s / 0.57 s / 2.9 s; 0 / 1.7 / 10 MB written | per Stage, seconds |
+| Fully cached index in memory | 235 MB of heap | more than the gateway's 128 MiB cache: the hot part stays, the rest is read on demand |
 
-Semantic search adds the query embedding in WebAssembly (p50 9.9 ms, p95 16.4 ms with the default model) and, for a first index, about 35 minutes of embedding on 4 vCPUs at 50,000 pages. Details are in `docs/dev/embedding-models.md` and `packages/collection-index/bench/semantic-results.md`.
+Before format 3 the same harness measured 4,776 files, 2.2–2.4 MB per cold query, and a cache whose budget undercounted parsed store files six times (#1780).
 
-The PR CI guard `packages/collection-index/src/scale-guard.test.ts` measures what time cannot measure reliably on CI machines: the files and bytes one cold query loads. On 4,000 pages that is 9 files and 0.48 MB at p95, against bounds of 20 files and 1 MB. A change that reads more must say why here.
+Semantic search adds the query embedding in WebAssembly (about 10 ms on an unloaded M3 with the default model; the model's load is 0.58 s, `docs/dev/embedding-models.md`) and, for a first index, about 35 minutes of embedding on 4 vCPUs at 50,000 pages. A query the release knows (#1785) needs no embedding. Details: `packages/collection-index/bench/semantic-results.md`.
 
-On a Cloud Run gateway with one vCPU (searchviu.com, 322 pages with link texts and semantic search, 2026-11-26, before the warm-up): the first search of a cold instance took 11 s (the query model's load and about 130 files read one by one from the store), each later new query 0.6–0.7 s (11–27 files it had not read yet), one fully cached 29 ms on an M3. The warm-up (`/release` loads the release's files and the model before the search, [gateway-hardening.md](./gateway-hardening.md)) is to be measured there once it ships, and so is whether Firebase Hosting's CDN keeps the cacheable answers (`docs/dev/firebase-hosting-behaviour.md`).
+**Vector recall** (`bun run packages/collection-index/bench/partitions.ts real|synthetic`, #1783): the default model's vectors, 200 held-out queries embedded as queries, against the exhaustive int8 ranking.
+
+| Set | Search | Recall@10 | p50 |
+|---|---|---|---|
+| real: this repository's Markdown and searchVIU's sections, 6,643 passages | flat, 200 candidates (before #1783) | 0.951 | 0.6 ms |
+| | flat, default (15 % of the segment) | 0.999 | 2.4 ms |
+| | partitioned, 16 lists, default probe (all 16) | 1.000 | 3.5 ms |
+| synthetic: the bench corpus's sections, 49,800 passages | flat, 200 candidates (before #1783) | 0.592 | 1.3 ms |
+| | flat, 1,000 candidates | 0.873 | 2.9 ms |
+| | flat, default (5,000, the cap) | 0.987 | 10.6 ms |
+| | partitioned, 49 lists, probe 8 / 16 (default) / 24 / 32 | 0.909 / 0.983 / 0.997 / 0.999 | 5.8 / 11.6 / 16.7 / 22.4 ms |
+
+The binary codes alone are coarse: a fixed 200 candidates lost two fifths of the top 10 at 49,800 passages. Flat segments therefore rescore a share of themselves, and a segment from 32,768 vectors on is partitioned and probes a quarter of its lists (at least 16). A seeded random rotation before binarisation (the RaBitQ idea) was tried and found fewer neighbours on both sets. Not yet measured: real text at 500,000 passages (a 50,000-page site); the synthetic set's nonsense words leave neighbours with small margins, so it is the harder case of the two.
+
+**The whole search operation** has its own PR CI guard, `packages/plugin-host/src/collection-scale-guard.test.ts` (#1779): a cold search with link texts and vectors on 4,000 pages, 12,000 link texts and 12,000 passages reads 2 files in 1 round when each collection is one pack, and 32 files (1.16 MB) in 5 rounds with segments cut into files; before #1777 it read 92 files (1.30 MB) in 6 rounds. The engine's guard `packages/collection-index/src/scale-guard.test.ts` measures `searchText` alone: on 4,000 pages 9 files and 0.48 MB at p95, against bounds of 20 files and 1 MB. A change that reads more must say why here.
+
+On a Cloud Run gateway with one vCPU (searchviu.com, 322 pages with link texts and semantic search, 2026-11-26, before #1745's warm-up): the first search of a cold instance took 11 s (the query model's load and about 130 files read one by one from the store), each later new query 0.6–0.7 s (11–27 files it had not read yet), one fully cached 29 ms on an M3. With #1777 that index is one pack per collection, the model's load is a third of what it was, and the popular queries' vectors come with the release. The first search there is to be measured once a release ships it, and so is whether Firebase Hosting's CDN keeps the cacheable answers and release keys (`docs/dev/firebase-hosting-behaviour.md`).

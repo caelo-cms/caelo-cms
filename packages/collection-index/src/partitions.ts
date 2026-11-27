@@ -20,7 +20,9 @@
  * coarseness. A passage in a list that is not probed is the cost; the
  * bench (`bench/partitions.ts`) measures recall against exhaustive int8
  * search, and `docs/dev/scale-gate.md` holds the numbers that set
- * {@link DEFAULT_PROBE}.
+ * {@link PROBE_SHARE}: on 49,800 passages (49 lists) probing 8, 16 and 24
+ * lists found 91 %, 98 % and 99.7 % of the exhaustive top 10. A fixed count
+ * would probe ever less of a growing segment, so the count is a share.
  *
  * Training samples every `stride`-th passage and assigns through a binary
  * shortlist (the centroids' sign codes by Hamming distance, then exact dot
@@ -40,8 +42,13 @@ import { binaryCode, type EncodedVector } from "./vectors.js";
 export const PARTITION_MIN_VECTORS = 32_768;
 /** Passages per list a partitioned segment aims for. */
 export const VECTORS_PER_LIST = 1024;
-/** Lists a query probes unless it asks for another number. */
-export const DEFAULT_PROBE = 24;
+/** The share of a partitioned segment's lists a query probes. */
+export const PROBE_SHARE = 0.25;
+
+/** Lists a query probes in a segment of `lists` lists: {@link PROBE_SHARE} of them, at least 16. */
+export function defaultProbe(lists: number): number {
+  return Math.min(lists, Math.max(16, Math.ceil(lists * PROBE_SHARE)));
+}
 /** Centroids a passage is compared with exactly, after the Hamming shortlist. */
 export const SHORTLIST = 8;
 /** Lloyd iterations on the sample. */

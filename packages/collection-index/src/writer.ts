@@ -63,6 +63,7 @@ import {
   type SegmentManifest,
   type ShardRef,
   STORE_BLOCK_BYTES,
+  type StoreEntry,
   type StoreRef,
   VECTORS_PER_BLOCK,
   VECTORS_PER_CODE_FILE,
@@ -158,7 +159,7 @@ export class SegmentWriter {
   private readonly numbers: number[][];
   private readonly facetValues: string[][][];
   private readonly columnValues: string[][][];
-  private storeBatch: KeyedDoc[] = [];
+  private storeBatch: StoreEntry[] = [];
   private storeBatchBytes = 0;
   private readonly stores: StoreRef[] = [];
   private vectors: VectorBuffer | null = null;
@@ -272,8 +273,10 @@ export class SegmentWriter {
     });
 
     const stored: KeyedDoc = { id: doc.id, key: doc.key, lang, values: doc.values };
-    this.storeBatch.push(stored);
-    this.storeBatchBytes += JSON.stringify(stored).length;
+    // Serialised once: the block's size is measured on the bytes it stores.
+    const json = utf8.encode(JSON.stringify(stored));
+    this.storeBatch.push({ key: stored.key, json });
+    this.storeBatchBytes += json.length;
     if (
       this.storeBatchBytes >= STORE_BLOCK_BYTES ||
       this.storeBatch.length >= (this.o.docsPerStore ?? 1024)
@@ -321,8 +324,8 @@ export class SegmentWriter {
     const file = this.emit(contentName("s", data, "bin"), data);
     this.stores.push({
       file,
-      firstKey: (this.storeBatch[0] as KeyedDoc).key,
-      lastKey: (this.storeBatch[this.storeBatch.length - 1] as KeyedDoc).key,
+      firstKey: (this.storeBatch[0] as StoreEntry).key,
+      lastKey: (this.storeBatch[this.storeBatch.length - 1] as StoreEntry).key,
     });
     this.storeBatch = [];
     this.storeBatchBytes = 0;

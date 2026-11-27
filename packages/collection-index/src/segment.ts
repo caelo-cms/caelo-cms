@@ -112,7 +112,7 @@ export interface SegmentManifest {
 export const SEGMENT_FORMAT = 3;
 
 /** Uncompressed bytes of documents per store block (format 3). */
-export const STORE_BLOCK_BYTES = 32 * 1024;
+export const STORE_BLOCK_BYTES = 64 * 1024;
 
 /** Vectors per binary code file. */
 export const VECTORS_PER_CODE_FILE = 65_536;
@@ -426,25 +426,30 @@ export interface StoreBlock {
   readonly compressed: Uint8Array;
 }
 
-/** Encodes documents (ascending keys) as one format-3 store block. */
-export function encodeStoreBlock(docs: readonly KeyedDoc[]): Uint8Array {
-  const texts = docs.map((d) => utf8.encode(JSON.stringify(d)));
-  const w = new ByteWriter(docs.length * 8 + 16);
-  w.uint(docs.length);
+/** One document of a store block: its key and its JSON as UTF-8. */
+export interface StoreEntry {
+  readonly key: number;
+  readonly json: Uint8Array;
+}
+
+/** Encodes documents (ascending keys, each already JSON) as one format-3 store block. */
+export function encodeStoreBlock(entries: readonly StoreEntry[]): Uint8Array {
+  const w = new ByteWriter(entries.length * 8 + 16);
+  w.uint(entries.length);
   let prev = 0;
   let offset = 0;
-  docs.forEach((d, i) => {
-    w.uint(d.key - prev);
-    prev = d.key;
+  for (const e of entries) {
+    w.uint(e.key - prev);
+    prev = e.key;
     w.uint(offset);
-    w.uint((texts[i] as Uint8Array).length);
-    offset += (texts[i] as Uint8Array).length;
-  });
+    w.uint(e.json.length);
+    offset += e.json.length;
+  }
   const joined = new Uint8Array(offset);
   let at = 0;
-  for (const t of texts) {
-    joined.set(t, at);
-    at += t.length;
+  for (const e of entries) {
+    joined.set(e.json, at);
+    at += e.json.length;
   }
   w.bytes(deflateRawSync(joined, { level: 6 }));
   return w.finish();

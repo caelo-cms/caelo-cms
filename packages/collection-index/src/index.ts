@@ -22,8 +22,9 @@ export {
 export { ByteReader, ByteWriter } from "./bytes.js";
 export { compoundTailInitials, splitCompound } from "./compound.js";
 export {
-  DEFAULT_PROBE,
+  defaultProbe,
   PARTITION_MIN_VECTORS,
+  PROBE_SHARE,
   VECTORS_PER_LIST,
 } from "./partitions.js";
 export {

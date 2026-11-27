@@ -213,6 +213,13 @@ for (const rescore of [200, 1000])
       ),
     ),
   );
+rows.push(
+  await measure("partitioned, default probe", async (q) =>
+    (await searchVectors(part.opened, { vector: q, limit: 10, minSimilarity: -1 })).map(
+      (h) => h.key,
+    ),
+  ),
+);
 for (const probe of [8, 16, 24, 32, 48])
   rows.push(
     await measure(`partitioned, probe ${probe}`, async (q) =>
