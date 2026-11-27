@@ -287,7 +287,7 @@ export function placeholderFindings(f: Facts): Finding[] {
 
 /** The file type a share image URL names, from its path (`/_assets/x.<hash>.jpg`). */
 function shareImageType(url: string): string | null {
-  let path = url;
+  let path: string;
   try {
     path = new URL(url, "https://site.invalid").pathname;
   } catch {
