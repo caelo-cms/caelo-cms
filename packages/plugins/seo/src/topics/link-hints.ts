@@ -8,8 +8,8 @@
  */
 
 import type { PluginWrite } from "@caelo-cms/plugin-sdk";
-import { readVocabularies } from "../topics/operations.js";
-import type { SeoWriteHintRule } from "./index.js";
+import type { SeoWriteHintRule } from "../hints/index.js";
+import { readVocabularies } from "./operations.js";
 
 /** Topics named per write: more would bury the tool result. */
 const MAX_TOPIC_HINTS = 2;

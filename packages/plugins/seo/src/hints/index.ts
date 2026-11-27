@@ -14,7 +14,6 @@
  */
 
 import { type PluginContextTier1, type PluginWrite, z } from "@caelo-cms/plugin-sdk";
-import { TOPIC_LINK_HINTS } from "./topic-links.js";
 
 type Ctx = PluginContextTier1;
 
@@ -26,7 +25,7 @@ export interface SeoWriteHintRule {
 }
 
 /** Every hint family, in the order their sentences are shown. */
-export const SEO_WRITE_HINT_RULES: readonly SeoWriteHintRule[] = [TOPIC_LINK_HINTS];
+export const SEO_WRITE_HINT_RULES: readonly SeoWriteHintRule[] = [];
 
 /** Most hints one write gets: more would bury the tool result. */
 const MAX_HINTS = 5;

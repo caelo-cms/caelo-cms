@@ -12,9 +12,9 @@
  */
 
 import type { PluginAuditFinding } from "@caelo-cms/plugin-sdk";
-import { readVocabularies } from "../topics/operations.js";
-import { rowsOf } from "../topics/page-index.js";
-import type { SeoAuditRule } from "./index.js";
+import type { SeoAuditRule } from "../checks/index.js";
+import { readVocabularies } from "./operations.js";
+import { rowsOf } from "./page-index.js";
 
 /** A path without its trailing slash (the root stays `/`). */
 function bare(path: string): string {

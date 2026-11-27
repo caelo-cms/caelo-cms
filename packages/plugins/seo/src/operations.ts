@@ -9,6 +9,7 @@
 import type { PluginContextTier1, PluginOperation } from "@caelo-cms/plugin-sdk";
 import { seoAudit } from "./checks/index.js";
 import { seoWriteHints } from "./hints/index.js";
+import { AUDIT_RULES, WRITE_HINT_RULES } from "./rule-sets.js";
 import {
   getSchemaMapping,
   SITEMAP_ENTRIES_OPERATION,
@@ -33,8 +34,8 @@ export const WRITE_HINTS_OPERATION = "write_hints";
 
 /** Every operation, by name. */
 export const SEO_OPERATIONS: Readonly<Record<string, PluginOperation<PluginContextTier1>>> = {
-  [AUDIT_OPERATION]: (ctx, args) => seoAudit(ctx, args),
-  [WRITE_HINTS_OPERATION]: (ctx, args) => seoWriteHints(ctx, args),
+  [AUDIT_OPERATION]: (ctx, args) => seoAudit(ctx, args, AUDIT_RULES),
+  [WRITE_HINTS_OPERATION]: (ctx, args) => seoWriteHints(ctx, args, WRITE_HINT_RULES),
   // #1756 — the schema mapping per page type.
   [STRUCTURED_DATA_OPERATION]: (ctx, args) => structuredData(ctx, args),
   [SITEMAP_ENTRIES_OPERATION]: (ctx, args) => sitemapEntries(ctx, args),
