@@ -400,7 +400,7 @@ function listFieldIssues(f: z.infer<typeof moduleFieldListSchema>): string[] {
   }
   if (bind === "source" && f.list !== undefined && f.source?.kind !== "system") {
     issues.push(
-      `list field "${f.name}": list on a source field names the vocabulary of a page_terms source only.`,
+      `list field "${f.name}": list on a source field names the vocabulary of a page_terms or breadcrumbs source only.`,
     );
   }
   if (f.default !== undefined) {

@@ -225,7 +225,7 @@ export const previewListSourceTool = makeOpTool({
   description:
     "Show what a generated list (page query, system or plugin source) returns for a page BEFORE binding/saving it; same resolver as preview + build, this chat's draft view. Only published pages appear; empty = wrong filter (page type slug, terms) or nothing published yet.\n" +
     "E.g. `source`:{kind:'query', editable:['limit'], defaults:{page_type:'news', order:'published_desc', limit:3}}.\n" +
-    "`pageId` = page it renders on; needed for breadcrumbs/children/siblings/page_terms; a query excludes that page.",
+    '`pageId` = page it renders on; needed for breadcrumbs/children/siblings/page_terms and `refers_to` page "self"; a query excludes that page.',
   inputSchema: PREVIEW_LIST_SOURCE_JSON_SCHEMA,
   opName: "lists.preview_source",
   input: previewListSourceOp.input,
