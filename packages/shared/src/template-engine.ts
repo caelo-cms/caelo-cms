@@ -70,6 +70,11 @@
  * Unlike `field-not-declared` these block Publish live: an unknown
  * `{{name}}` can be literal copy, a broken path cannot. A Stage reports
  * them instead of stopping (#1604).
+ * #1748: `value-breaks-markup:<field>:<rule>` for a core value that
+ * changes the markup around its placeholder (a `<?xml` in element content,
+ * a `</div>`, a quote in its attribute; `core-value-structure.ts`). The
+ * value still renders as written; a Stage reports it, Publish live
+ * refuses it.
  * Epic #724: `link-target-missing:page/<id>` / `…:media/<id>` for an
  * internal reference (`caelo:page/<id>`, `caelo:media/<id>`) whose
  * target does not exist, `link-resolver-unavailable:<kind>/<id>` for
@@ -98,6 +103,11 @@
 
 import Mustache from "mustache";
 import { MODULE_FIELD_SECTION_KINDS, type ModuleFieldKind } from "./content.js";
+import {
+  coreValueProblemAt,
+  mayBreakMarkup,
+  valueBreaksMarkupMarker,
+} from "./core-value-structure.js";
 import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
 import { type SourceDef, sourceDefSchema } from "./lists/list-type.js";
 import { PAGE_KEY_UNKNOWN, PAGE_PATH_UNKNOWN } from "./lists/page-paths.js";
@@ -112,7 +122,7 @@ import type { ListHolder, ListPageContext } from "./lists/resolve.js";
 import { parseLinkFieldValue } from "./lists/resolve-values.js";
 import { stripCdataGuards } from "./strip-cdata.js";
 import { placeholderContexts } from "./template-contexts.js";
-import { renderSections } from "./template-sections.js";
+import { moduleValueTags, renderSections } from "./template-sections.js";
 
 export {
   describeFieldPathProblems,
@@ -449,9 +459,25 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
     return resolve(key, ref, placement);
   };
 
+  // #1748 — a core value that changes the markup around its placeholder
+  // (core-value-structure.ts: a `<?xml` in element content, a `</div>`, a
+  // quote in its attribute) renders as it always has and fails as
+  // `value-breaks-markup:<field>:<rule>`: the preview lists it, a Stage
+  // records it, Publish live refuses it. Once per field and rule.
+  const breaking = new Set<string>();
+  const coreValue = (start: number, value: string, field: string): void => {
+    const problem = coreValueProblemAt(sourceHtml, start, value);
+    if (problem === null) return;
+    const marker = valueBreaksMarkupMarker(field, problem.rule);
+    if (breaking.has(marker)) return;
+    breaking.add(marker);
+    missing.push(marker);
+  };
+
   // 1. {{#name}}…{{/name}} and {{^name}}…{{/name}} sections, list
   //    entries and dot access (template-sections.ts).
   let html = renderSections(sourceHtml, {
+    coreValue,
     fields: fieldByName,
     values: cvs,
     partials,
@@ -503,6 +529,15 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
     if (link.href.length > 0) view[lower] = link.href;
     else delete view[lower];
   }
+  // #1748 — the module fields Mustache substitutes below, at every tag
+  // outside list entries (the section pass checks what it substitutes).
+  if (Object.values(view).some((v) => typeof v === "string" && mayBreakMarkup(v))) {
+    for (const t of moduleValueTags(sourceHtml, fieldByName)) {
+      const value = view[t.name];
+      if (typeof value === "string") coreValue(t.start, value, t.name);
+    }
+  }
+
   // #1729 — the section pass substitutes every tag of a plugin's value by
   // its context (template-contexts.ts). One it did not reach must never
   // render as an object or unchecked: it fails loudly where Mustache would

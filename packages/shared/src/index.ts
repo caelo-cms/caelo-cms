@@ -16,6 +16,7 @@ export * from "./client-address.js";
 export * from "./cloud-shell-install.js";
 export * from "./content.js";
 export * from "./context.js";
+export * from "./core-value-structure.js";
 export * from "./css-gradient-scan.js";
 export * from "./css-scope-scan.js";
 export * from "./css-var-aliases.js";

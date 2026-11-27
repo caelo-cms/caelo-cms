@@ -45,7 +45,9 @@ const notice = (
 function page(
   layoutHtml: string,
   layoutBlocks: { blockName: string; modules: ReturnType<typeof notice>[] }[],
-  content = notice("<p>Seite</p>", "m-page", "<p>{{body}}</p>"),
+  // A richtext's own `<p>` in a `<div>`: inside the module's `<p>` it would
+  // close that one (#1748, `value-breaks-markup`).
+  content = notice("<p>Seite</p>", "m-page", "<div>{{body}}</div>"),
 ) {
   return composePageWithLayout({
     layoutHtml,

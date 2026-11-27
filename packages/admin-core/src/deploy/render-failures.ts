@@ -49,6 +49,8 @@ import {
   renderFailureKind,
   renderFailureMarker,
   replacementMediaUrls,
+  VALUE_BREAKS_MARKUP,
+  valueBreaksMarkupRepair,
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { languageName } from "../links/link-notice.js";
@@ -130,6 +132,8 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   // #1729 — what a plugin added to a page's head, or its share image.
   const pluginHeadPages = new Set<string>();
   const pluginShareImagePages = new Set<string>();
+  // #1748 — a text whose markup changes the page around it.
+  const breakingPages = new Set<string>();
   for (const f of failures) {
     const page = `${f.pageTitle} (${f.pagePath})`;
     const og = parseOgImageFailureMarker(f.reason);
@@ -141,6 +145,8 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
         : null;
     if (refusedSource === PLUGIN_HEAD_POINT) {
       pluginHeadPages.add(page);
+    } else if (renderFailureKind(f.reason) === VALUE_BREAKS_MARKUP) {
+      breakingPages.add(page);
     } else if (refusedSource === PLUGIN_SHARE_IMAGES_POINT) {
       pluginShareImagePages.add(page);
     } else if (parseMediaFailureMarker(f.reason) !== null) {
@@ -190,6 +196,10 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   onPages(
     "A plugin's default image for when the page is shared is not a published library image, so the page has none",
     pluginShareImagePages,
+  );
+  onPages(
+    'A text contains markup that breaks the page around it, so parts after it may be missing (a "<" meant as text, say)',
+    breakingPages,
   );
   const listed = [...others];
   for (const place of listed.slice(0, PLACES_LISTED)) lines.push(`${place} could not be rendered`);
@@ -373,6 +383,8 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
       return { tool: "update_modules_many", hint: pageMarkerHint(marker, mod) as string };
     case PLUGIN_VALUE_REFUSED:
       return { tool: "get_plugin", hint: pluginValueRefusedHint(path) };
+    case VALUE_BREAKS_MARKUP:
+      return valueBreaksMarkupRepair(path, mod);
     default:
       return { tool: "set_content_instance_values_many", hint: `${REFERENCE_REPAIR}.` };
   }

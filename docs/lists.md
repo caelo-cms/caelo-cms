@@ -528,6 +528,17 @@ grammar, the loud-raw invariant and raw (unescaped) substitution. List
 sections are parsed with balanced matching, so a children name may repeat
 inside itself.
 
+Raw, but never structure-changing (#1748): an entry's value (any value
+the engine substitutes) may hold its own balanced inline markup and
+entities, but nothing that changes the markup around its placeholder: a
+`<?` or `<!--` in element content, a `</template>` it did not open, a
+quote inside the attribute it sits in. A list write that would store such
+an entry for a module that renders the list is refused with the entry,
+the spelling and the fix (`&lt;` for a `<` meant as text); one stored
+before renders as written and fails as `value-breaks-markup:<field>[<entry
+id>].<key>:<rule>`, which the preview lists, a Stage records and Publish
+live refuses (`docs/quality-checks.md`, check `render`).
+
 | syntax | meaning |
 |---|---|
 | `{{#f}}…{{/f}}` | iterate list `f` (any binding); over a non-list value: conditional (unchanged) |

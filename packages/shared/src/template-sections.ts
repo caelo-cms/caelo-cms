@@ -65,6 +65,16 @@ export interface SectionEnv {
   readonly moduleLevelKeys: ReadonlySet<string>;
   /** #1729 — refuse every plugin value with this rule (a nested module placed outside element content). */
   readonly refusePluginValues?: string;
+  /**
+   * #1748 — called with every core value this pass substitutes (a list
+   * entry's, a `{{page.*}}` / `{{site_text.*}}` / link path's, a
+   * conditional's `{{.}}`, a module field an entry does not answer), at
+   * the offset of its tag's `{{` in the module HTML: the engine records it
+   * when it changes the markup around it (`core-value-structure.ts`).
+   * Module fields outside list entries reach Mustache and are checked by
+   * the engine ({@link moduleValueTags}).
+   */
+  readonly coreValue?: (start: number, value: string, field: string) => void;
   /** Renders a `module-list` field (inner block ignored), shared with the old engine path. */
   readonly renderModuleList: (name: string, field: SectionField) => string;
 }
@@ -165,6 +175,8 @@ interface RenderState {
   readonly dot: string | null;
   /** Set when a plugin supplied {@link dot} (#1729): it is checked where it lands. */
   readonly dotPlugin?: PluginValueOrigin;
+  /** The field the conditional over {@link dot} reads (#1748, named in a failure). */
+  readonly dotField?: string;
 }
 
 /**
@@ -263,9 +275,48 @@ class SectionRenderer {
     if (st.dot === null || s.length === 0) return s;
     const dot = st.dot;
     const plugin = st.dotPlugin;
-    return s.replace(DOT_RE, (match: string, offset: number) =>
-      plugin ? this.pluginText(from + offset, plugin, dot, match) : this.env.mkSentinel(dot),
-    );
+    return s.replace(DOT_RE, (match: string, offset: number) => {
+      if (plugin) return this.pluginText(from + offset, plugin, dot, match);
+      this.coreValue(from + offset, dot, st.dotField ?? ".");
+      return this.env.mkSentinel(dot);
+    });
+  }
+
+  /** #1748 — hand a core value this pass substitutes to the engine's structure check. */
+  private coreValue(start: number, value: string, field: string): void {
+    if (value.length > 0) this.env.coreValue?.(start, value, field);
+  }
+
+  /**
+   * #1748 — the name a failure gives the value of tag `t`: `<list
+   * field>[<entry id>].<key>` for a list entry's, the tag's name for a
+   * `page.*`, `site_text.*` or module link path.
+   */
+  private coreFieldName(t: Token, st: RenderState): string {
+    if (isContextHead(t.name) || st.chain.length === 0) return t.name.toLowerCase();
+    const head = (t.name.split(".")[0] as string).toLowerCase();
+    const entry = this.entryOf(head, st);
+    return entry === undefined
+      ? t.name.toLowerCase()
+      : `${this.listField(st)}[${entry.id}].${t.name.toLowerCase()}`;
+  }
+
+  /**
+   * #1748 — a module field's core value at tag `t` inside a list entry that
+   * does not answer it: Mustache substitutes it there, as it would read it.
+   */
+  private coreModuleValue(t: Token): void {
+    if (this.env.coreValue === undefined || this.modulePluginValue(t.name) !== null) return;
+    const name = this.env.fields.has(t.name) ? t.name : t.name.toLowerCase();
+    const field = this.env.fields.get(name);
+    const raw = Object.hasOwn(this.env.values, name) ? this.env.values[name] : field?.default;
+    const value =
+      typeof raw === "string"
+        ? raw
+        : field?.kind === "link" && raw !== null && typeof raw === "object"
+          ? (parseLinkFieldValue(raw)?.href ?? "")
+          : "";
+    this.coreValue(t.start, value, name.toLowerCase());
   }
 
   private raw(source: string, marker: string | null): string {
@@ -491,9 +542,9 @@ class SectionRenderer {
     if (t.sigil === "&") return this.moduleValue(t, source) ?? source;
     if (t.sigil !== "") return source;
     if (st.dot !== null && t.name === "item" && st.chain.length === 0) {
-      return st.dotPlugin
-        ? this.pluginText(t.start, st.dotPlugin, st.dot, source)
-        : this.env.mkSentinel(st.dot);
+      if (st.dotPlugin) return this.pluginText(t.start, st.dotPlugin, st.dot, source);
+      this.coreValue(t.start, st.dot, st.dotField ?? "item");
+      return this.env.mkSentinel(st.dot);
     }
     const dotted = t.name.includes(".");
     const linkField = this.env.fields.get(t.name.toLowerCase())?.kind === "link";
@@ -509,7 +560,12 @@ class SectionRenderer {
         return this.raw(source, this.notDeclared(t.name, st));
       }
       // No entry answers it: the module field's value, as Mustache would read it.
-      if (this.isModuleLevel(t.name)) return this.moduleValue(t, source) ?? source;
+      if (this.isModuleLevel(t.name)) {
+        const owned = this.moduleValue(t, source);
+        if (owned !== null) return owned;
+        this.coreModuleValue(t);
+        return source;
+      }
       return this.raw(source, this.notDeclared(t.name, st));
     }
     if ("missing" in v) return this.raw(source, this.unknownPath(t.name, st, v));
@@ -523,9 +579,13 @@ class SectionRenderer {
 
   private valueText(v: ScopeValue, source: string, t: Token, st: RenderState): string {
     const name = t.name;
+    // A module field's own tag outside entries (`{{cta}}` of a link field)
+    // is the engine's to check, with the value Mustache would use.
+    const core = st.chain.length > 0 || name.includes(".");
     switch (v.kind) {
       case "text":
         if (v.plugin) return this.pluginText(t.start, v.plugin, v.text, source);
+        if (core) this.coreValue(t.start, v.text, this.coreFieldName(t, st));
         return v.text.length === 0 ? "" : this.env.mkSentinel(v.text);
       case "bool":
         if (v.plugin) return this.pluginText(t.start, v.plugin, String(v.value), source);
@@ -533,6 +593,7 @@ class SectionRenderer {
       case "record":
         if (v.text === null) return this.raw(source, this.unrenderable(name, st, v));
         if (v.plugin) return this.pluginText(t.start, v.plugin, v.text, source);
+        if (core) this.coreValue(t.start, v.text, this.coreFieldName(t, st));
         return v.text.length === 0 ? "" : this.env.mkSentinel(v.text);
       case "failed":
         return this.raw(source, v.marker);
@@ -614,7 +675,7 @@ class SectionRenderer {
           : v.kind === "record"
             ? v.present
             : true;
-    return present !== inverted ? this.body(block, st, st.dot, st.dotPlugin) : "";
+    return present !== inverted ? this.body(block, st, st.dot, st.dotPlugin, st.dotField) : "";
   }
 
   /** A section over a module field (or an undeclared plugin source name). */
@@ -679,8 +740,8 @@ class SectionRenderer {
     // `{{.}}` of a plugin's value is checked where it lands, like the field.
     const dotPlugin =
       link?.kind === "record" ? link.plugin : (pluginValueOf(raw)?.origin ?? undefined);
-    if (dot.length === 0) return this.body(block, st, st.dot, st.dotPlugin);
-    return this.body(block, st, dot, dotPlugin);
+    if (dot.length === 0) return this.body(block, st, st.dot, st.dotPlugin, st.dotField);
+    return this.body(block, st, dot, dotPlugin, name.toLowerCase());
   }
 
   private body(
@@ -688,11 +749,13 @@ class SectionRenderer {
     st: RenderState,
     dot: string | null,
     dotPlugin?: PluginValueOrigin,
+    dotField?: string,
   ): string {
     return this.range(block.from, block.to, block.textFrom, block.textTo, {
       chain: st.chain,
       dot,
       ...(dot !== null && dotPlugin ? { dotPlugin } : {}),
+      ...(dot !== null && dotField !== undefined ? { dotField } : {}),
     });
   }
 
@@ -814,6 +877,83 @@ export function fieldPathProblems(
 
 /** The field kinds whose section opens entries, with keys of their own. */
 const ENTRY_SCOPE_KINDS: ReadonlySet<string> = new Set(["list", "module-list"]);
+
+/**
+ * #1748 — the value tags inside every `{{#name}}` section of `html` (a list
+ * field's entries' keys, dotted link paths included; `page.*` and
+ * `site_text.*` left out), by offset: where a list's entries render.
+ */
+export function sectionValueTags(html: string, name: string): ModuleValueTag[] {
+  const tokens = tokenize(html);
+  const pairs = matchSections(tokens);
+  const lower = name.toLowerCase();
+  const seen = new Set<number>();
+  const out: ModuleValueTag[] = [];
+  for (const [i, t] of tokens.entries()) {
+    const close = pairs.get(i);
+    if (close === undefined || t.sigil !== "#" || t.name.toLowerCase() !== lower) continue;
+    for (let k = i + 1; k < close; k += 1) {
+      const inner = tokens[k] as Token;
+      if ((inner.sigil !== "" && inner.sigil !== "&") || isContextHead(inner.name)) continue;
+      if (seen.has(inner.start)) continue;
+      seen.add(inner.start);
+      out.push({ start: inner.start, name: inner.name.toLowerCase() });
+    }
+  }
+  return out;
+}
+
+/** #1748 — every `{{<head>.…}}` value tag of `html` (`site_text`, `page`), wherever it stands. */
+export function contextValueTags(html: string, head: "page" | "site_text"): ModuleValueTag[] {
+  return tokenize(html)
+    .filter((t) => (t.sigil === "" || t.sigil === "&") && contextHead(t.name) === head)
+    .map((t) => ({ start: t.start, name: t.name.toLowerCase() }));
+}
+
+/** A module field's value tag Mustache substitutes ({@link moduleValueTags}). */
+export interface ModuleValueTag {
+  /** Offset of the tag's `{{` in the template (the inner one of `{{{…}}}`). */
+  readonly start: number;
+  /** The field name, lowercased. */
+  readonly name: string;
+}
+
+/**
+ * #1748 — the plain `{{name}}` / `{{&name}}` / `{{{name}}}` tags outside
+ * list entries: there Mustache substitutes the module field's value (or
+ * its default), so the engine checks that value at each of them. The
+ * inside of a `{{#…}}` section that opens entries (a list, a module list,
+ * a plugin source, `page.*`) is skipped: its tags read the entries first,
+ * and the section pass checks what it substitutes there.
+ */
+export function moduleValueTags(
+  html: string,
+  fields: ReadonlyMap<string, { readonly kind: string }>,
+  /** Also a link field's paths (`{{cta.href}}`, `{{cta.title}}`), which the section pass substitutes. */
+  withPaths = false,
+): ModuleValueTag[] {
+  const tokens = tokenize(html);
+  if (tokens.length === 0) return [];
+  const pairs = matchSections(tokens);
+  const kindOf = (name: string) => (fields.get(name) ?? fields.get(name.toLowerCase()))?.kind;
+  const out: ModuleValueTag[] = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const t = tokens[i] as Token;
+    const close = pairs.get(i);
+    if (close !== undefined) {
+      // An inverted section renders its body without entries: module fields.
+      const kind = kindOf((t.name.split(".")[0] as string).toLowerCase());
+      const entries =
+        kind === undefined || (ENTRY_SCOPE_KINDS.has(kind) && !t.name.includes("."));
+      if (t.sigil === "#" && entries) i = close;
+      continue;
+    }
+    if (t.sigil !== "" && t.sigil !== "&") continue;
+    if (t.name.includes(".") && (!withPaths || isContextHead(t.name))) continue;
+    out.push({ start: t.start, name: t.name.toLowerCase() });
+  }
+  return out;
+}
 
 /** What the author does about `problems` (non-empty): names the forms that work. */
 export function describeFieldPathProblems(problems: readonly FieldPathProblem[]): string {

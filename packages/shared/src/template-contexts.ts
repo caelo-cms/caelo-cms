@@ -146,7 +146,39 @@ export interface PlaceholderContexts {
    * (see `page-reading.ts`).
    */
   readonly endsInContent: boolean;
+  /**
+   * #1748 — where each value tag sits for a CORE value, by the offset of
+   * its `{{` (the inner one of a `{{{…}}}` too), checked by
+   * `core-value-structure.ts`. The values reading's places (more than one
+   * where parse5 copied a marker), kept also where a plugin's value is
+   * refused because a section could change the reading: a core value is
+   * refused only where it surely changes the structure around it. A tag
+   * the reading lost (a marker parse5 dropped) has no entry.
+   */
+  readonly corePlaces: ReadonlyMap<number, readonly CorePlace[]>;
 }
+
+/**
+ * #1748 — where a value tag sits, as the structure rule for a CORE value
+ * reads it (`core-value-structure.ts`): what in the value would change the
+ * markup around it depends only on this.
+ */
+export type CorePlace =
+  /**
+   * Element content. `open`: the start tags of the elements around the
+   * value, outermost first (`<div><template>`), to read the value inside
+   * them; null when they cannot be written back (inside `<head>`).
+   * `plain`: no SVG, MathML or `<select>` around it.
+   */
+  | { readonly kind: "content"; readonly open: string | null; readonly plain: boolean }
+  /** The text of an HTML element only its end tag ends: `script`, `style`, `title`, `textarea`, … */
+  | { readonly kind: "raw-text"; readonly element: string }
+  /** A comment's text; `atStart` right after its `<!--`. */
+  | { readonly kind: "comment"; readonly atStart: boolean }
+  /** An attribute's value: its quote (null unquoted), and whether the value starts it. */
+  | { readonly kind: "attribute"; readonly quote: '"' | "'" | null; readonly atStart: boolean }
+  /** A tag's name (`inName`) or its attribute list (`<div {{attrs}}>`). */
+  | { readonly kind: "tag"; readonly inName: boolean };
 
 const cache = new Map<string, PlaceholderContexts>();
 
@@ -222,6 +254,7 @@ function computeContexts(html: string): PlaceholderContexts {
     return {
       byStart,
       nestedOutsideContent: new Set(),
+      corePlaces: new Map(),
       // A browser keeps markup in a `<select>` that this reading drops.
       endsInContent:
         isPlainContent(placesOf(root, markers).get(0)) &&
@@ -247,9 +280,16 @@ function computeContexts(html: string): PlaceholderContexts {
     // A triple-stache's inner `{{` is where the section pass sees the tag.
     if (html[tag.start + 2] === "{") byStart.set(tag.start + 1, context);
   }
+  const corePlaces = new Map<number, readonly CorePlace[]>();
+  for (const [i, places] of values.corePlaces) {
+    const tag = tags[i] as MustacheSpan;
+    corePlaces.set(tag.start, places);
+    if (html[tag.start + 2] === "{") corePlaces.set(tag.start + 1, places);
+  }
   return {
     byStart,
     nestedOutsideContent,
+    corePlaces,
     // Where the reading of the end marker holds in every render (not where
     // the value rules stop trusting the reading: a value after an unquoted
     // `alt={{alt}}` is refused, but the module still ends where it ends).
@@ -342,6 +382,8 @@ type Place =
       readonly foreign: Element | null;
       /** The nearest `<select>` ancestor, or null (see {@link selectContent}). */
       readonly select: Element | null;
+      /** The open elements around it, innermost first (#1748: a core value's check rebuilds them). */
+      readonly chain: Ancestors | null;
     }
   | { readonly at: "comment"; readonly node: DefaultTreeAdapterTypes.CommentNode }
   | { readonly at: "doctype" }
@@ -351,6 +393,12 @@ type Place =
       readonly element: Element;
       readonly attribute: Attribute;
     };
+
+/** The elements open around a place, innermost first, as a linked list (no copy per level). */
+interface Ancestors {
+  readonly element: Element;
+  readonly up: Ancestors | null;
+}
 
 /** Parse `text` as a `<body>`'s content, the way a browser with scripting on reads it. */
 function parseBody(text: string): DefaultTreeAdapterTypes.DocumentFragment {
@@ -378,11 +426,12 @@ function placesOf(root: Node, markers: MarkerSet): Map<number, Place[]> {
     readonly parent: Element | null;
     readonly foreign: Element | null;
     readonly select: Element | null;
+    readonly chain: Ancestors | null;
   };
-  const stack: Frame[] = [{ node: root, parent: null, foreign: null, select: null }];
+  const stack: Frame[] = [{ node: root, parent: null, foreign: null, select: null, chain: null }];
   // Children are pushed in reverse, so they come off the stack in document order.
   for (let frame = stack.pop(); frame !== undefined; frame = stack.pop()) {
-    const { node, parent, foreign, select } = frame;
+    const { node, parent, foreign, select, chain } = frame;
     const children: readonly Node[] =
       "content" in node && node.content
         ? (node.content as DefaultTreeAdapterTypes.DocumentFragment).childNodes
@@ -397,6 +446,7 @@ function placesOf(root: Node, markers: MarkerSet): Map<number, Place[]> {
           parent,
           foreign,
           select,
+          chain,
         });
       } else if (child.nodeName === "#comment") {
         const comment = child as DefaultTreeAdapterTypes.CommentNode;
@@ -417,6 +467,7 @@ function placesOf(root: Node, markers: MarkerSet): Map<number, Place[]> {
           foreign: element.namespaceURI !== H.NS.HTML ? element : foreign,
           select:
             element.namespaceURI === H.NS.HTML && element.tagName === "select" ? element : select,
+          chain: { element, up: chain },
         });
       }
     }
@@ -493,6 +544,8 @@ function readValues(
    * unquoted value that renders empty moves the end of its tag.
    */
   readonly endHolds: boolean;
+  /** Per value tag (by index), its places for a core value. */
+  readonly corePlaces: ReadonlyMap<number, readonly CorePlace[]>;
 } {
   let text = "";
   const segments: Segment[] = [];
@@ -565,9 +618,15 @@ function readValues(
   let endHolds = unsafeFrom === Number.POSITIVE_INFINITY;
   // Per start tag, the unquoted values that may render empty.
   const emptyable = new Map<Element, Map<number, number>>();
+  const markerStart = new Map(markerSpans.map((m) => [m.tag, m.a]));
+  const corePlaces = new Map<number, readonly CorePlace[]>();
   for (const [i, tag] of tags.entries()) {
     if (tag.kind !== "value") continue;
     const found = places.get(i) ?? [];
+    const core = found
+      .map((place) => corePlaceOf(place, markers.mark(i), markerStart.get(i) ?? -1, text))
+      .filter((c): c is CorePlace => c !== null);
+    if (core.length > 0) corePlaces.set(i, core);
     const read: PlaceholderContext[] = [];
     for (const place of found) {
       if (place.at === "tag-name" && couldChangeReading(place.element.tagName, markers)) {
@@ -606,7 +665,85 @@ function readValues(
   for (const [element, ranges] of emptyable) {
     if (!tagEndHolds(text, element, ranges)) endHolds = false;
   }
-  return { contexts, unsafeFrom, endsInContent: isPlainContent(places.get(end)), endHolds };
+  return {
+    contexts,
+    unsafeFrom,
+    endsInContent: isPlainContent(places.get(end)),
+    endHolds,
+    corePlaces,
+  };
+}
+
+/**
+ * #1748 — a value tag's place as the core value rule reads it, or null
+ * where no value can change the structure (a doctype).
+ *
+ * @param mark the tag's marker; `at` where it starts in `text`, the reading.
+ */
+function corePlaceOf(place: Place, mark: string, at: number, text: string): CorePlace | null {
+  switch (place.at) {
+    case "text": {
+      const parent = place.parent;
+      const name = parent?.tagName.toLowerCase() ?? "";
+      if (
+        parent?.namespaceURI === H.NS.HTML &&
+        (name === "script" || name === "style" || TEXT_ONLY_ELEMENTS.has(name))
+      ) {
+        return { kind: "raw-text", element: name };
+      }
+      return {
+        kind: "content",
+        open: openTagsOf(place.chain),
+        plain: place.foreign === null && place.select === null,
+      };
+    }
+    case "comment":
+      return { kind: "comment", atStart: place.node.data.startsWith(mark) };
+    case "attr-value": {
+      const loc = attributeLocation(place.element, place.attribute);
+      const span = loc ? attributeValueSpan(text, loc.startOffset, loc.endOffset) : null;
+      if (!span) return null;
+      const q = text[span.valueStart - 1];
+      return {
+        kind: "attribute",
+        quote: span.quoted && (q === '"' || q === "'") ? q : null,
+        atStart: span.valueStart === at,
+      };
+    }
+    case "tag-name":
+      return { kind: "tag", inName: true };
+    case "attr-name":
+      return { kind: "tag", inName: false };
+    case "doctype":
+      return null;
+  }
+}
+
+/**
+ * The start tags of `chain`'s elements, outermost first, which put a value
+ * read after them where the template puts it; null when they cannot (an
+ * element of `<head>` or a frameset reads otherwise in a body). Attributes
+ * are left out: none changes how the content is read, but the encoding
+ * that makes a MathML `<annotation-xml>` hold HTML.
+ */
+function openTagsOf(chain: Ancestors | null): string | null {
+  const tags: string[] = [];
+  for (let c = chain; c !== null; c = c.up) {
+    const e = c.element;
+    const name = e.tagName;
+    if (e.namespaceURI === H.NS.HTML) {
+      if (name === "html" || name === "body") continue;
+      if (name === "head" || name === "frameset" || name === "frame") return null;
+    }
+    const encoding =
+      e.namespaceURI === H.NS.MATHML && name === "annotation-xml"
+        ? e.attrs.find((a) => a.name === "encoding")
+        : undefined;
+    tags.push(
+      encoding ? `<${name} encoding="${encoding.value.replaceAll('"', "&quot;")}">` : `<${name}>`,
+    );
+  }
+  return tags.reverse().join("");
 }
 
 /**

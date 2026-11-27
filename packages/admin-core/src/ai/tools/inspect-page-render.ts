@@ -38,6 +38,7 @@ import {
   pluginsNotRunningHere,
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
+import { VALUE_BREAKS_MARKUP, valueBreaksMarkupRepair } from "@caelo-cms/shared";
 import { z } from "zod";
 import { pageMarkerHint, pluginValueRefusedHint } from "../../deploy/render-failures.js";
 import { describeError, toolError } from "./_describe-error.js";
@@ -469,6 +470,18 @@ function pluginValueRefusedNextStep(marker: string): string | undefined {
   return `${pluginValueRefusedHint(marker.slice(prefix.length))} Publishing is blocked until it is fixed.`;
 }
 
+/**
+ * #1748 — next step for a core value that changes the markup around its
+ * placeholder (`value-breaks-markup:<field>:<rule>`). Same text as the
+ * Stage's report.
+ */
+function valueBreaksMarkupNextStep(marker: string): string | undefined {
+  const prefix = `${VALUE_BREAKS_MARKUP}:`;
+  if (!marker.startsWith(prefix)) return undefined;
+  const { hint } = valueBreaksMarkupRepair(marker.slice(prefix.length), "a module on this page");
+  return `${hint} Publishing is blocked until it is fixed.`;
+}
+
 /** `{ nextSteps }` for the flagged site-wide settings, or `{}` when none is flagged. */
 function siteSettingNextSteps(
   missing: readonly string[],
@@ -483,6 +496,7 @@ function siteSettingNextSteps(
         pluginNotRunningNextStep(m) ??
         pluginRenderFailedNextStep(m, pluginFailures) ??
         pluginValueRefusedNextStep(m) ??
+        valueBreaksMarkupNextStep(m) ??
         pageMarkerNextStep(m);
       return step ? [[m, step]] : [];
     }),

@@ -73,6 +73,7 @@ import {
   injectSeoIntoHead,
   isFieldPathMarker,
   isListFailureMarker,
+  isValueBreaksMarkupMarker,
   linkMarkersOf,
   listThemeCssVarNames,
   type NestedModuleResource,
@@ -567,6 +568,8 @@ async function renderPreview(
       pageLinkMarkers.push(...linkMarkersOf(result.missingSlots));
       pageListMarkers.push(...result.missingSlots.filter(isListFailureMarker));
       fieldPathMarkers.push(...result.missingSlots.filter(isFieldPathMarker));
+      // #1748 — a value that breaks the markup around it renders as written.
+      fieldPathMarkers.push(...result.missingSlots.filter(isValueBreaksMarkupMarker));
       // Every module the recursion touched gets its CSS/JS staged (the
       // composer dedupes by moduleId, issue #158) through a virtual
       // "__nested__" block below; their HTML is already inline.
@@ -850,6 +853,7 @@ async function renderPreview(
       ...new Set([
         ...fieldPathMarkers,
         ...composed.moduleFailures.map((f) => f.reason).filter(isFieldPathMarker),
+        ...composed.moduleFailures.map((f) => f.reason).filter(isValueBreaksMarkupMarker),
       ]),
     ],
     pluginFailures: pluginFailureSink.failures().map((f) => ({ slug: f.slug, reason: f.reason })),
