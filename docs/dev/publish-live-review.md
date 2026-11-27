@@ -83,9 +83,13 @@ at the top and the bottom.
 
 `deploy.publish_preview` compares the staged build Publish live copies
 with the build that is live. "The live build" is the staging run the live
-production run was promoted from (deploy.promote stamps its id into the
-production run's `build_id`), so after a rollback the review compares with
-the build that is live again. Two sources, both recorded by every Stage:
+production site build was promoted from (deploy.promote stamps its id into
+the production run's `build_id`), so after a rollback the review compares
+with the build that is live again. A plugin-data build (#1155) is a
+production run of its own that re-renders baked regions of the live build;
+it is skipped, never read as the live build (`deploy/release-runs.ts`;
+before #1750 every review after one said live was "built directly" and
+listed nothing). Two sources, both recorded by every Stage:
 
 | Source | What it gives |
 |---|---|
@@ -131,7 +135,14 @@ build"). The redirect changes it listed as going live ride the same
 form (`redirectChanges`, #1550).
 
 The AI reads the same data: `list_unpublished_changes` appends what the
-next Publish live ships (`ai/tools/_publish-preview-note.ts`).
+next Publish live ships (`ai/tools/_publish-preview-note.ts`). Its own
+part lists the chat's changes in two halves (`chat.list_pending_changes`):
+unstaged (the chat's draft head) and staged, which is what the chat's
+Stages merged at or after the start of the staging build live was copied
+from (`site_snapshots.staged_at`, `notLiveSince` in
+`deploy/release-runs.ts`), read by the chat's own tasks. A Stage takes its
+snapshots out of the draft head, so before #1750 a staged change vanished
+from the chat's list although no Publish live had shipped it.
 
 Publish live from the pages list, Settings → Deployments and the
 approval card of `propose_deploy_promote` does not show the review yet
