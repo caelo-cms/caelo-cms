@@ -34,7 +34,7 @@
 
 import { isPluginDisabled, loadedPlugins } from "@caelo-cms/plugin-host";
 import { privateReadColumns } from "@caelo-cms/plugin-sandbox";
-import { defineOperation, uuidArray } from "@caelo-cms/query-api";
+import { defineOperation, textArray, uuidArray } from "@caelo-cms/query-api";
 import { err, getPluginDraftRowsToolInput, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -138,6 +138,112 @@ export const getDraftRowsOp = defineOperation({
       rows: shown,
       noPendingChange: rowIds.filter((id) => !pending.has(id)),
       unavailable: [...unavailable],
+    });
+  },
+});
+
+/** Most rows one read names: what a refusal lists, enough to re-read them all. */
+const UNSEEN_ROWS_MAX = 100;
+
+const unseenRow = z.object({
+  id: z.string().uuid(),
+  table: z.string(),
+  changedAt: z.string(),
+  changedByChat: z.string(),
+});
+
+/**
+ * Issue #1705 — `plugins.unseen_draft_rows`: the rows of a plugin that
+ * another chat changed in the shared draft after the calling chat last saw
+ * them, and that are about the given entities (the row's id, or an id among
+ * its values: consent-manager's verdict row names its module in
+ * `module_id`). What a write of them would refuse as a draft conflict
+ * (`locks.ts`).
+ *
+ * Asked before an approval card of a draft-bound plugin tool is shown
+ * (`ai/plugin-approval-staleness.ts`) with the ids the call names, so the
+ * Owner is not asked to approve a call that would then refuse to apply. A
+ * row the call writes that names none of them is still checked when the
+ * approved call writes it. Rows the plugin's change consumer re-derived
+ * carry no chat and are never named, as the conflict check never counts
+ * them.
+ *
+ * Empty outside a draft chat (no draft to be stale against).
+ */
+export const unseenDraftRowsOp = defineOperation({
+  name: "plugins.unseen_draft_rows",
+  readScope: "request",
+  // Default scope (CLAUDE.md §11): a read of the caller's own chat's view.
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      pluginSlug: z.string().min(1).max(55),
+      /** The entities the call is about: ids among its arguments. */
+      entityIds: z.array(z.string().uuid()).min(1).max(50),
+    })
+    .strict(),
+  output: z.object({ rows: z.array(unseenRow) }),
+  handler: async (ctx, input, tx) => {
+    const plugin = loadedPlugins.bySlug(input.pluginSlug);
+    if (!plugin) {
+      return err({
+        kind: "HandlerError" as const,
+        operation: "plugins.unseen_draft_rows",
+        message: `plugins.unseen_draft_rows: no plugin "${input.pluginSlug}" runs on this server (list_plugins shows the installed ones)`,
+      });
+    }
+    if (!ctx.chatBranchId || !ctx.chatTaskId) return ok({ rows: [] });
+    const ids = [...new Set(input.entityIds)];
+    // One head row per pending row and owner (migration 0477): every other
+    // chat's newest change of each of the plugin's rows, newer than this
+    // chat's observation of it. The partial plugin index drives the scan;
+    // the snapshot holds the row's state as that chat left it.
+    const rows = (await tx.execute(sql`
+      WITH me AS (
+        SELECT caelo_chat_owner(cs.id) AS owner
+        FROM chat_sessions cs
+        WHERE cs.id = ${ctx.chatTaskId}::uuid AND cs.chat_branch_id = ${ctx.chatBranchId}::uuid
+          AND cs.branch_kind = 'draft'
+      )
+      SELECT DISTINCT ON (d.entity_id, d.entity_sub)
+             d.entity_id::text AS id, d.table_name,
+             to_char(d.header_created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS changed_at,
+             cs.title AS chat_title
+      FROM me
+      JOIN draft_pending_entities d
+        ON d.chat_branch_id = ${ctx.chatBranchId}::uuid
+       AND d.entity_kind = 'pluginRow'
+       AND d.plugin_id = ${plugin.pluginId}::uuid
+      JOIN plugin_row_snapshots prs ON prs.id = d.snapshot_row_id
+      LEFT JOIN chat_sessions cs ON cs.id = d.owner_chat_session_id
+      LEFT JOIN draft_entity_observations o
+        ON o.chat_session_id = me.owner AND o.entity_kind = 'pluginRow' AND o.entity_id = d.entity_id
+      WHERE d.owner_chat_session_id IS NOT NULL
+        AND d.owner_chat_session_id <> me.owner
+        AND d.header_created_at > COALESCE(o.seen_at, '-infinity'::timestamptz)
+        AND (
+          d.entity_id = ANY(${uuidArray(ids)})
+          OR EXISTS (
+            SELECT 1 FROM jsonb_each(prs.state->'values') v
+            WHERE jsonb_typeof(v.value) = 'string' AND v.value #>> '{}' = ANY(${textArray(ids)})
+          )
+        )
+      ORDER BY d.entity_id, d.entity_sub, d.header_created_at DESC
+      LIMIT ${UNSEEN_ROWS_MAX}
+    `)) as unknown as {
+      id: string;
+      table_name: string;
+      changed_at: string;
+      chat_title: string | null;
+    }[];
+    return ok({
+      rows: rows.map((r) => ({
+        id: r.id,
+        table: r.table_name,
+        changedAt: r.changed_at,
+        changedByChat: r.chat_title ?? "a chat that was deleted since",
+      })),
     });
   },
 });

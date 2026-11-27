@@ -321,6 +321,20 @@ export async function checkAndAcquireEntityLock(
  * (issues #1260, #1387, {@link observeDraftReads}). A permitted write
  * records it too.
  *
+ * Issue #1705 — a plugin row's change that no chat made does not count. On
+ * a branch that is the plugin's own change consumer re-deriving the row from
+ * a committed change (the one branch write without a chat task,
+ * `batchInvocation` in plugin-host change-consumers.ts): consent-manager
+ * rewrites a module's verdict when the module's embed changes. It is no
+ * chat's work that a later write could silently overwrite — the source change
+ * it follows is a chat's write, protected on its own entity — and counting it
+ * made every chat conflict with consequences of its own edits, after the
+ * Owner had approved the write. A plugin that needs its derived state current
+ * when it writes reads it in the same call (consent-manager re-scans the
+ * module's hosts) or swaps (`compareAndSwap`). Core entities keep counting
+ * every other writer: a plugin's `ctx.cms.call` change of a module is content
+ * a chat must see before it overwrites it.
+ *
  * @returns the newer change by another chat, or null when the write may go.
  */
 async function draftConflict(
@@ -350,6 +364,7 @@ async function draftConflict(
       FROM changes c
       LEFT JOIN chat_sessions cs ON cs.id = c.owner
       WHERE c.owner IS DISTINCT FROM ${chatSessionId}::uuid
+        ${kind === "pluginRow" ? sql`AND c.owner IS NOT NULL` : sql``}
         AND c.created_at > COALESCE(
           (SELECT seen_at FROM draft_entity_observations
             WHERE chat_session_id = ${chatSessionId}::uuid

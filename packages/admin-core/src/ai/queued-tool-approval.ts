@@ -44,6 +44,7 @@ import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { untrustedToolResult } from "@caelo-cms/shared";
+import { stalePluginViewBeforeApproval } from "./plugin-approval-staleness.js";
 import {
   approvedCallRunsLive,
   approvedPluginInvocation,
@@ -87,6 +88,19 @@ export async function queuePluginToolApproval(input: {
       ok: false,
       content: `${problem}\nNothing was queued and no approval was requested — fix the arguments and call ${spec.name} again.`,
     };
+  }
+  // #1705 — nor to approve a draft-bound call that would refuse to apply
+  // over another chat's change this session has not seen.
+  if (spec.approvedOnChatBranch === true) {
+    const stale = await stalePluginViewBeforeApproval({
+      registry: input.registry,
+      adapter: input.adapter,
+      aiCtx: input.aiCtx,
+      pluginSlug,
+      toolName: spec.name,
+      args: input.args,
+    });
+    if (stale) return { ok: false, content: stale };
   }
   // The id is chosen here so an external plugin's installation binding can
   // be recorded under it BEFORE the card becomes visible — an Approve in
