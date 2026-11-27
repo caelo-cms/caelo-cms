@@ -9,15 +9,17 @@
 
 import { describe, expect, it } from "bun:test";
 import {
-  coreValueProblemAt,
   describeValueBreaksMarkup,
-  listEntryValueProblems,
-  moduleValueProblems,
   parseValueBreaksMarkup,
-  siteTextValueProblems,
   valueBreaksMarkupMarker,
   valueBreaksMarkupRepair,
-} from "./core-value-structure.js";
+} from "./core-value-messages.js";
+import { coreValueProblemAt } from "./core-value-structure.js";
+import {
+  listEntryValueProblems,
+  moduleValueProblems,
+  siteTextValueProblems,
+} from "./core-value-writes.js";
 import { fixtureData, fixtureLinkIndex, PAGE } from "./lists/list-fixtures.test.js";
 import { createListRenderContext } from "./lists/resolve.js";
 import { renderTemplate, type TemplateField } from "./template-engine.js";

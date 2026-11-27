@@ -103,7 +103,8 @@
 
 import Mustache from "mustache";
 import { MODULE_FIELD_SECTION_KINDS, type ModuleFieldKind } from "./content.js";
-import { coreValueProblemAt, valueBreaksMarkupMarker } from "./core-value-structure.js";
+import { valueBreaksMarkupMarker } from "./core-value-messages.js";
+import { coreValueProblemAt } from "./core-value-structure.js";
 import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
 import { type SourceDef, sourceDefSchema } from "./lists/list-type.js";
 import { PAGE_KEY_UNKNOWN, PAGE_PATH_UNKNOWN } from "./lists/page-paths.js";

@@ -17,7 +17,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
-import { isValueBreaksMarkupMarker } from "./core-value-structure.js";
+import { isValueBreaksMarkupMarker } from "./core-value-messages.js";
 import { pluginValue } from "./lists/plugin-values.js";
 import {
   CORE_PARITY_FIELD_PATHS,
