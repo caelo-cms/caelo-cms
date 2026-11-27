@@ -215,11 +215,14 @@ export function renderModuleWithContent(
   themeAssets?: NestedRenderThemeAssets,
   lists?: ListPageContext,
   linkResolver?: LinkResolver,
+  /** #1729 — refuse every plugin value of this module and below with this rule (see `page-reading.ts`). */
+  refusePluginValues?: string,
 ): NestedRenderResult {
   const touched = new Set<string>();
   const missing: string[] = [];
   const failures: NestedRenderFailure[] = [];
   const html = renderInner(moduleId, contentInstanceId, {
+    ...(refusePluginValues !== undefined ? { refusePluginValues } : {}),
     resolver,
     touched,
     missing,
@@ -535,6 +538,8 @@ export function renderPlacedModule(
     readonly contentInstanceId?: string;
     /** Epic #724 — resolves internal references (see `link-refs.ts`). */
     readonly linkResolver?: LinkResolver;
+    /** #1729 — refuse every plugin value of this module and below with this rule (see `page-reading.ts`). */
+    readonly refusePluginValues?: string;
   },
 ): NestedRenderResult {
   const touched = new Set<string>();
@@ -555,8 +560,42 @@ export function renderPlacedModule(
     lists: options.lists,
     listHolder: options.contentInstanceId ?? null,
     linkResolver: options.linkResolver,
+    ...(options.refusePluginValues !== undefined
+      ? { refusePluginValues: options.refusePluginValues }
+      : {}),
   });
   return { html, touchedModuleIds: touched, missingSlots: missing, failures };
+}
+
+/**
+ * #1729 — the templates of every module nested (at any depth) in a module
+ * with these values, found through `resolver` before rendering: what
+ * `page-reading.ts` needs to know whether one of them ends outside content.
+ * Every reference in the values counts, rendered or not (the wider set is
+ * the safe one).
+ */
+export function nestedModuleTemplates(
+  values: Readonly<Record<string, unknown>>,
+  resolver: NestedRenderResolver,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const queue: { readonly values: Readonly<Record<string, unknown>>; readonly depth: number }[] = [
+    { values, depth: 0 },
+  ];
+  for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+    if (next.depth >= MAX_RECURSION_DEPTH) continue;
+    for (const ref of collectNestedRefs(next.values)) {
+      const key = `${ref.moduleId}/${ref.contentInstanceId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const mod = resolver.getModule(ref.moduleId);
+      if (mod) out.push(mod.html);
+      const ci = resolver.getContentInstance(ref.contentInstanceId);
+      if (ci) queue.push({ values: ci.values, depth: next.depth + 1 });
+    }
+  }
+  return out;
 }
 
 /**

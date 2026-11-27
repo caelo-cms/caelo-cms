@@ -772,3 +772,50 @@ describe("a plugin's value where the browser puts it, round 2 (#1732 review)", (
     );
   });
 });
+
+/** #1732 review, round 3 — the reviewer's probes, kept. */
+describe("a plugin's value where the browser puts it, round 3 (#1732 review)", () => {
+  const fields: TemplateField[] = ["x", "e1", "e2", "end", "n"].map((name) => ({
+    name,
+    kind: "text",
+  }));
+  const x = (value: string) => pluginValue({ ...ORIGIN, address: "a/x", type: "text" }, value);
+  const rule = (r: string) => `plugin-value-refused:international-site.content-variants.a/x:${r}`;
+  const at = (html: string, values: Record<string, unknown>) =>
+    renderTemplate({ html, fields, contentValues: values });
+
+  it("1: the selects are the tree's: raw text before one hides nothing", () => {
+    for (const html of [
+      `<script><!--</script><select><noscript></select><p title="</noscript><img src=x onerror={{x}}>">-->`,
+      `<textarea><!--</textarea><select><noscript></select><p title="</noscript><img src=x onerror={{x}}>">-->`,
+      `<style>/*<!--*/</style><select><noscript></select><p title="</noscript><img src=x onerror={{x}}>">-->`,
+      `<title><a title="</title><select><noscript></select><p title='</noscript><img src=x onerror={{x}}>'>"></title>`,
+    ]) {
+      expect(at(html, { x: x("alert(1)") }).missingSlots).toEqual([
+        rule("context-conditional-markup"),
+      ]);
+    }
+    // A <select> that is text (a script's string, a textarea's text) refuses nothing.
+    for (const html of [
+      `<script>el.innerHTML='<select><option>1</option><span>x</span></select>';</script><h2>{{x}}</h2>`,
+      `<textarea><select><b>x</b></select></textarea><h2>{{x}}</h2>`,
+    ]) {
+      expect(at(html, { x: x("Hallo") }).missingSlots).toEqual([]);
+    }
+  });
+
+  it("3: an end tag's name of several values could close raw text too", () => {
+    for (const [html, values] of [
+      [`<textarea></{{e1}}{{e2}}><img src=x onerror="{{x}}">`, { e1: "text", e2: "area" }],
+      [`<textarea></{{e1}}{{! c }}><img src=x onerror="{{x}}">`, { e1: "textarea" }],
+      [`<textarea></text{{e1}}><img src=x onerror="{{x}}">`, { e1: "area" }],
+    ] as const) {
+      expect(at(html, { ...values, x: x("alert(1)") }).missingSlots).toEqual([
+        rule("context-conditional-markup"),
+      ]);
+    }
+    expect(at(`<h2>t</h{{n}}><p title="{{x}}">`, { n: "2", x: x("Hallo") }).missingSlots).toEqual(
+      [],
+    );
+  });
+});

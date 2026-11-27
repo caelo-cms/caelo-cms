@@ -118,6 +118,8 @@ const MODULES = [
   `${SHARED}/html-tokens.ts`,
   `${SHARED}/nested-module-render.ts`,
   `${SHARED}/preview-compose.ts`,
+  // #1729 — where the page puts each module, for its plugins' values.
+  `${SHARED}/page-reading.ts`,
 ] as const;
 
 /**

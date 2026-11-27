@@ -138,6 +138,14 @@ export interface PlaceholderContexts {
    * only holds there; elsewhere every plugin value inside it is refused.
    */
   readonly nestedOutsideContent: ReadonlySet<string>;
+  /**
+   * The template ends in plain HTML element content, in every render: not
+   * in raw text, SVG, MathML, a `<select>`, a comment or an unfinished tag,
+   * and no section or value-named element could make it end elsewhere. A
+   * module that does not changes how everything after it on the page reads
+   * (see `page-reading.ts`).
+   */
+  readonly endsInContent: boolean;
 }
 
 const cache = new Map<string, PlaceholderContexts>();
@@ -207,8 +215,11 @@ const refusal = (rule: string): PlaceholderContext => ({ kind: "refused", rule }
 function computeContexts(html: string): PlaceholderContexts {
   const tags = mustacheSpans(html);
   const byStart = new Map<number, PlaceholderContext>();
-  if (tags.length === 0) return { byStart, nestedOutsideContent: new Set() };
   const markers = markerSet(html);
+  if (tags.length === 0) {
+    const end = placesOf(parseBody(`${html}${markers.mark(0)}`), markers).get(0);
+    return { byStart, nestedOutsideContent: new Set(), endsInContent: isPlainContent(end) };
+  }
 
   const values = readValues(html, tags, markers);
   const sections = sectionsUnsafeFrom(html, tags, markers);
@@ -228,7 +239,11 @@ function computeContexts(html: string): PlaceholderContexts {
     // A triple-stache's inner `{{` is where the section pass sees the tag.
     if (html[tag.start + 2] === "{") byStart.set(tag.start + 1, context);
   }
-  return { byStart, nestedOutsideContent };
+  return {
+    byStart,
+    nestedOutsideContent,
+    endsInContent: values.endsInContent && unsafeFrom === Number.POSITIVE_INFINITY,
+  };
 }
 
 /** The name a `{{#name}}` / `{{>name}}` tag names. */
@@ -338,7 +353,7 @@ function parseBody(text: string): DefaultTreeAdapterTypes.DocumentFragment {
  * stack of its own, never by recursion: a template nested thousands deep
  * is read, not a stack overflow.
  */
-function placesOf(text: string, markers: MarkerSet): Map<number, Place[]> {
+function placesOf(root: Node, markers: MarkerSet): Map<number, Place[]> {
   const out = new Map<number, Place[]>();
   const add = (s: string, place: Place) => {
     for (const i of markers.find(s)) {
@@ -353,7 +368,7 @@ function placesOf(text: string, markers: MarkerSet): Map<number, Place[]> {
     readonly foreign: Element | null;
     readonly select: Element | null;
   };
-  const stack: Frame[] = [{ node: parseBody(text), parent: null, foreign: null, select: null }];
+  const stack: Frame[] = [{ node: root, parent: null, foreign: null, select: null }];
   // Children are pushed in reverse, so they come off the stack in document order.
   for (let frame = stack.pop(); frame !== undefined; frame = stack.pop()) {
     const { node, parent, foreign, select } = frame;
@@ -455,7 +470,12 @@ function readValues(
   html: string,
   tags: readonly MustacheSpan[],
   markers: MarkerSet,
-): { readonly contexts: Map<number, PlaceholderContext>; readonly unsafeFrom: number } {
+): {
+  readonly contexts: Map<number, PlaceholderContext>;
+  readonly unsafeFrom: number;
+  /** The template ends in plain HTML content (see {@link endsInContent}). */
+  readonly endsInContent: boolean;
+} {
   let text = "";
   const segments: Segment[] = [];
   const markerSpans: { readonly a: number; readonly end: number; readonly tag: number }[] = [];
@@ -476,6 +496,10 @@ function readValues(
     segments.push({ a: text.length, t: at, len: html.length - at });
     text += html.slice(at);
   }
+  // Where the template ends: a marker after it must be text in plain HTML
+  // content, or what follows this module on the page reads otherwise.
+  const end = tags.length;
+  text += markers.mark(end);
 
   // The template offset of the character at `a` of the reading (a marker's: its tag's start).
   const toTemplate = (a: number): number => {
@@ -511,24 +535,14 @@ function readValues(
     return m ? (tags[m.tag] as MustacheSpan).end : toTemplate(a - 1) + 1;
   };
 
-  const places = placesOf(text, markers);
+  const root = parseBody(text);
+  const places = placesOf(root, markers);
   const contexts = new Map<number, PlaceholderContext>();
-  let unsafeFrom = selectDivergence(text);
+  let unsafeFrom = selectDivergence(root, text);
   if (unsafeFrom !== Number.POSITIVE_INFINITY) unsafeFrom = toTemplate(unsafeFrom);
-  let previousEnd = 0;
+  unsafeFrom = Math.min(unsafeFrom, endTagNameValues(html, tags));
   for (const [i, tag] of tags.entries()) {
-    const before = html.slice(previousEnd, tag.start);
-    previousEnd = tag.end;
     if (tag.kind !== "value") continue;
-    // A value in an end tag's name (`</{{end}}>`) could close the raw text,
-    // `<select>` or foreign content it stands in: the tree shows text there.
-    const endName = /<\/([a-zA-Z0-9:_-]*)$/.exec(before);
-    if (endName) {
-      const after = /^[^\t\n\f\r />]*/.exec(html.slice(tag.end))?.[0] ?? "";
-      if (couldBeReadingElement([endName[1] as string, after])) {
-        unsafeFrom = Math.min(unsafeFrom, tag.start);
-      }
-    }
     const found = places.get(i) ?? [];
     const read: PlaceholderContext[] = [];
     for (const place of found) {
@@ -549,7 +563,52 @@ function readValues(
         : refusal("context-markup"),
     );
   }
-  return { contexts, unsafeFrom };
+  return { contexts, unsafeFrom, endsInContent: isPlainContent(places.get(end)) };
+}
+
+/**
+ * Whether an end marker's places say the markup before it ends in plain
+ * HTML element content: one text place, not in raw text, SVG, MathML or a
+ * `<select>` (and not a comment, an attribute or an unfinished tag).
+ */
+function isPlainContent(found: readonly Place[] | undefined): boolean {
+  if (found?.length !== 1) return false;
+  const place = found[0] as Place;
+  if (place.at !== "text" || place.foreign || place.select) return false;
+  const name = place.parent?.tagName.toLowerCase() ?? "";
+  if (name === "script" || name === "style") return false;
+  return !(place.parent?.namespaceURI === H.NS.HTML && TEXT_ONLY_ELEMENTS.has(name));
+}
+
+/**
+ * The offset of the first tag inside an end tag's name whose name could
+ * close a reading element (`</{{end}}>`, `</{{e1}}{{e2}}>`, `</text{{a}}>`),
+ * or Infinity. The tree shows raw text there; the render may close it.
+ * Every tag in the name counts as any text, however many there are;
+ * `</h{{n}}>` closes no element that changes how its content is read.
+ */
+function endTagNameValues(html: string, tags: readonly MustacheSpan[]): number {
+  let first = Number.POSITIVE_INFINITY;
+  for (let at = html.indexOf("</"); at !== -1; at = html.indexOf("</", at + 2)) {
+    const pieces: string[] = [""];
+    let tagStart = -1;
+    let p = at + 2;
+    for (;;) {
+      if (html.startsWith("{{", p)) {
+        const k = firstTagAfter(tags, p);
+        const t = tags[k];
+        if (t === undefined || t.start !== p) break;
+        if (tagStart === -1) tagStart = t.start;
+        pieces.push("");
+        p = t.end;
+      } else if (/[a-zA-Z0-9:_-]/.test(html[p] ?? "")) {
+        pieces[pieces.length - 1] = `${pieces[pieces.length - 1] ?? ""}${html[p]}`;
+        p += 1;
+      } else break;
+    }
+    if (tagStart !== -1 && couldBeReadingElement(pieces)) first = Math.min(first, tagStart);
+  }
+  return first;
 }
 
 /** Whether an element whose name holds a value (`<{{tag}}>`, `<h{{n}}>`) could be one of {@link READING_ELEMENTS}. */
@@ -580,22 +639,40 @@ function couldBeReadingElement(pieces: readonly string[]): boolean {
  * differently (an offset of `text`), or Infinity. parse5 keeps only
  * `<option>`, `<optgroup>` and `<hr>` there and drops the rest; Chromium and
  * Firefox keep it, so a `<noscript>` inside a `<select>` is raw text to them
- * and not to the analysis. Read by tokens, so a tag the tree dropped counts.
+ * and not to the analysis. The selects are the tree's (a `<select>` in a
+ * script's string or a `<textarea>` is text, and raw text before one hides
+ * nothing), and each one's own source is read by its tokens, so a tag the
+ * tree dropped counts. A `<select>` without its end tag diverges at once.
  */
-function selectDivergence(text: string): number {
-  let inSelect = false;
-  for (const t of htmlTokens(text)) {
-    if (t.kind === "start") {
-      if (t.name === "select") {
-        if (inSelect) return t.start;
-        inSelect = true;
-      } else if (inSelect && !SELECT_CONTENT.has(t.name)) return t.start;
-    } else if (t.kind === "end" && inSelect) {
-      if (t.name === "select") inSelect = false;
-      else if (!SELECT_CONTENT.has(t.name)) return t.start;
+function selectDivergence(root: Node, text: string): number {
+  let first = Number.POSITIVE_INFINITY;
+  const stack: Node[] = [root];
+  for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
+    const children: readonly Node[] =
+      "content" in node && node.content
+        ? (node.content as DefaultTreeAdapterTypes.DocumentFragment).childNodes
+        : "childNodes" in node
+          ? node.childNodes
+          : [];
+    for (const child of children) if ("tagName" in child) stack.push(child);
+    if (!("tagName" in node)) continue;
+    const element = node as Element;
+    if (element.namespaceURI !== H.NS.HTML || element.tagName !== "select") continue;
+    const loc = element.sourceCodeLocation;
+    const from = loc?.startTag?.endOffset;
+    const to = loc?.endTag?.startOffset;
+    if (from === undefined || to === undefined) {
+      first = Math.min(first, loc?.startOffset ?? 0);
+      continue;
+    }
+    for (const t of htmlTokens(text.slice(from, to))) {
+      if ((t.kind === "start" || t.kind === "end") && !SELECT_CONTENT.has(t.name)) {
+        first = Math.min(first, from + t.start);
+        break;
+      }
     }
   }
-  return Number.POSITIVE_INFINITY;
+  return first;
 }
 
 /** What a `<select>` holds that every parser reads alike. */
@@ -735,7 +812,7 @@ function sectionsUnsafeFrom(
   // First reading: which boundary markers end a name (`<li{{#a}}`, the
   // valueless `disabled{{/a}}`, an unquoted `x=1{{/a}}`).
   const first = markedTemplate(html, tags, markers, new Set());
-  const firstPlaces = placesOf(first.text, markers);
+  const firstPlaces = placesOf(parseBody(first.text), markers);
   const glued = new Set<number>();
   const tagNameEnd = new Set<number>();
   for (const [i, tag] of tags.entries()) {
@@ -751,7 +828,7 @@ function sectionsUnsafeFrom(
   // either way). An attribute's name or value does not change how what
   // follows is read.
   const second = tagNameEnd.size > 0 ? markedTemplate(html, tags, markers, tagNameEnd) : first;
-  const places = tagNameEnd.size > 0 ? placesOf(second.text, markers) : firstPlaces;
+  const places = tagNameEnd.size > 0 ? placesOf(parseBody(second.text), markers) : firstPlaces;
 
   const ids = new Map<Element, number>();
   const id = (e: Element) => {

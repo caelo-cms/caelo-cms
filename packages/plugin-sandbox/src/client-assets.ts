@@ -21,6 +21,16 @@
 import { escapePluginText, htmlTokens } from "@caelo-cms/shared";
 import { cssTokens } from "./css-tokens.js";
 
+/**
+ * A placeholder stands where the withheld module would, which can be raw
+ * text (a `<noscript>` the page puts it in): there a `</noscript>` inside an
+ * attribute value or a comment ends the raw text, and what follows runs.
+ * Every tag of the placeholder is held to the rules already; `<` elsewhere
+ * in its markup is refused, so it is safe wherever it lands.
+ */
+const LT_PROBLEM =
+  'a "<" inside an attribute value or a comment: where the placeholder stands in raw text it could end that text — write it as &lt;';
+
 /** Elements a placeholder may hold: prose, containers and a button. Nothing that loads or runs. */
 export const PLACEHOLDER_ELEMENTS: ReadonlySet<string> = new Set([
   "div",
@@ -138,6 +148,7 @@ export function placeholderMarkupProblem(html: string): string | null {
   for (const t of tokens) {
     if (t.kind === "comment") {
       if (html.startsWith("<?", t.start)) return "processing instruction";
+      if (t.data.includes("<")) return LT_PROBLEM;
       continue;
     }
     if (t.kind === "doctype") return "doctype";
@@ -151,6 +162,8 @@ export function placeholderMarkupProblem(html: string): string | null {
       const attr = a.name.toLowerCase();
       const allowed = PLACEHOLDER_ATTRIBUTES.has(attr) || /^(data|aria)-[a-z0-9-]+$/.test(attr);
       if (!allowed) return `attribute ${attr} on <${t.name}>`;
+      // As written: `&lt;` stays text in raw text too.
+      if (a.source.includes("<")) return LT_PROBLEM;
       if (attr === "href" && a.value.includes("{{"))
         return "a {{slot}} inside href: a verdict's text never chooses where a link goes";
       if (attr === "href") {

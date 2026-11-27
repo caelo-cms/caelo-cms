@@ -70,6 +70,7 @@ export {
 export * from "./nested-module-render.js";
 export * from "./owner-setup-token.js";
 export * from "./page-log.js";
+export * from "./page-reading.js";
 export * from "./phase-timer.js";
 export * from "./platform-updates.js";
 export * from "./plugin-preview.js";

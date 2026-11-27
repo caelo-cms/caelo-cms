@@ -80,6 +80,17 @@ describe("#1732 review — a placeholder is read as the visitor's browser reads 
     expect(placeholderMarkupProblem("<p>x</p><html onclick=alert(1)>")).toBe("element <html>");
   });
 
+  it("refuses a < in an attribute value or a comment, which could end raw text it lands in (#1732 review, round 3)", () => {
+    expect(
+      placeholderMarkupProblem('<p title="</noscript><img src=x onerror=alert(1)>">x</p>'),
+    ).toStartWith('a "<" inside an attribute value or a comment');
+    expect(placeholderMarkupProblem("<p>x</p><!-- </noscript><img> -->")).toStartWith(
+      'a "<" inside an attribute value or a comment',
+    );
+    // Written as a character reference it stays text everywhere.
+    expect(placeholderMarkupProblem('<p title="a &lt; b">x</p>')).toBeNull();
+  });
+
   it("refuses markup that does not end in element content", () => {
     for (const html of ['<p title="x', "<p>x</p><!-- open", "<p>a<"]) {
       expect(placeholderMarkupProblem(html)).toStartWith(

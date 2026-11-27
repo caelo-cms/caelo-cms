@@ -25,13 +25,18 @@ export type HtmlToken =
       readonly kind: "start";
       /** Lowercased, as the tokenizer reads it. */
       readonly name: string;
-      readonly attrs: readonly { readonly name: string; readonly value: string }[];
+      /** `value` decoded; `source` the attribute as written (`name="…"`). */
+      readonly attrs: readonly {
+        readonly name: string;
+        readonly value: string;
+        readonly source: string;
+      }[];
       readonly selfClosing: boolean;
       /** Offset of the `<`. */
       readonly start: number;
     }
   | { readonly kind: "end"; readonly name: string; readonly start: number }
-  | { readonly kind: "comment"; readonly start: number }
+  | { readonly kind: "comment"; readonly data: string; readonly start: number }
   | { readonly kind: "doctype"; readonly start: number }
   | { readonly kind: "text"; readonly value: string };
 
@@ -50,7 +55,14 @@ export function htmlTokens(html: string): HtmlToken[] {
         out.push({
           kind: "start",
           name: t.tagName,
-          attrs: t.attrs.map((a) => ({ name: a.name, value: a.value })),
+          attrs: t.attrs.map((a) => {
+            const at = t.location?.attrs?.[a.name];
+            return {
+              name: a.name,
+              value: a.value,
+              source: at ? html.slice(at.startOffset, at.endOffset) : "",
+            };
+          }),
           selfClosing: t.selfClosing,
           start: t.location?.startOffset ?? -1,
         });
@@ -59,7 +71,7 @@ export function htmlTokens(html: string): HtmlToken[] {
         out.push({ kind: "end", name: t.tagName, start: t.location?.startOffset ?? -1 });
       },
       onComment(t) {
-        out.push({ kind: "comment", start: t.location?.startOffset ?? -1 });
+        out.push({ kind: "comment", data: t.data, start: t.location?.startOffset ?? -1 });
       },
       onDoctype(t) {
         out.push({ kind: "doctype", start: t.location?.startOffset ?? -1 });

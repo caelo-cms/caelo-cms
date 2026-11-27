@@ -76,11 +76,13 @@ import {
   listThemeCssVarNames,
   type NestedModuleResource,
   type NestedRenderResolver,
+  nestedModuleTemplates,
   ok,
   type PaginationRequest,
   pagedPath,
   pagedUrl,
   pageListOverlayScope,
+  pagePlacement,
   paginationMarkers,
   parsePagedPath,
   type Result,
@@ -510,6 +512,28 @@ async function renderPreview(
     // or of the chrome: loud on the missing-content surface too.
     const pageListMarkers: string[] = [];
     const fieldPathMarkers: string[] = [];
+    // #1729 — where the page's modules stand, for their plugins' values:
+    // a slot outside plain content, or a part of the page that ends
+    // outside it, refuses them (shared page-reading.ts). The composer
+    // renders the layout modules under the same verdict.
+    const placedHtml: string[] = [];
+    for (const m of modRows) {
+      const binding = placementBindings.get(`${m.block_name}#${m.position}`);
+      if (!binding) continue;
+      const mod = moduleByIdResource.get(m.module_id);
+      if (mod) placedHtml.push(mod.html);
+      const ci = instanceByIdResource.get(binding.contentInstanceId);
+      if (ci) placedHtml.push(...nestedModuleTemplates(ci.values, resolver));
+    }
+    for (const lm of layoutBlocks.flatMap((b) => b.modules)) {
+      placedHtml.push(lm.html);
+      if (lm.contentValues) placedHtml.push(...nestedModuleTemplates(lm.contentValues, resolver));
+    }
+    const placement = pagePlacement({
+      templateHtml: pageRow.template_html,
+      layoutHtml: pageRow.layout_html,
+      moduleHtml: placedHtml,
+    });
     for (const m of modRows) {
       const key = `${m.block_name}#${m.position}`;
       const binding = placementBindings.get(key);
@@ -525,6 +549,7 @@ async function renderPreview(
         renderThemeAssets,
         lists,
         linkResolver,
+        placement.refusalFor(m.block_name, false),
       );
       const html = markers
         ? finalizeEditMarkers(
@@ -557,6 +582,7 @@ async function renderPreview(
         slug: string;
         displayName: string;
         html: string;
+        rendered?: boolean;
         css: string;
         js: string;
       }[]
@@ -568,6 +594,7 @@ async function renderPreview(
         slug: r.slug,
         displayName: r.display_name,
         html: htmlByRow.get(r) ?? "",
+        rendered: true,
         css: r.css,
         js: r.js,
       });
@@ -599,7 +626,11 @@ async function renderPreview(
     // values substituted into `html`; layout modules carry `fields`, whose
     // defaults the composer substitutes.
     const candidates = new Map<string, DeferralCandidate>();
-    for (const m of [...blocks, ...layoutBlocks].flatMap((b) => b.modules)) {
+    const pageAndLayoutModules: readonly (
+      | (typeof blocks)[number]["modules"][number]
+      | (typeof layoutBlocks)[number]["modules"][number]
+    )[] = [...blocks.flatMap((b) => b.modules), ...layoutBlocks.flatMap((b) => b.modules)];
+    for (const m of pageAndLayoutModules) {
       if (candidates.has(m.moduleId)) continue;
       candidates.set(m.moduleId, {
         moduleId: m.moduleId,
@@ -631,6 +662,7 @@ async function renderPreview(
       layoutBlocks,
       layoutSlug: pageRow.layout_slug,
       linkResolver,
+      refusePluginValues: placement.refuseAll,
     });
     return { lists, composed, pageLinkMarkers, pageListMarkers, fieldPathMarkers };
   };
