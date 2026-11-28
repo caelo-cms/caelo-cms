@@ -486,7 +486,7 @@ import {
   commentArchivePostTeamOp,
   commentArchiveStatsManyOp,
 } from "./ops/plugins/comment_archive.js";
-import { getDraftRowsOp } from "./ops/plugins/draft-rows.js";
+import { getDraftRowsOp, unseenDraftRowsOp } from "./ops/plugins/draft-rows.js";
 import {
   approvePluginInstallationOp,
   finalizePluginInstallationOp,
@@ -1092,6 +1092,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listForeignLocksOp);
   registry.register(observeDraftReadsOp);
   registry.register(getDraftRowsOp);
+  registry.register(unseenDraftRowsOp);
   // issue #620 — Open changes overview + lock-takeover notices.
   registry.register(listOpenChangesOp);
   registry.register(drainTakeoverNoticesOp);

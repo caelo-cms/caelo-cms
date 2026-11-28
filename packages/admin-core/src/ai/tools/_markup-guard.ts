@@ -23,6 +23,9 @@
  * - A field-value write (#1256): do the written links cover most pages of
  *   one page type (a guides hub as cards)? Then it is a page query, not
  *   cards (_page-listing-guard.ts).
+ * - A field-value write (#1708): does it nest a module a plugin withholds
+ *   until consent? Then it belongs on the page directly
+ *   (_withheld-nested-guard.ts).
  *
  * Exact structural matches only for field values: near matches are the
  * quality check's job (it sees the whole staged build); here a hint has
@@ -52,6 +55,7 @@ import {
   type ValueInstance,
 } from "./_repeated-value-guard.js";
 import { carriersOf, listValueHrefs, sharedListHints } from "./_shared-list-guard.js";
+import { withheldNestedSuffix } from "./_withheld-nested-guard.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
 /** A module as the guard compares against it. */
@@ -405,7 +409,8 @@ export function withFieldMarkupGuard<T>(
         (await pluginWriteHintsSuffix(
           ctx,
           written.map((values) => ({ kind: "values" as const, moduleId: null, values })),
-        ));
+        )) +
+        (await withheldNestedSuffix(ctx, toolCtx, written));
       return suffix ? { ...result, content: `${result.content}${suffix}` } : result;
     },
   };

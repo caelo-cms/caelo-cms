@@ -40,11 +40,16 @@ import {
 import { execute } from "@caelo-cms/query-api";
 import {
   markupLeavingContent,
+  parseNestedModuleWithheldMarker,
   VALUE_BREAKS_MARKUP,
   valueBreaksMarkupRepair,
 } from "@caelo-cms/shared";
 import { z } from "zod";
-import { pageMarkerHint, pluginValueRefusedHint } from "../../deploy/render-failures.js";
+import {
+  nestedModuleWithheldHint,
+  pageMarkerHint,
+  pluginValueRefusedHint,
+} from "../../deploy/render-failures.js";
 import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -501,6 +506,18 @@ function valueBreaksMarkupNextStep(marker: string): string | undefined {
   return `${hint} Publishing is blocked until it is fixed.`;
 }
 
+/**
+ * #1708 — next step for a module a plugin withholds that sits in another
+ * module's field (`nested-module-withheld:<id>/<plugin>/<reason>`): the
+ * preview leaves it out as the build does. Same text as the Stage's report.
+ */
+function withheldNestedNextStep(marker: string): string | undefined {
+  const withheld = parseNestedModuleWithheldMarker(marker);
+  return withheld === null
+    ? undefined
+    : `${nestedModuleWithheldHint(withheld, "another module on this page")} Publishing is blocked until it is fixed.`;
+}
+
 /** `{ nextSteps }` for the flagged site-wide settings, or `{}` when none is flagged. */
 function siteSettingNextSteps(
   missing: readonly string[],
@@ -516,7 +533,8 @@ function siteSettingNextSteps(
         pluginRenderFailedNextStep(m, pluginFailures) ??
         pluginValueRefusedNextStep(m) ??
         valueBreaksMarkupNextStep(m) ??
-        pageMarkerNextStep(m);
+        pageMarkerNextStep(m) ??
+        withheldNestedNextStep(m);
       return step ? [[m, step]] : [];
     }),
   );
