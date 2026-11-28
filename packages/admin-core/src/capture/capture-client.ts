@@ -120,6 +120,12 @@ export interface CaptureClient {
 export interface CaptureClientDeps {
   readonly launcher: CaptureLauncher;
   readonly store: CaptureStore;
+  /**
+   * #1776 — book the capture's vCPU in the capacity ledger before its
+   * execution starts; resolves with the release. Absent: nothing is booked
+   * (tests of the client alone).
+   */
+  readonly book?: (captureId: string, leaseSeconds: number) => Promise<() => Promise<void>>;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly now?: () => number;
   readonly timeoutMs?: number;
@@ -142,7 +148,18 @@ export function createCaptureClient(deps: CaptureClientDeps): CaptureClient {
       const captureId = crypto.randomUUID();
       const inputKey = `in/${captureId}.json`;
       const resultKey = `out/${captureId}.json`;
+      let release: (() => Promise<void>) | null = null;
       try {
+        if (deps.book) {
+          try {
+            release = await deps.book(captureId, Math.ceil(timeoutMs / 1000) + 60);
+          } catch (e) {
+            throw new CaptureJobError(
+              `could not book CPU for the capture: ${e instanceof Error ? e.message : String(e)}`,
+              "start-failed",
+            );
+          }
+        }
         let inputUrl: string | null = null;
         if (input) {
           await store.writeInput(inputKey, input.text);
@@ -190,6 +207,11 @@ export function createCaptureClient(deps: CaptureClientDeps): CaptureClient {
         await Promise.all([
           input ? store.remove(inputKey).catch(logCleanup(inputKey)) : undefined,
           store.remove(resultKey).catch(logCleanup(resultKey)),
+          release?.().catch((e: unknown) =>
+            console.error(
+              `[capture] the capture's CPU was not given back (its lease does it): ${e instanceof Error ? e.message : e}`,
+            ),
+          ),
         ]);
       }
     },

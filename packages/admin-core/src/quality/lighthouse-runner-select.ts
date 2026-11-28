@@ -3,15 +3,14 @@
 /**
  * Issue #875 — which Lighthouse runner an install uses. Cloud installs run
  * every Lighthouse run in a container of its own, as many at once as the
- * project's CPU quota allows
- * (`parallel-runner.ts`); self-hosted and dev installs have no extra
- * machines and keep the in-process child (`lighthouse-runner.ts`), whose
- * runs go one after another.
+ * capacity ledger grants each batch (#1776, `parallel-runner.ts`);
+ * self-hosted and dev installs have no extra machines and keep the
+ * in-process child (`lighthouse-runner.ts`), whose runs go one after
+ * another.
  */
 
-import type { RunCapacity } from "../reporting-jobs/run-capacity.js";
 import type { LighthouseRunner } from "./checks/registry.js";
-import { gcpAuditLauncherFromEnv } from "./gcp-audit-launcher.js";
+import { gcpAuditLauncherFromEnv, type LighthouseReserve } from "./gcp-audit-launcher.js";
 import { runAuditJob } from "./lighthouse-runner.js";
 import { type AuditTaskLauncher, createParallelAuditRunner } from "./parallel-runner.js";
 
@@ -25,13 +24,13 @@ import { type AuditTaskLauncher, createParallelAuditRunner } from "./parallel-ru
  */
 export function lighthouseRunnerFromEnv(
   env: NodeJS.ProcessEnv,
-  capacity?: Pick<RunCapacity, "lighthouseTasks">,
+  reserve?: LighthouseReserve,
 ): LighthouseRunner {
   const provider = env.CAELO_PROVIDER ?? "";
   if (provider === "" || provider === "self-hosted") return runAuditJob;
   let launcher: AuditTaskLauncher | null;
   try {
-    launcher = launcherFor(provider, env, capacity?.lighthouseTasks);
+    launcher = launcherFor(provider, env, reserve);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return async () => ({ ok: false, failure: { code: "child-failed", message } });
@@ -57,9 +56,9 @@ const PENDING_AUDIT_JOB_ISSUE: Readonly<Record<string, string>> = {
 function launcherFor(
   provider: string,
   env: NodeJS.ProcessEnv,
-  tasksAtOnce: number | undefined,
+  reserve: LighthouseReserve | undefined,
 ): AuditTaskLauncher | null {
   if (provider === "gcp" || provider === "gcp-firebase")
-    return gcpAuditLauncherFromEnv(env, tasksAtOnce);
+    return gcpAuditLauncherFromEnv(env, reserve);
   return null;
 }

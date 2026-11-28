@@ -28,7 +28,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
-import { MAX_JOB_TASKS, runCapacitySchema } from "./run-capacity.js";
+import { MAX_JOB_TASKS } from "./run-capacity.js";
 
 /**
  * The kinds of reporting job: a Stage's audit (#1359), a site import's crawl
@@ -106,16 +106,15 @@ export const JOB_TIMING: Readonly<Record<ReportingJobKind, JobTiming>> = {
   },
   // A Stage's search index (#1648): about a minute for a delta, 20 to 40
   // minutes on 32 tasks for the first index of 50,000 pages with vectors
-  // (about 800,000 passages), many hours on the one task a new project's
-  // CPU quota leaves (run-capacity.ts). A retry starts over from the run's
+  // (about 800,000 passages), hours on the few tasks a new project's CPU
+  // quota leaves (job-capacity/plan.ts). A retry starts over from the run's
   // change files, which stay until a release holds them, and keeps every
   // finished shard (index-shards.ts), so an attempt that runs out of time
   // is followed by one that goes on. Six hours an attempt, like an import:
   // a task starts shards for about 5 h 45 min of it. Eight attempts: at
   // the slowest pace measured on one 2-vCPU task (6 passages a second,
-  // one thread) an attempt embeds about 124,000, so seven carry one task
-  // through 800,000 passages (two threads, 10 a second and more, need
-  // four), and asking for more tasks may end one before them.
+  // one thread) an attempt embeds about 124,000, so seven carry the lead
+  // alone through 800,000 passages, for a build that never gets a helper.
   collection_index: {
     firstLeaseSeconds: 15 * 60,
     leaseSeconds: 10 * 60,
@@ -186,7 +185,7 @@ export function reportOrigin(raw: string): string {
   return u.origin;
 }
 
-/** The most tasks one attempt runs (run-capacity.ts, where the quota narrows it). */
+/** The most tasks one piece of work runs at once, its lead and helpers together. */
 export { MAX_JOB_TASKS };
 
 /** What one job execution is told to do (its env, {@link JOB_ORDER_ENV_VAR}). */
@@ -204,23 +203,18 @@ export const jobOrderSchema = z
     attempt: z.number().int().min(1).max(20),
     token: z.string().regex(TOKEN),
     /**
-     * How many tasks this attempt runs, each with its own index
-     * (`CLOUD_RUN_TASK_INDEX`); absent: one. All of them share the token.
+     * How many tasks this execution runs, each with its own index
+     * (`CLOUD_RUN_TASK_INDEX`); absent: one. An attempt's own execution
+     * runs one task (its lead); a helper (below) runs as many as the
+     * capacity ledger granted.
      */
     tasks: z.number().int().min(1).max(MAX_JOB_TASKS).optional(),
     /**
-     * The most tasks the launcher could run an attempt with: what the
-     * project's CPU quota leaves for a search index (run-capacity.ts);
-     * absent: one (inside the admin).
+     * #1776 — set on a helper of elastic work: the ledger's booking it
+     * belongs to. Its tasks claim pieces of the attempt's work and report
+     * with the helper's own token (`token`), never the attempt's.
      */
-    maxTasks: z.number().int().min(1).max(MAX_JOB_TASKS).optional(),
-    /**
-     * What the project's Cloud Run CPU quota allows, read when the attempt
-     * started: the quality check runs `lighthouseTasks` Lighthouse runs at
-     * once, and both jobs say when the quota keeps them narrow. Absent
-     * inside the admin (self-hosted), which has no such quota.
-     */
-    capacity: runCapacitySchema.optional(),
+    helper: z.string().uuid().optional(),
     /** The admin's origin behind IAP; absent when the job runs inside the admin. */
     adminUrl: z
       .string()

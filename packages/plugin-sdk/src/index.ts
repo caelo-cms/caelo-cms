@@ -1713,6 +1713,7 @@ export const pluginManifest = z
     );
     for (const [i, b] of (m.batchOperations ?? []).entries()) {
       named(["batchOperations", i, "operation"], b.operation, "the batch operation");
+      named(["batchOperations", i, "pieces", "plan"], b.pieces?.plan, "the batch's piece plan");
     }
     const batchNames = (m.batchOperations ?? []).map((b) => b.operation);
     if (new Set(batchNames).size !== batchNames.length)

@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { describeStageRun, type ExecutionContext, type StageStatusRun } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { collectionIndexJobKind } from "../collections/index-job-kind.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -55,12 +56,15 @@ async function stageRun(): Promise<StageStatusRun> {
   return runs[0] as StageStatusRun;
 }
 
+/** A helper's first task (#1776): progress is keyed by the task that reports. */
+const HELPER_TASK = "00000000-0000-4000-8000-000000001776:0";
+
 const progress = (task: number, embedded: number, toEmbed: number, planned = 800, tasks = 2) =>
   op("collections.index_progress", {
     runId,
     pluginId,
     collection: "pages",
-    task,
+    worker: task === 0 ? "lead" : HELPER_TASK,
     tasks,
     embedded,
     toEmbed,
@@ -105,7 +109,7 @@ describe("a Stage's search index progress", () => {
   });
 
   it("counts a task that has not reported yet in what is left", async () => {
-    // Task 1 is queued (the project's quota), or still starting.
+    // The helper is still starting.
     await progress(0, 0, 400);
     const p = (await stageRun()).searchIndexes?.[0]?.progress;
     expect(p).toMatchObject({ embedded: 0, toEmbed: 800, tasks: 2 });
@@ -148,7 +152,7 @@ describe("a Stage's search index progress", () => {
       runId,
       pluginId,
       collection: "pages",
-      task: 0,
+      worker: "lead",
       tasks: 1,
       embedded: 300,
       toEmbed: 800,
@@ -158,7 +162,7 @@ describe("a Stage's search index progress", () => {
     const run = await stageRun();
     expect(run.searchIndexes?.[0]?.progress).toMatchObject({ tasks: 1, limit });
     expect(describeStageRun(run)).toContain(
-      "on 1 task (the Cloud Run CPU quota of project acme-site, 20 vCPU in europe-west1, allows no more; raised to 42 vCPU",
+      "on 1 task (the Cloud Run CPU quota of project acme-site, 20 vCPU in europe-west1, keeps it below the 2 tasks it would run; raised to 42 vCPU",
     );
     // The counts it carried are still there with the limit (no key lost).
     expect(run.searchIndexes?.[0]?.progress?.embedded).toBeGreaterThanOrEqual(300);
@@ -166,9 +170,58 @@ describe("a Stage's search index progress", () => {
     expect((await stageRun()).searchIndexes?.[0]?.progress?.limit).toBeUndefined();
   });
 
-  it("a wider attempt starts the count over", async () => {
+  it("a new attempt's lead starts the count over", async () => {
     await op("collections.index_reset_progress", { runId });
     expect((await stageRun()).searchIndexes?.[0]?.progress).toBeUndefined();
+  });
+
+  it("#1776 — the job's report gets its width and the quota's limit from the ledger, not from the job", async () => {
+    await op("job_capacity.set_budget", {
+      source: "quota",
+      budgetVcpu: 14,
+      quotaVcpu: 20,
+      reserveVcpu: 6,
+      projectId: "acme-site",
+      region: "europe-west1",
+    });
+    await op("job_capacity.book", {
+      kind: "collection_index",
+      subjectId: runId,
+      role: "lead",
+      cls: "stage",
+      vcpuPerTask: 2,
+      elastic: true,
+      maxTasks: 32,
+      auditReserve: false,
+    });
+    const report = collectionIndexJobKind.actions.progress;
+    if (!report) throw new Error("the index kind has no progress action");
+    await report.handle(
+      { adapter, registry },
+      runId,
+      {
+        pluginId,
+        collection: "pages",
+        worker: "lead",
+        embedded: 20,
+        planned: 800,
+        wantedTasks: 32,
+      },
+      { helperId: null, attempt: 1 },
+    );
+    const p = (await stageRun()).searchIndexes?.[0]?.progress;
+    // 14 vCPU leave a build 6 tasks between checks; 32 take 72 vCPU.
+    expect(p).toMatchObject({
+      tasks: 1,
+      limit: {
+        wantedTasks: 32,
+        quotaVcpu: 20,
+        quotaNeededVcpu: 72,
+        projectId: "acme-site",
+        region: "europe-west1",
+      },
+    });
+    await asSystem((tx) => tx`DELETE FROM job_capacity_bookings WHERE subject_id = ${runId}::uuid`);
   });
 
   it("a ready index shows no progress and no wait", async () => {

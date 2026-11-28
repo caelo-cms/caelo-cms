@@ -8,14 +8,10 @@
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
+import { inProcessBudget } from "../../job-capacity/budget.js";
 import type { GoogleDeps } from "../../security/operator-access/google-iam.js";
 import { reportingJobKind } from "../kinds.js";
-import {
-  gcpReportingJobLauncher,
-  kindUsesCapacity,
-  launcherFor,
-  setInProcessJobLauncher,
-} from "../launcher.js";
+import { gcpReportingJobLauncher, launcherFor, setInProcessJobLauncher } from "../launcher.js";
 import { JOB_ORDER_ENV_VAR, type JobOrder, jobOrderSchema, MAX_JOB_TASKS } from "../protocol.js";
 
 const def = reportingJobKind("quality_audit");
@@ -34,14 +30,22 @@ describe("launcherFor", () => {
   it("self-hosted and development run in the admin's process, once the admin registered it", () => {
     expect(launcherFor(def, { CAELO_PROVIDER: "self-hosted" }).kind).toBe("none");
     expect(launcherFor(def, {}).kind).toBe("none");
-    setInProcessJobLauncher((kind) => ({ label: `in-process ${kind}`, launch: async () => "x" }));
+    setInProcessJobLauncher((kind) => ({
+      label: `in-process ${kind}`,
+      capacity: async () => inProcessBudget(),
+      launch: async () => "x",
+    }));
     const chosen = launcherFor(def, { CAELO_PROVIDER: "self-hosted" });
     expect(chosen.kind).toBe("launcher");
     if (chosen.kind === "launcher") expect(chosen.launcher.label).toBe("in-process quality_audit");
   });
 
   it("a cloud install never runs a job in the admin, even when in-process is registered", () => {
-    setInProcessJobLauncher(() => ({ label: "in-process", launch: async () => "x" }));
+    setInProcessJobLauncher(() => ({
+      label: "in-process",
+      capacity: async () => inProcessBudget(),
+      launch: async () => "x",
+    }));
     const chosen = launcherFor(def, {
       CAELO_PROVIDER: "gcp",
       CAELO_AUDIT_RUNNER_JOB: JOB,
@@ -112,37 +116,24 @@ describe("gcpReportingJobLauncher", () => {
     expect(sent).toEqual({ ...ORDER, adminUrl: "https://admin.acme.com" });
   });
 
-  it("runs an attempt of several tasks as one execution of that many, all with the same order", async () => {
+  it("#1776 — starts a helper as one execution of its granted tasks, with its own booking and token", async () => {
     const g = google({ metadata: { name: `${JOB}/executions/caelo-production-index-x1` } });
     const launcher = gcpReportingJobLauncher("collection_index", JOB, "https://admin.acme.com", g);
-    // #1764 — no fixed width: the most tasks come from the project's quota at each start.
-    expect(launcher.maxTasks).toBeUndefined();
-    expect(typeof launcher.capacity).toBe("function");
-    await launcher.launch({
-      ...ORDER,
-      kind: "collection_index",
-      tasks: 8,
-      maxTasks: MAX_JOB_TASKS,
-    });
+    // A work runs its lead and helpers up to the most tasks of any work.
+    expect(launcher.maxTasks).toBe(MAX_JOB_TASKS);
+    const helper = "00000000-0000-4000-8000-000000001776";
+    await launcher.launch({ ...ORDER, kind: "collection_index", tasks: 5, helper });
     const overrides = (g.calls[0] as { body: { overrides: Record<string, unknown> } }).body
       .overrides;
-    expect(overrides.taskCount).toBe(8);
+    expect(overrides.taskCount).toBe(5);
     const env = (overrides.containerOverrides as { env: { value: string }[] }[])[0]?.env;
     expect(jobOrderSchema.parse(JSON.parse(env?.[0]?.value ?? "{}"))).toMatchObject({
-      tasks: 8,
-      maxTasks: 32,
+      tasks: 5,
+      helper,
     });
   });
 
-  it("#1764 — reads the quota only for the kinds it sizes, so a Service Usage hiccup never fails a build", () => {
-    expect(kindUsesCapacity("quality_audit")).toBe(true);
-    expect(kindUsesCapacity("collection_index")).toBe(true);
-    for (const kind of ["build", "site_import", "plugin_batch"] as const) {
-      expect(kindUsesCapacity(kind)).toBe(false);
-    }
-  });
-
-  it("#1764 — reads the capacity from the job's project and region", async () => {
+  it("#1776 — reads the budget from the job's project and region: the quota minus the services", async () => {
     const g = google({
       consumerQuotaLimits: [
         {
@@ -152,12 +143,42 @@ describe("gcpReportingJobLauncher", () => {
       ],
     });
     const launcher = gcpReportingJobLauncher("collection_index", JOB, "https://admin.acme.com", g);
-    const capacity = await launcher.capacity?.();
-    expect(capacity).toMatchObject({ projectId: "acme", region: "europe-west1", quotaVcpu: 20 });
-    expect(capacity?.indexTasks).toBe(1);
+    expect(await launcher.capacity()).toEqual({
+      source: "quota",
+      budgetVcpu: 14,
+      quotaVcpu: 20,
+      reserveVcpu: 6,
+      projectId: "acme",
+      region: "europe-west1",
+    });
     expect((g.calls[0] as { url: string }).url).toContain(
       "serviceusage.googleapis.com/v1beta1/projects/acme/services/run.googleapis.com/consumerQuotaMetrics/",
     );
+  });
+
+  it("#1776 — a plugin batch of a larger size runs on that size's job, and refuses a size it has no job for", () => {
+    const batch = reportingJobKind("plugin_batch");
+    const env = {
+      CAELO_PROVIDER: "gcp",
+      CAELO_ADMIN_URL: "https://admin.acme.com",
+      CAELO_PLUGIN_BATCH_JOB:
+        "projects/acme/locations/europe-west1/jobs/caelo-production-plugin-batch",
+      CAELO_PLUGIN_BATCH_JOB_L:
+        "projects/acme/locations/europe-west1/jobs/caelo-production-plugin-batch-l",
+    };
+    const large = launcherFor(batch, env, "L");
+    expect(large.kind === "launcher" && large.launcher.label).toBe(
+      "Cloud Run job caelo-production-plugin-batch-l",
+    );
+    const small = launcherFor(batch, env, "S");
+    expect(small.kind === "launcher" && small.launcher.label).toBe(
+      "Cloud Run job caelo-production-plugin-batch",
+    );
+    const missing = launcherFor(batch, env, "M");
+    expect(missing.kind).toBe("unavailable");
+    expect(missing.kind === "unavailable" && missing.message).toContain("CAELO_PLUGIN_BATCH_JOB_M");
+    // A kind with one machine has no other size.
+    expect(launcherFor(def, env, "L").kind).toBe("unavailable");
   });
 
   it("fails loudly when Cloud Run names no execution, or the job name is not one", async () => {

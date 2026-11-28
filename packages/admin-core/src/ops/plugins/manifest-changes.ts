@@ -6,6 +6,7 @@
  */
 
 import type { PluginManifest } from "@caelo-cms/plugin-sdk";
+import { BATCH_SIZES } from "@caelo-cms/plugin-sdk";
 
 /** One area of the manifest that changed; the entries are their manifest names. */
 export interface ManifestChange {
@@ -89,11 +90,31 @@ function canonical(value: unknown): string {
   );
 }
 
+/**
+ * #1776 — a batch operation by its name and the machine it asks for, so
+ * the Owner sees at approval what a task of it costs, and a new size or
+ * width reads as the batch it is (`learn (machine M: 2 vCPU, 4 GiB, in
+ * pieces on up to 8 tasks)`).
+ */
+function batchName(record: Record<string, unknown>): string | null {
+  if (typeof record.operation !== "string" || !Array.isArray(record.triggers)) return null;
+  const size = record.size === "M" || record.size === "L" ? record.size : "S";
+  const machine = BATCH_SIZES[size];
+  const pieces = record.pieces as { maxTasks?: unknown } | undefined;
+  const width =
+    pieces && typeof pieces.maxTasks === "number"
+      ? `, in pieces on up to ${pieces.maxTasks} tasks`
+      : "";
+  return `${record.operation} (machine ${size}: ${machine.vcpu} vCPU, ${machine.memoryGiB} GiB${width})`;
+}
+
 /** The name an array entry goes by, or its JSON when it declares none. */
 function entryName(entry: unknown): string {
   if (typeof entry === "string") return entry;
   if (entry !== null && typeof entry === "object") {
     const record = entry as Record<string, unknown>;
+    const batch = batchName(record);
+    if (batch) return batch;
     for (const key of ["name", "slug", "id", "key", "tag", "tagName"]) {
       const value = record[key];
       if (typeof value === "string") return value;

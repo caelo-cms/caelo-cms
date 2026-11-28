@@ -128,6 +128,16 @@ export {
 } from "./gateway-refresh.js";
 // issue #1375 — MCP back-pressure: 429 + Retry-After on a saturated admin pool.
 export * from "./incident/install.js";
+// #1776 — the job capacity ledger: what the jobs may use, and who runs or waits.
+export {
+  type CapacityReading,
+  CHECK_FULL_SPEED_VCPU,
+  FULL_SPEED_VCPU,
+  indexTasksAlone,
+  inProcessBudget,
+  quotaBudget,
+} from "./job-capacity/budget.js";
+export { lighthouseRunsFor } from "./job-capacity/plan.js";
 export type { LinkNotice } from "./links/link-notice.js";
 // #1215 — live-refresh topics instead of editor timer polling.
 export {
@@ -173,6 +183,7 @@ export {
   formatMicrocentsAsMoney,
   microcentsToMajorUnits,
 } from "./ops/imports-cost.js";
+export type { CapacityBooking } from "./ops/job_capacity.js";
 export {
   type PlatformUpdateEvent,
   type PlatformUpdateRequest,
@@ -319,14 +330,13 @@ export {
   MAX_REPORT_BODY_BYTES,
   type ReportingJobKind,
 } from "./reporting-jobs/protocol.js";
-// #1764 — what the project's Cloud Run CPU quota lets the jobs run at once.
+// #1764 — the project's Cloud Run CPU quota.
 export {
-  capacityLimited,
   MAX_JOB_TASKS,
   MAX_LIGHTHOUSE_TASKS,
+  type QuotaReading,
   quotaConsoleUrl,
-  type RunCapacity,
-  readInstallRunCapacity,
+  readInstallRunQuota,
 } from "./reporting-jobs/run-capacity.js";
 // #1140 — the scheduler tick: the core maintenance tasks, the plugin
 // workers, and the tick that runs what is due.

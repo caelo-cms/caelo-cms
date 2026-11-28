@@ -4,24 +4,27 @@
  * A large index build in pieces: when a build has more passage text to
  * embed than one shard holds (a first index with semantic search or a
  * model change; about 800,000 passages on a 50,000-page site), it embeds
- * the texts in shard files of {@link SHARD_PASSAGES}, and the attempt may
- * run several tasks (as many as the project's CPU quota leaves, reporting-
- * jobs run-capacity.ts).
+ * the texts in shard files of {@link SHARD_PASSAGES}, and several tasks may
+ * work on them at once.
  *
  * Every task plans the same build, from the same change files over the
  * same previous release, so they agree on the shards without talking to
- * each other. Task `i` of `n` embeds shards `i`, `i + n`, `i + 2n` …; the
- * first task then waits for every shard, adds them to its pool and builds
- * the release, embedding nothing more.
+ * each other. Which task embeds which shard is the admin's (#1776): each
+ * task claims the next open shard (`job_pieces.claim`), embeds it, writes
+ * its file and reports it done. The attempt's lead claims too, and once
+ * every shard is done it adds them all to its pool and builds the release,
+ * embedding nothing more. Helpers the capacity ledger adds while CPU is
+ * free take what is left; a helper that hears `stop` (a job of a higher
+ * class needs its CPU) ends after the shard it finished.
  *
  * A shard file is named after the model and the texts it holds (a hash
  * bucket of them, {@link planShards}), and a finished one is never embedded
  * again. So an attempt that died or ran out of time leaves its finished
- * shards to the next one, also one with another width, and a later Stage
- * with nearly the same texts to embed keeps most of them: a narrow width (a
- * small quota) only takes longer. The files live
- * under the collection's prefix and go with the clean-up like every file no
- * release names (gc.ts), never while an index job of the collection runs.
+ * shards to the next one, and a later Stage with nearly the same texts to
+ * embed keeps most of them: a narrow width only takes longer. The files
+ * live under the collection's prefix and go with the clean-up like every
+ * file no release names (gc.ts), never while an index job of the
+ * collection runs.
  */
 
 import { createHash } from "node:crypto";
@@ -37,28 +40,24 @@ import {
 } from "@caelo-cms/collection-index";
 import type { Embedder } from "@caelo-cms/models";
 
-/** Texts sent to the model per call while a task embeds its share. */
+/** Texts sent to the model per call while a task embeds a shard. */
 const SHARD_EMBED_BATCH = 32;
 
 /**
  * Texts per shard file: a few minutes of one task (6 to 19 passages a
- * second on 2 vCPU, index-job.ts), so a task that dies loses at most that.
+ * second on 2 vCPU, index-job.ts), so a task that dies loses at most that,
+ * and a helper that must give its CPU back gives it within that.
  */
 export const SHARD_PASSAGES = 2_000;
 
-/** The attempt ended with shards still missing; the next one embeds only those. */
+/** The attempt's time ended with shards still missing; the next one embeds only those. */
 export class ShardsMissingError extends Error {
   constructor(
-    readonly missing: readonly number[],
+    readonly missing: number,
     readonly total: number,
-    readonly tasks: number,
-    reason: "time" | "tasks",
   ) {
-    const owners = [...new Set(missing.map((s) => s % tasks))].sort((a, b) => a - b);
     super(
-      reason === "time"
-        ? `${missing.length} of ${total} pieces of the search index were not embedded within this attempt's time; the next attempt embeds only those (the time a large index takes falls with the tasks the project's CPU quota allows)`
-        : `${missing.length} of ${total} pieces of the search index, of task(s) ${owners.join(", ")} of ${tasks}, did not arrive within this attempt's time: those tasks ran out of time or stopped (their Cloud Run task logs say which); the next attempt embeds only what is still missing`,
+      `${missing} of ${total} pieces of the search index were not embedded within this attempt's time; the next attempt embeds only those (the time a large index takes falls with the tasks the project's CPU quota allows)`,
     );
     this.name = "ShardsMissingError";
   }
@@ -99,8 +98,6 @@ export interface ShardPlan {
   readonly names: readonly string[];
   /** Shard `shard`'s texts by pool key. */
   texts(shard: number): (readonly [string, string])[];
-  /** The shards task `index` of `count` embeds. */
-  shardsOf(index: number, count: number): number[];
 }
 
 /**
@@ -131,102 +128,68 @@ export function planShards(fingerprint: string, missing: ReadonlyMap<string, str
     for (const [k] of texts) h.update(`\u0000${k}`);
     return `vectors/v-${h.digest("hex").slice(0, 32)}.bin`;
   });
-  return {
-    names,
-    texts: (i) => used[i]?.texts ?? [],
-    shardsOf: (index, count) => names.map((_, i) => i).filter((i) => i % count === index),
-  };
+  return { names, texts: (i) => used[i]?.texts ?? [] };
 }
 
-/** How a task embeds its shards. */
-export interface EmbedShardsOptions {
-  /** Cumulative texts of its shards done, finished shards of earlier attempts included. */
-  readonly onEmbedded: (embedded: number) => Promise<void>;
-  /** True once no new shard may start: the attempt's time is up. */
-  readonly timeUp: () => boolean;
+/** The shards of `plan` whose files exist already (an earlier attempt or Stage wrote them). */
+export async function writtenShards(store: CollectionStore, plan: ShardPlan): Promise<number[]> {
+  const out: number[] = [];
+  for (const [i, name] of plan.names.entries()) if (await store.has(name)) out.push(i);
+  return out;
 }
 
 /**
- * Embeds each of `shards` that no earlier attempt wrote, one file each,
- * and stops starting new ones once `timeUp`.
+ * Embeds shard `shard` of `plan` into its file, unless the file exists.
  *
- * @returns how many texts this call embedded.
+ * @param onBatch - called with this shard's texts embedded so far.
+ * @returns the texts this call embedded (0 when the file existed).
  */
-export async function embedShards(
+export async function embedShard(
   store: CollectionStore,
   plan: ShardPlan,
-  shards: readonly number[],
+  shard: number,
   embedder: Embedder,
-  o: EmbedShardsOptions,
+  onBatch: (embeddedInShard: number) => Promise<void>,
 ): Promise<number> {
-  // What earlier attempts (or Stages) left counts from the first report on.
-  const todo: number[] = [];
-  let done = 0;
-  for (const shard of shards) {
-    if (await store.has(plan.names[shard] as string)) done += plan.texts(shard).length;
-    else todo.push(shard);
+  const name = plan.names[shard] as string;
+  if (await store.has(name)) return 0;
+  const texts = plan.texts(shard);
+  const entries: [string, EncodedVector][] = [];
+  for (let i = 0; i < texts.length; i += SHARD_EMBED_BATCH) {
+    const batch = texts.slice(i, i + SHARD_EMBED_BATCH);
+    const vectors = await embedder.embed(
+      batch.map(([, text]) => text),
+      "passage",
+    );
+    batch.forEach(([key], at) => {
+      entries.push([key, encodeVector(vectors[at] as Float32Array)]);
+    });
+    await onBatch(entries.length);
   }
-  await o.onEmbedded(done);
-  let embeddedHere = 0;
-  for (const shard of todo) {
-    if (o.timeUp()) break;
-    const name = plan.names[shard] as string;
-    const texts = plan.texts(shard);
-    const entries: [string, EncodedVector][] = [];
-    for (let i = 0; i < texts.length; i += SHARD_EMBED_BATCH) {
-      const batch = texts.slice(i, i + SHARD_EMBED_BATCH);
-      const vectors = await embedder.embed(
-        batch.map(([, text]) => text),
-        "passage",
-      );
-      batch.forEach(([key], at) => {
-        entries.push([key, encodeVector(vectors[at] as Float32Array)]);
-      });
-      await o.onEmbedded(done + entries.length);
-    }
-    await store.write(name, encodeVectorShard(entries, embedder.model.dims), { immutable: true });
-    done += entries.length;
-    embeddedHere += entries.length;
-  }
-  return embeddedHere;
-}
-
-/** How the first task waits for the others. */
-export interface CollectOptions {
-  /** When it stops waiting (epoch ms). */
-  readonly deadline: number;
-  readonly pollMs: number;
-  readonly now: () => number;
-  readonly sleep: (ms: number) => Promise<void>;
+  await store.write(name, encodeVectorShard(entries, embedder.model.dims), { immutable: true });
+  return entries.length;
 }
 
 /**
- * Adds every shard of `plan` to `pool`, waiting for those other tasks still
- * write. Gives up at the deadline, or at once when only this task's own
- * shards are missing (it stopped for time, so nobody else writes them).
+ * Adds every shard of `plan` to `pool`. The lead calls it once the admin
+ * says every shard is done.
+ *
+ * @throws ShardsMissingError when a file is missing after all.
  */
 export async function collectShards(
   store: CollectionStore,
   plan: ShardPlan,
   dims: number,
   pool: VectorPool,
-  tasks: number,
-  o: CollectOptions,
 ): Promise<void> {
-  const pending = new Set(plan.names.map((_, i) => i));
-  for (;;) {
-    for (const i of [...pending]) {
-      const data = await store.readIfExists(plan.names[i] as string);
-      if (!data) continue;
-      for (const [key, v] of decodeVectorShard(data, dims)) pool.setByKey(key, v);
-      pending.delete(i);
+  let missing = 0;
+  for (const name of plan.names) {
+    const data = await store.readIfExists(name);
+    if (!data) {
+      missing += 1;
+      continue;
     }
-    if (pending.size === 0) return;
-    const missing = [...pending];
-    if (missing.every((i) => i % tasks === 0))
-      throw new ShardsMissingError(missing, plan.names.length, tasks, "time");
-    if (o.now() >= o.deadline)
-      throw new ShardsMissingError(missing, plan.names.length, tasks, "tasks");
-    await o.sleep(o.pollMs);
+    for (const [key, v] of decodeVectorShard(data, dims)) pool.setByKey(key, v);
   }
+  if (missing > 0) throw new ShardsMissingError(missing, plan.names.length);
 }

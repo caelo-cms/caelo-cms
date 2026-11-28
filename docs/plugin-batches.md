@@ -23,9 +23,38 @@ batchOperations: [
 
 At most one run of one operation is queued or running; a second start is refused with the running one. At most 4 batch operations per plugin. `maxRunSeconds` is at most an hour.
 
+## Size and pieces (#1776)
+
+A batch says what one task of it needs; Caelo decides when it runs and on how many tasks ([dev/job-capacity.md](./dev/job-capacity.md)):
+
+```ts
+batchOperations: [
+  {
+    operation: "computePageRank",
+    description: "Computes the internal PageRank of every page.",
+    triggers: ["stage", "operator"],
+    maxRunSeconds: 3600,
+    size: "L", // S (default): 1 vCPU / 2 GiB, M: 2 vCPU / 4 GiB, L: 4 vCPU / 16 GiB
+  },
+  {
+    operation: "computeRelated",
+    description: "Computes related articles, 500 pages per piece.",
+    triggers: ["schedule"],
+    schedule: "17 3 * * *",
+    maxRunSeconds: 600,
+    pieces: { plan: "planRelatedPieces", maxTasks: 8 },
+  },
+],
+```
+
+- **`size`** picks the machine of each task (`BATCH_SIZES`): the plugin batch job `caelo-<env>-plugin-batch` for S, `-m` and `-l` for the others. The Owner sees it at approval; a larger machine costs more per minute.
+- **`pieces`** makes the batch elastic. `plan` (one of the plugin's operations) returns `{ pieces: string[] }` (at most 10,000 keys of up to 200 characters); the operation then runs once per piece with `args.piece` set to its key. The lead task runs the plan and claims pieces like every helper the capacity ledger adds while CPU is free, up to `maxTasks` (at most 32). A task gives its CPU back after its piece when a quality check or the search index needs it. `maxRunSeconds` bounds each piece; the run as a whole has its job's time per attempt. The run's result is `{ pieces: <count> }`: a batch keeps what it computes in its own storage.
+- **A batch without pieces** runs on one task and starts only while a quality check still fits beside it, because it cannot give its CPU back.
+- **Waiting.** Plugin batches come after quality checks and the search index. A run that waits for CPU stays queued, `list_plugin_batches` says why, and it starts by itself once CPU is free. Stopping it takes it out of the queue at once.
+
 ## How it runs
 
-Each run is a row in `plugin_batch_runs` and an attempt of the `plugin_batch` reporting job (`caelo-<env>-plugin-batch`; in-process on self-hosted installs, one at a time). The job holds no database credential and no secret:
+Each run is a row in `plugin_batch_runs` and an attempt of the `plugin_batch` reporting job (`caelo-<env>-plugin-batch` and its `-m` / `-l` siblings; in-process on self-hosted installs, one at a time). The job holds no database credential and no secret:
 
 1. `order`: the run moves to running. The job learns the operation, its arguments, which handles the plugin's context carries, and an installed plugin's artifact, verified against its approval.
 2. The operation runs. An installed plugin (Tier 2) runs in the same Deno sandbox as everywhere else. A shipped plugin runs from the image's verified copy, or the host's definition in-process.

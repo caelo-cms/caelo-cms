@@ -23,7 +23,6 @@ import {
   type ReportEnvelope,
   splitIntoParts,
 } from "./protocol.js";
-import type { RunCapacity } from "./run-capacity.js";
 
 /** Carries one report to the admin. A network failure throws. */
 export interface ReportTransport {
@@ -67,32 +66,32 @@ export function isPassingReportFault(e: unknown): boolean {
   return e instanceof ReportError && (e.status === 0 || e.status === 429 || e.status >= 500);
 }
 
-/** Sends a job's reports. */
 /**
- * Which task of its attempt a job is: `index` of `count` (Cloud Run's
- * `CLOUD_RUN_TASK_INDEX` of the order's `tasks`), and the most tasks the
- * admin could start an attempt with (`max`, one inside the admin).
+ * Which task a job is: an attempt's lead (its own execution, one task), or
+ * task `index` of `count` of a helper the capacity ledger added (#1776,
+ * the order's `helper`), whose tasks claim pieces of the same work.
  */
 export interface TaskSlot {
   readonly index: number;
   readonly count: number;
-  readonly max: number;
+  /** The helper's booking; null for the lead. */
+  readonly helper: string | null;
 }
 
-/** One task of one attempt, the default where a job runs alone. */
-export const SINGLE_TASK: TaskSlot = { index: 0, count: 1, max: 1 };
+/** The lead, the default where a job runs alone. */
+export const SINGLE_TASK: TaskSlot = { index: 0, count: 1, helper: null };
+
+/** The task's name in its work's piece claims: `lead`, or `<helper>:<index>`. */
+export function workerOf(slot: TaskSlot): string {
+  return slot.helper === null ? "lead" : `${slot.helper}:${slot.index}`;
+}
 
 export interface JobReporter {
   readonly kind: JobOrder["kind"];
   readonly subjectId: string;
   readonly attempt: number;
-  /** This task's place in its attempt; absent: the attempt's only task. */
+  /** Which task this is: the lead, or a helper's task; absent: the lead. */
   readonly slot?: TaskSlot;
-  /**
-   * What the project's CPU quota allowed when the attempt started
-   * (`JobOrder.capacity`); absent inside the admin (self-hosted).
-   */
-  readonly capacity?: RunCapacity;
   /**
    * Ask the admin to run `action` with `payload`; resolves with its answer.
    *
@@ -129,10 +128,9 @@ export function faultWatchingReporter(inner: JobReporter): {
       subjectId: inner.subjectId,
       attempt: inner.attempt,
       // Everything the order handed the attempt passes through: v0.12.17
-      // dropped `capacity` here, so every Google Cloud audit refused to
-      // start its Lighthouse runs (#1766's quota-sized widths never arrived).
+      // dropped a field here (#1789), and a helper's slot (#1776) says
+      // which task it is in its piece claims.
       ...(inner.slot ? { slot: inner.slot } : {}),
-      ...(inner.capacity ? { capacity: inner.capacity } : {}),
       get stopped() {
         return inner.stopped;
       },
@@ -211,12 +209,15 @@ export function createJobReporter(
   const slot: TaskSlot = {
     index: options.taskIndex ?? 0,
     count: order.tasks ?? 1,
-    max: order.maxTasks ?? 1,
+    helper: order.helper ?? null,
   };
   if (!Number.isInteger(slot.index) || slot.index < 0 || slot.index >= slot.count) {
     throw new Error(
-      `task ${slot.index} of an attempt that runs ${slot.count}: the order and the task index disagree`,
+      `task ${slot.index} of an execution that runs ${slot.count}: the order and the task index disagree`,
     );
+  }
+  if (slot.helper === null && slot.count > 1) {
+    throw new Error(`an attempt's own execution runs one task, this order says ${slot.count}`);
   }
 
   async function sendOnce(envelope: ReportEnvelope): Promise<SendOutcome> {
@@ -281,7 +282,6 @@ export function createJobReporter(
     subjectId: order.subjectId,
     attempt: order.attempt,
     slot,
-    ...(order.capacity ? { capacity: order.capacity } : {}),
     get stopped() {
       return stopped !== null;
     },

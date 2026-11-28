@@ -119,7 +119,7 @@ export const PLUGIN_CAPABILITY_INFO: Readonly<Record<PluginCapability, PluginCap
   batch_jobs: {
     label: "Long-running tasks",
     allows:
-      "Run its own tasks in a separate cloud job, with the permissions it already has and nothing more, for example to index every page at once.",
+      "Run its own tasks in a separate cloud job, with the permissions it already has and nothing more, for example to index every page at once. Each task runs on the machine size the plugin names (a larger one costs more per minute); Caelo decides when it runs and on how many tasks, after quality checks and the search index.",
   },
   sitemap_entries: {
     label: "News and video sitemaps",

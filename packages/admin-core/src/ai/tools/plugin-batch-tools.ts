@@ -27,7 +27,9 @@ function runLine(r: BatchRun): string {
       ? `: ${r.error ?? "no reason recorded"}`
       : r.state === "completed" && r.result !== null
         ? `: ${JSON.stringify(r.result).slice(0, 300)}`
-        : "";
+        : r.waitingForCpu
+          ? `: its job ${r.waitingForCpu}; it starts by itself once that is free`
+          : "";
   return `- ${r.pluginSlug ?? r.pluginId} / ${r.operation} — ${r.state} (${r.trigger}, ${when}, run ${r.id})${tail}`;
 }
 

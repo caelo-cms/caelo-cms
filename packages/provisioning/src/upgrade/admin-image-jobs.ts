@@ -18,7 +18,11 @@
 
 import type { GcloudRunner } from "../gcloud-retry.js";
 import { auditJobName, captureJobName } from "../gcp-names.js";
-import { REPORTING_JOB_CATALOG, reportingJobName } from "../reporting-job-catalog.js";
+import {
+  REPORTING_JOB_CATALOG,
+  reportingJobName,
+  reportingJobSizeName,
+} from "../reporting-job-catalog.js";
 
 /** One job that follows the admin's image. */
 export interface AdminImageJob {
@@ -46,11 +50,15 @@ export function adminImageJobs(env: string): readonly AdminImageJob[] {
     },
     // Every reporting job (#1359, #1360, #1574, epic #1644), in catalog
     // order: the quality-audit runner first, after the audit job above.
-    ...REPORTING_JOB_CATALOG.map((e) => ({
-      name: reportingJobName(e, env),
-      label: e.label,
-      lagging: e.lagging,
-    })),
+    ...REPORTING_JOB_CATALOG.flatMap((e) => [
+      { name: reportingJobName(e, env), label: e.label, lagging: e.lagging },
+      // #1776 — its larger machines run the same image.
+      ...(e.sizes ?? []).map((s) => ({
+        name: reportingJobSizeName(e, s, env),
+        label: `${e.label} (${s.size})`,
+        lagging: e.lagging,
+      })),
+    ]),
   ];
 }
 

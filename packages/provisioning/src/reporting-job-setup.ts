@@ -267,46 +267,52 @@ export async function ensureReportingJob(
     }
   }
 
-  // 7. The job: the admin image, its own SA, no secrets, no VPC.
-  const deploy = await run([
-    "run",
-    "jobs",
-    "deploy",
-    spec.jobName,
-    `--image=${target.adminImageRef}`,
-    `--region=${region}`,
-    project,
-    `--service-account=${sa}`,
-    "--command=bun",
-    `--args=--bun,${REPORTING_JOB_SCRIPT}`,
-    `--set-env-vars=${spec.env.join(",")}`,
-    // The backstop restarts a dead attempt with a fresh token; a Cloud Run
-    // retry would replay the old one.
-    "--max-retries=0",
-    `--task-timeout=${spec.taskTimeoutSeconds}s`,
-    `--cpu=${spec.cpu}`,
-    `--memory=${spec.memory}`,
-    "--quiet",
-  ]);
-  if (!deploy.ok) return fail(`deploy job ${spec.jobName}`, deploy);
-  done.push(`job ${spec.jobName} (${target.adminImageRef.split("@")[1]?.slice(0, 19)}...)`);
-
-  // 8. The admin may run it with each attempt's order and read its executions.
-  for (const role of ["roles/run.jobsExecutorWithOverrides", "roles/run.viewer"]) {
-    const r = await retry([
+  // 7. The job, and its larger machines (#1776): the admin image, its own
+  //    SA, no secrets, no VPC.
+  for (const machine of [
+    { jobName: spec.jobName, cpu: spec.cpu, memory: spec.memory },
+    ...spec.machines,
+  ]) {
+    const deploy = await run([
       "run",
       "jobs",
-      "add-iam-policy-binding",
-      spec.jobName,
+      "deploy",
+      machine.jobName,
+      `--image=${target.adminImageRef}`,
       `--region=${region}`,
       project,
-      `--member=${runSaMember}`,
-      `--role=${role}`,
+      `--service-account=${sa}`,
+      "--command=bun",
+      `--args=--bun,${REPORTING_JOB_SCRIPT}`,
+      `--set-env-vars=${spec.env.join(",")}`,
+      // The backstop restarts a dead attempt with a fresh token; a Cloud Run
+      // retry would replay the old one.
+      "--max-retries=0",
+      `--task-timeout=${spec.taskTimeoutSeconds}s`,
+      `--cpu=${machine.cpu}`,
+      `--memory=${machine.memory}`,
       "--quiet",
-      "--format=none",
     ]);
-    if (!r.ok) return fail(`grant the admin ${role} on ${spec.jobName}`, r);
-    done.push(`admin: ${role} on ${spec.jobName}`);
+    if (!deploy.ok) return fail(`deploy job ${machine.jobName}`, deploy);
+    done.push(`job ${machine.jobName} (${target.adminImageRef.split("@")[1]?.slice(0, 19)}...)`);
+
+    // 8. The admin may run it with each attempt's order and read its executions.
+    for (const role of ["roles/run.jobsExecutorWithOverrides", "roles/run.viewer"]) {
+      const r = await retry([
+        "run",
+        "jobs",
+        "add-iam-policy-binding",
+        machine.jobName,
+        `--region=${region}`,
+        project,
+        `--member=${runSaMember}`,
+        `--role=${role}`,
+        "--quiet",
+        "--format=none",
+      ]);
+      if (!r.ok) return fail(`grant the admin ${role} on ${machine.jobName}`, r);
+      done.push(`admin: ${role} on ${machine.jobName}`);
+    }
   }
   return { ok: true, done, serviceAccount: sa };
 }

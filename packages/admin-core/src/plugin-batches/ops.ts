@@ -19,10 +19,12 @@
 
 import { hostInfra, type LoadedPlugin, loadedPlugins } from "@caelo-cms/plugin-host";
 import { BATCH_TRIGGERS, MAX_BATCH_RESULT_BYTES } from "@caelo-cms/plugin-sdk";
-import { afterCommit, defineOperation } from "@caelo-cms/query-api";
+import { afterCommit, defineOperation, execute, uuidArray } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { describeError } from "../ai/tools/_describe-error.js";
+import { REPORTING_JOB_CTX } from "../reporting-jobs/kind.js";
 import { startReportingJob } from "../reporting-jobs/launcher.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { declaredBatch } from "./declared.js";
@@ -51,6 +53,11 @@ export const batchRunSchema = z.object({
   createdAt: z.string(),
   startedAt: z.string().nullable(),
   finishedAt: z.string().nullable(),
+  /**
+   * #1776 — a queued run whose job waits for CPU: the capacity ledger's
+   * reason ("waits for 4 vCPU: …"). Absent once it runs.
+   */
+  waitingForCpu: z.string().optional(),
 });
 export type BatchRun = z.infer<typeof batchRunSchema>;
 
@@ -233,7 +240,22 @@ export const pluginBatchesListOp = defineOperation({
       ORDER BY created_at DESC
       LIMIT ${input.limit}
     `)) as unknown as RunRow[];
-    return ok({ runs: rows.map(toRun) });
+    // #1776 — why a queued run has not started: its job waits for CPU.
+    const queued = rows.filter((r) => r.state === "queued").map((r) => r.id);
+    const waits =
+      queued.length === 0
+        ? []
+        : ((await tx.execute(sql`
+            SELECT subject_id::text AS id, waiting_reason FROM job_capacity_bookings
+             WHERE kind = 'plugin_batch' AND subject_id = ANY(${uuidArray(queued)})
+               AND role = 'lead' AND state = 'waiting'
+          `)) as unknown as { id: string; waiting_reason: string | null }[]);
+    return ok({
+      runs: rows.map((r) => {
+        const reason = waits.find((w) => w.id === r.id)?.waiting_reason;
+        return reason ? { ...toRun(r), waitingForCpu: reason } : toRun(r);
+      }),
+    });
   },
 });
 
@@ -251,7 +273,29 @@ export const pluginBatchesStopOp = defineOperation({
       WHERE id = ${input.runId}::uuid AND state IN ('queued', 'running')
       RETURNING ${RUN_COLUMNS}
     `)) as unknown as RunRow[];
-    if (rows[0]) return ok({ stopped: true, run: toRun(rows[0]) });
+    if (rows[0]) {
+      // #1776 — a run that still waited for CPU leaves the queue, so it
+      // holds back nothing behind it.
+      afterCommit(tx, {
+        label: `cancel the CPU booking of stopped batch run ${input.runId}`,
+        entityId: input.runId,
+        run: async () => {
+          const infra = hostInfra();
+          const r = await execute(
+            infra.registry,
+            infra.adapter,
+            REPORTING_JOB_CTX,
+            "job_capacity.cancel",
+            {
+              kind: "plugin_batch",
+              subjectId: input.runId,
+            },
+          );
+          if (!r.ok) throw new Error(`job_capacity.cancel failed: ${describeError(r.error)}`);
+        },
+      });
+      return ok({ stopped: true, run: toRun(rows[0]) });
+    }
     const now = (await tx.execute(
       sql`SELECT ${RUN_COLUMNS} FROM plugin_batch_runs WHERE id = ${input.runId}::uuid`,
     )) as unknown as RunRow[];

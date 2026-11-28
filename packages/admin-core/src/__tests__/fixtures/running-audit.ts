@@ -90,7 +90,10 @@ export async function startRunningAudit(
       const text = JSON.stringify({ slug, label, args });
       reports.push({ label, chars: text.length, args });
       const input = auditPluginCallSchema.parse(JSON.parse(text));
-      const answer = await handler.handle(deps, ids.auditRunId, input, {});
+      const answer = await handler.handle(deps, ids.auditRunId, input, {
+        helperId: null,
+        attempt: 1,
+      });
       return answer.value as PluginAuditAnswer;
     },
     end: () =>

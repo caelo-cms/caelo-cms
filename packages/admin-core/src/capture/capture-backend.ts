@@ -15,6 +15,8 @@
  * killed the admin (no fallbacks pre-1.0).
  */
 
+import { hostInfra } from "@caelo-cms/plugin-host";
+import { bookCapture } from "../job-capacity/ledger.js";
 import {
   CAPTURE_JOB_ENV_VAR,
   type CaptureClient,
@@ -54,6 +56,15 @@ export function captureBackendFromEnv(env: NodeJS.ProcessEnv): CaptureBackend {
         client: createCaptureClient({
           launcher: gcpCaptureLauncher(job),
           store: gcsCaptureStore(bucket, media),
+          // #1776 — every render books its vCPU in the capacity ledger.
+          book: (captureId, leaseSeconds) => {
+            const infra = hostInfra();
+            return bookCapture(
+              { adapter: infra.adapter, registry: infra.registry },
+              captureId,
+              leaseSeconds,
+            );
+          },
         }),
       };
     } catch (e) {

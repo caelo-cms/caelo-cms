@@ -15,6 +15,7 @@ import {
   reportingJobName,
   reportingJobServiceAccountEmail,
   reportingJobServiceAccounts,
+  reportingJobSizeName,
   reportingJobSpec,
 } from "./reporting-job-catalog.js";
 import { adminEnvContract, databaseUrls } from "./stack-contract.js";
@@ -128,15 +129,23 @@ describe("the reporting job catalog", () => {
     for (const v of reportingJobAdminEnv("acme", "europe-west1", "production")) {
       expect(env).toContainEqual(v);
     }
-    // In catalog order, one pair per kind.
-    const pairs = REPORTING_JOB_CATALOG.flatMap((e) => [e.jobEnvVar, e.serviceAccountEnvVar]);
+    // In catalog order: per kind its job, its larger machines (#1776), its account.
+    const pairs = REPORTING_JOB_CATALOG.flatMap((e) => [
+      e.jobEnvVar,
+      ...(e.sizes ?? []).map((s) => s.jobEnvVar),
+      e.serviceAccountEnvVar,
+    ]);
     expect(names.filter((n) => pairs.includes(n))).toEqual(pairs);
 
     const moved = adminImageJobs("production").map((j) => j.name);
     expect(moved.slice(0, 2)).toEqual(["caelo-production-audit", "caelo-production-capture"]);
     expect(moved.slice(2)).toEqual(
-      REPORTING_JOB_CATALOG.map((e) => reportingJobName(e, "production")),
+      REPORTING_JOB_CATALOG.flatMap((e) => [
+        reportingJobName(e, "production"),
+        ...(e.sizes ?? []).map((s) => reportingJobSizeName(e, s, "production")),
+      ]),
     );
+    expect(moved).toContain("caelo-production-plugin-batch-l");
 
     const actAs = upgraderAccountGrants("acme", "production").map((g) => g.account);
     const checked = upgraderAccessChecks({

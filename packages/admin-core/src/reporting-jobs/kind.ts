@@ -13,6 +13,7 @@ import type { PluginCapability } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import type { z } from "zod";
+import type { CapacityClass } from "../job-capacity/plan.js";
 import type { ReportingJobKind } from "./protocol.js";
 
 /** The admin process's handles, as every report handler gets them. */
@@ -39,12 +40,12 @@ export interface ActionResult {
    */
   readonly done?: { readonly outcome: "completed" | "stopped"; readonly note?: string };
   /**
-   * Set when the attempt asks to run wider: the work's next attempts run
-   * this many tasks, this one ends now, and the next starts at once (the
-   * index job, for a build with more passages to embed than one task
-   * embeds in a few minutes). Ignored together with `done`.
+   * #1776 — the report changed what the work wants or holds (it named its
+   * pieces, a helper ended): the admin runs the capacity ledger's admission
+   * after answering, so helpers join or a waiting job starts now, not at
+   * the next tick. A `done` always does.
    */
-  readonly scaleOut?: { readonly tasks: number; readonly reason: string };
+  readonly readmit?: true;
 }
 
 /**
@@ -66,6 +67,13 @@ export interface ActionRequest {
    * or its connection dropped). Absent for a job inside the admin's process.
    */
   readonly signal?: AbortSignal;
+  /**
+   * #1776 — the helper booking whose token the report carries; null for
+   * the attempt's own token. Set by the admission, never by the payload.
+   */
+  readonly helperId: string | null;
+  /** The attempt the report belongs to (admitted with its token). */
+  readonly attempt: number;
 }
 
 /** One action a job of this kind may report. */
@@ -86,6 +94,30 @@ export interface ReportingAction<I = unknown> {
   ): Promise<ActionResult>;
 }
 
+/**
+ * #1776 — what one piece of work of a kind books in the capacity ledger
+ * (job-capacity/plan.ts).
+ */
+export interface KindCapacity {
+  readonly cls: CapacityClass;
+  readonly vcpuPerTask: number;
+  /** Its tasks claim pieces, and helpers may join up to `maxTasks`. */
+  readonly elastic: boolean;
+  readonly maxTasks: number;
+  /** A quality check: keep its Lighthouse share free from its start to its end. */
+  readonly auditReserve: boolean;
+  /**
+   * The machine it runs on, where a kind has several (a plugin batch's
+   * declared size); absent: the kind's one job.
+   */
+  readonly size?: "S" | "M" | "L";
+}
+
+/** The capacity of work that runs one task of `vcpu` and waits for nobody. */
+export function immediateCapacity(vcpu: number, auditReserve = false): KindCapacity {
+  return { cls: "immediate", vcpuPerTask: vcpu, elastic: false, maxTasks: 1, auditReserve };
+}
+
 /** Everything the admin needs to run one kind of reporting job. */
 export interface ReportingJobKindDef {
   readonly kind: ReportingJobKind;
@@ -96,7 +128,15 @@ export interface ReportingJobKindDef {
    * (`projects/<p>/locations/<r>/jobs/<j>`) and the service account its
    * reports must pass IAP as.
    */
-  readonly gcp: { readonly jobEnvVar: string; readonly serviceAccountEnvVar: string };
+  readonly gcp: {
+    readonly jobEnvVar: string;
+    readonly serviceAccountEnvVar: string;
+    /**
+     * #1776 — the jobs of its larger machines, for a kind whose work names a
+     * size (`KindCapacity.size`): the same account, more CPU and memory.
+     */
+    readonly sizedJobEnvVars?: Readonly<Record<"M" | "L", string>>;
+  };
   /** What `aws` / `azure` lack for it, for the refusal (#749, #750). */
   readonly pendingIssue: Readonly<Record<"aws" | "azure", string>>;
   /**
@@ -118,6 +158,11 @@ export interface ReportingJobKindDef {
    * Core kinds (audit, import, build) name none.
    */
   readonly capability?: PluginCapability;
+  /**
+   * #1776 — what a piece of work books before it starts. A kind whose work
+   * waits for nobody (`immediate`) never waits; the others may.
+   */
+  capacity(deps: AdminJobDeps, subjectId: string): Promise<KindCapacity>;
   /** The kind's own actions (the shared ones: protocol.ts FOUNDATION_ACTIONS). */
   // biome-ignore lint/suspicious/noExplicitAny: each action narrows its own input with its schema.
   readonly actions: Readonly<Record<string, ReportingAction<any>>>;

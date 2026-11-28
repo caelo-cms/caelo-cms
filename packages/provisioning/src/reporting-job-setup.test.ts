@@ -502,4 +502,31 @@ describe("the plugin batch job (#1646)", () => {
     expect(flag(deploy, "set-env-vars")).toBe("CAELO_PROVIDER=gcp");
     expect(flag(deploy, "max-retries")).toBe("0");
   });
+
+  it("#1776 — deploys its M and L machines as jobs of their own: same account, env and the admin's start-only rights", async () => {
+    const { run, calls } = fakeGcloud();
+    const r = await ensurePluginBatchJob(TARGET, { run, sleep: async () => {} });
+    expect(r.ok).toBe(true);
+    const deploys = calls.filter((c) => c.slice(0, 3).join(" ") === "run jobs deploy");
+    expect(deploys.map((d) => [d[3], flag(d, "cpu"), flag(d, "memory")])).toEqual([
+      ["caelo-production-plugin-batch", "1", "2Gi"],
+      ["caelo-production-plugin-batch-m", "2", "4Gi"],
+      ["caelo-production-plugin-batch-l", "4", "16Gi"],
+    ]);
+    for (const d of deploys) {
+      expect(flag(d, "service-account")).toBe(BATCH_SA);
+      expect(flag(d, "set-env-vars")).toBe("CAELO_PROVIDER=gcp");
+    }
+    const admin = grants(calls).filter((g) => g.member === ADMIN_SA);
+    expect(admin.map((g) => `${g.where} ${g.role}`)).toEqual(
+      [
+        "caelo-production-plugin-batch",
+        "caelo-production-plugin-batch-m",
+        "caelo-production-plugin-batch-l",
+      ].flatMap((job) => [
+        `run jobs add-iam-policy-binding ${job} roles/run.jobsExecutorWithOverrides`,
+        `run jobs add-iam-policy-binding ${job} roles/run.viewer`,
+      ]),
+    );
+  });
 });

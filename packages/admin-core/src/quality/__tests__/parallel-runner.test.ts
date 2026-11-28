@@ -42,17 +42,40 @@ function wire(
 function fakeLauncher(
   answer: (order: AuditTaskOrder) => AuditTaskResult | "crash" | "hang",
   ticks = 1,
-  tasksAtOnce?: number,
-): AuditTaskLauncher & { batches: AuditTaskBatch[] } {
+  granted?: number,
+): AuditTaskLauncher & {
+  batches: AuditTaskBatch[];
+  widths: number[];
+  booked: { wanted: number; released: boolean }[];
+} {
   const batches: AuditTaskBatch[] = [];
+  const widths: number[] = [];
+  const booked: { wanted: number; released: boolean }[] = [];
   const store = new Map<string, string>();
   const polls = new Map<string, number>();
   return {
     label: "fake launcher",
-    ...(tasksAtOnce === undefined ? {} : { tasksAtOnce }),
+    ...(granted === undefined
+      ? {}
+      : {
+          // The capacity ledger grants each batch `granted` runs at once.
+          reserve: async (wanted: number) => {
+            const b = { wanted, released: false };
+            booked.push(b);
+            return {
+              tasks: Math.min(wanted, granted),
+              release: async () => {
+                b.released = true;
+              },
+            };
+          },
+        }),
     batches,
-    async start(batch) {
+    widths,
+    booked,
+    async start(batch, tasksAtOnce) {
       batches.push(batch);
+      widths.push(tasksAtOnce);
       return `execution-${batches.length}`;
     },
     async progress(handle) {
@@ -326,6 +349,37 @@ describe("createParallelAuditRunner", () => {
     expect(result.ok).toBe(true);
     expect(parallelAuditTimeoutMs(3)).toBe(600_000);
     expect(parallelAuditTimeoutMs()).toBe(300_000);
+    // #1776 — the batch ran as wide as it booked, and gave its CPU back.
+    expect(launcher.widths).toEqual([2]);
+    expect(launcher.booked).toEqual([{ wanted: 6, released: true }]);
+  });
+
+  it("#1776 — gives a batch's CPU back also when its tasks fail", async () => {
+    const launcher = fakeLauncher(() => "crash", 1, 4);
+    const result = await runner(launcher)(job);
+    expect(result.ok).toBe(false);
+    expect(launcher.booked.every((b) => b.released)).toBe(true);
+  });
+
+  it("#1776 — fails the audit with the reason when the batch's CPU cannot be booked", async () => {
+    const launcher: AuditTaskLauncher = {
+      label: "fake launcher",
+      reserve: async () => {
+        throw new Error("the admin was not reached");
+      },
+      start: async () => "never",
+      progress: async () => ({ failed: 0, finished: false }),
+      readResult: async () => null,
+    };
+    const result = await runner(launcher)(job);
+    expect(result).toEqual({
+      ok: false,
+      failure: {
+        code: "child-failed",
+        message:
+          "could not book CPU for the audit tasks on fake launcher: the admin was not reached",
+      },
+    });
   });
 
   it("fails when the tasks cannot be started", async () => {

@@ -11,9 +11,6 @@
  *   reporting_jobs.release         end an attempt's lease now, with the
  *                                  reason (a launch that failed, a job
  *                                  that deferred)
- *   reporting_jobs.scale_out       run the next attempts with more tasks,
- *                                  and end this one now (the index job
- *                                  asked for them)
  *   reporting_jobs.finish          the work is over; no report is admitted
  *   reporting_jobs.list_expired    running jobs whose lease ran out
  *   reporting_jobs.put_upload_part one part of an input too large for one
@@ -24,7 +21,13 @@
  * The attempt and the token are the whole admission: a job the backstop
  * replaced reports with an older attempt and is told to stop (`stale`),
  * a report with the right attempt but another token is refused. The token
- * itself never reaches the database, only its SHA-256.
+ * itself never reaches the database, only its SHA-256. A helper of elastic
+ * work (#1776, ops/job_capacity.ts) carries a token of its own, admitted
+ * for its attempt while its booking holds it.
+ *
+ * A work's capacity bookings and pieces (#1776) end with it (`finish`),
+ * and its helpers and Lighthouse batches with their attempt (`begin_attempt`
+ * of the next one).
  *
  * All system-only: the job reports through the admin's report endpoint,
  * which runs these as the system actor (reporting-jobs/dispatch.ts). The
@@ -70,8 +73,7 @@ export const beginReportingJobAttemptOp = defineOperation({
     })
     .strict(),
   output: z.union([
-    /** `tasks`: how many tasks the attempt runs (scale_out raised it, or 1). */
-    z.object({ started: z.literal(true), attempt, tasks: z.number().int().min(1).max(64) }),
+    z.object({ started: z.literal(true), attempt }),
     z.object({
       started: z.literal(false),
       /**
@@ -92,10 +94,9 @@ export const beginReportingJobAttemptOp = defineOperation({
       INSERT INTO reporting_jobs (kind, subject_id, attempt, token_hash, state, lease_until)
       VALUES (${input.kind}, ${input.subjectId}::uuid, 1, ${input.tokenHash}, 'running', ${lease})
       ON CONFLICT (kind, subject_id) DO NOTHING
-      RETURNING attempt, tasks
-    `)) as unknown as { attempt: number; tasks: number }[];
+      RETURNING attempt
+    `)) as unknown as { attempt: number }[];
     let started: number | null = fresh[0]?.attempt ?? null;
-    let tasks = fresh[0]?.tasks ?? 1;
     if (started === null) {
       const rows = (await tx.execute(sql`
         SELECT attempt, state, lease_until <= now() AS expired, last_error, execution
@@ -144,10 +145,9 @@ export const beginReportingJobAttemptOp = defineOperation({
                lease_until = ${lease}, execution = NULL, last_report_at = NULL,
                last_error = NULL, window_started_at = now(), window_requests = 0
          WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid
-        RETURNING attempt, tasks
-      `)) as unknown as { attempt: number; tasks: number }[];
+        RETURNING attempt
+      `)) as unknown as { attempt: number }[];
       started = next[0]?.attempt ?? null;
-      tasks = next[0]?.tasks ?? 1;
       if (started === null) {
         return err({
           kind: "HandlerError",
@@ -157,6 +157,24 @@ export const beginReportingJobAttemptOp = defineOperation({
         });
       }
     }
+    // #1776 — the lead's booking follows the attempt; helpers and
+    // Lighthouse batches of an earlier attempt served a job that is gone.
+    await tx.execute(sql`
+      UPDATE job_capacity_bookings SET attempt = ${started}
+       WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid AND role = 'lead'
+    `);
+    await tx.execute(sql`
+      DELETE FROM job_capacity_bookings
+       WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid
+         AND role IN ('helper', 'lighthouse') AND attempt < ${started}
+    `);
+    // Every claimed piece belongs to a task of an earlier attempt, which is
+    // gone: open again before any task of this one claims. (A late claim of
+    // the old attempt hears `stop`, job_pieces.claim.)
+    await tx.execute(sql`
+      UPDATE job_pieces SET state = 'open', claimed_by = NULL, claim_until = NULL
+       WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid AND state = 'claimed'
+    `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -164,9 +182,9 @@ export const beginReportingJobAttemptOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.subjectId,
-      resultSummary: `${input.kind}: attempt ${started} of ${input.maxAttempts}${tasks > 1 ? `, ${tasks} tasks` : ""}`,
+      resultSummary: `${input.kind}: attempt ${started} of ${input.maxAttempts}`,
     });
-    return ok({ started: true as const, attempt: started, tasks });
+    return ok({ started: true as const, attempt: started });
   },
 });
 
@@ -210,7 +228,8 @@ export const authorizeReportingJobOp = defineOperation({
     })
     .strict(),
   output: z.union([
-    z.object({ admitted: z.literal(true) }),
+    /** `helperId`: the helper booking whose token the report carries; null for the attempt's own. */
+    z.object({ admitted: z.literal(true), helperId: z.string().nullable() }),
     z.object({
       admitted: z.literal(false),
       /**
@@ -254,8 +273,20 @@ export const authorizeReportingJobOp = defineOperation({
     // The attempt number is not secret; an older one is a job the backstop
     // replaced, which may stop without proving anything more.
     if (input.attempt < row.attempt) return refuse("stale");
-    if (input.attempt > row.attempt || input.tokenHash !== row.token_hash) {
-      return refuse("bad-token");
+    if (input.attempt > row.attempt) return refuse("bad-token");
+    let helperId: string | null = null;
+    if (input.tokenHash !== row.token_hash) {
+      // #1776 — a helper of this attempt, while its booking holds it.
+      const helper = (await tx.execute(sql`
+        SELECT id::text AS id FROM job_capacity_bookings
+        WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid AND role = 'helper'
+          AND attempt = ${input.attempt} AND token_hash = ${input.tokenHash}
+      `)) as unknown as { id: string }[];
+      helperId = helper[0]?.id ?? null;
+      if (helperId === null) {
+        // A helper the ledger stopped, or whose booking ran out: it stops.
+        return row.state === "done" ? refuse("finished") : refuse("bad-token");
+      }
     }
     if (row.state === "done") return refuse("finished");
     const requests = row.window_over ? 1 : row.window_requests + 1;
@@ -270,7 +301,15 @@ export const authorizeReportingJobOp = defineOperation({
              window_requests = ${requests}
        WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid
     `);
-    return ok({ admitted: true as const });
+    if (helperId !== null) {
+      // Its tasks' reports (the heartbeat among them) keep its vCPU booked.
+      await tx.execute(sql`
+        UPDATE job_capacity_bookings
+           SET lease_until = GREATEST(lease_until, now() + make_interval(secs => ${input.leaseSeconds}))
+         WHERE id = ${helperId}::uuid
+      `);
+    }
+    return ok({ admitted: true as const, helperId });
   },
 });
 
@@ -312,53 +351,6 @@ export const releaseReportingJobOp = defineOperation({
   },
 });
 
-export const scaleOutReportingJobOp = defineOperation({
-  name: "reporting_jobs.scale_out",
-  readScope: "request",
-  // Why system-only: see reporting_jobs.begin_attempt. The job asks, the
-  // admin's report endpoint runs it as the system actor.
-  actorScope: ["system"],
-  database: "cms_admin",
-  input: z
-    .object({
-      kind,
-      subjectId,
-      attempt,
-      /** Tasks the next attempts run; never fewer than the work has now. */
-      tasks: z.number().int().min(2).max(64),
-      /** Why, in operator words: what the attempt found to do. */
-      reason: z.string().min(1).max(2000),
-    })
-    .strict(),
-  output: z.object({ scaled: z.boolean(), tasks: z.number().int() }),
-  handler: async (ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
-      UPDATE reporting_jobs
-         SET tasks = GREATEST(tasks, ${input.tasks}), lease_until = now(), last_error = ${input.reason}
-       WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid
-         AND attempt = ${input.attempt} AND state = 'running'
-      RETURNING tasks
-    `)) as unknown as { tasks: number }[];
-    const row = rows[0];
-    if (!row) return ok({ scaled: false, tasks: 1 });
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: "reporting_jobs.scale_out",
-      input: {
-        kind: input.kind,
-        subjectId: input.subjectId,
-        attempt: input.attempt,
-        tasks: input.tasks,
-      },
-      succeeded: true,
-      entityId: input.subjectId,
-      resultSummary: `${input.kind} attempt ${input.attempt}: next attempts run ${row.tasks} tasks (${input.reason.slice(0, 160)})`,
-    });
-    return ok({ scaled: true, tasks: row.tasks });
-  },
-});
-
 export const finishReportingJobOp = defineOperation({
   name: "reporting_jobs.finish",
   readScope: "request",
@@ -384,6 +376,19 @@ export const finishReportingJobOp = defineOperation({
          ${input.attempt === null ? sql`` : sql`AND attempt = ${input.attempt}`}
       RETURNING attempt
     `)) as unknown as { attempt: number }[];
+    // #1776 — the work's vCPU comes back and its pieces go: when this
+    // finished it, and when the work is given up (no attempt), also work
+    // that never left the queue. A late finish of a replaced attempt
+    // leaves the current attempt's bookings and pieces alone.
+    if (rows.length > 0 || input.attempt === null) {
+      await tx.execute(sql`
+        DELETE FROM job_capacity_bookings
+        WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid
+      `);
+      await tx.execute(sql`
+        DELETE FROM job_pieces WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid
+      `);
+    }
     if (rows.length === 0) return ok({ finished: false });
     await tx.execute(sql`
       DELETE FROM reporting_job_uploads

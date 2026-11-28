@@ -13,6 +13,10 @@
  *      — or gives it up, for a kind whose work must not start late (a
  *      build a person asked for: kind.ts `unstarted`).
  *
+ * Then, once for all kinds (#1776), it gives back the capacity of
+ * executions that stopped without a word and runs the ledger's admission:
+ * jobs that waited for CPU start, and elastic work gets its helpers.
+ *
  * A tick runs it inside a request, so the admin has the CPU for it on a
  * request-billed instance (CLAUDE.md §11.B Tier 5). It never builds or
  * publishes anything (scripts/no-automatic-production-deploy.test.ts).
@@ -20,9 +24,11 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { describeError } from "../ai/tools/_describe-error.js";
+import { sweepCapacity } from "../job-capacity/ledger.js";
 import { type AdminJobDeps, REPORTING_JOB_CTX } from "./kind.js";
 import { reportingJobKinds } from "./kinds.js";
 import {
+  admitWaitingJobs,
   giveUpReportingJob,
   type JobLauncher,
   launcherFor,
@@ -87,6 +93,17 @@ export async function runReportingJobBackstop(
         `${def.kind}: ${[...counts.entries()].map(([outcome, n]) => `${n} ${outcome}`).join(", ")}`,
       );
     }
+  }
+  // Only where this process can run jobs: a test or a script without a
+  // launcher leaves the queue to whoever drives it, as above.
+  const runsJobs =
+    opts.launcher !== undefined ||
+    reportingJobKinds().some((def) => launcherFor(def, opts.env).kind === "launcher");
+  if (runsJobs) {
+    const released = await sweepCapacity(deps);
+    if (released > 0) parts.push(`${released} stopped execution(s) gave their CPU back`);
+    const admitted = await admitWaitingJobs(deps, opts);
+    if (admitted) parts.push(admitted);
   }
   return parts.length > 0 ? parts.join("; ") : undefined;
 }

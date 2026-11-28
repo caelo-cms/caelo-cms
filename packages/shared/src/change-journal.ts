@@ -367,6 +367,11 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   platform_update_scheduler: RUNTIME,
   scheduled_tasks: RUNTIME,
   reporting_jobs: LEASE,
+  job_capacity_bookings:
+    "#1776: the vCPU each running or waiting job execution holds, read by the admission that starts the next; nothing is derived from it",
+  job_capacity_budget:
+    "#1776: the last read of the project's Cloud Run CPU quota (none on a self-hosted install), read by the admission",
+  job_pieces: LEASE,
   reporting_job_uploads:
     "#1359: the parts of a job's report too large for one request, read by the action that names them",
   build_orders:

@@ -231,13 +231,17 @@ function batchesLine(raw: unknown): string {
         description?: string;
         triggers?: string[];
         schedule?: string;
+        size?: string;
+        pieces?: { maxTasks?: number };
       };
       const how = (x.triggers ?? [])
         .map((t) =>
           t === "operator" ? "start_plugin_batch" : t === "schedule" ? `schedule ${x.schedule}` : t,
         )
         .join(", ");
-      return `${x.operation} (${how}): ${x.description ?? ""}`;
+      // #1776 — the machine a task needs; Caelo decides when and how wide it runs.
+      const machine = `machine ${x.size ?? "S"}${x.pieces?.maxTasks ? `, in pieces on up to ${x.pieces.maxTasks} tasks` : ""}`;
+      return `${x.operation} (${how}; ${machine}): ${x.description ?? ""}`;
     })
     .join("; ");
 }

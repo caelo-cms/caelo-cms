@@ -97,11 +97,12 @@ export async function main(env: Record<string, string | undefined> = process.env
       credential: serviceAccountIapCredential(order.adminUrl),
       timeoutMs: JOB_TIMING[order.kind].reportTimeoutSeconds * 1000,
     }),
-    // Cloud Run numbers an execution's tasks from 0 (`order.tasks` of them).
+    // Cloud Run numbers an execution's tasks from 0 (a helper's `order.tasks` of them).
     { taskIndex: Number(env.CLOUD_RUN_TASK_INDEX ?? "0") },
   );
-  const task =
-    (order.tasks ?? 1) > 1 ? ` task ${env.CLOUD_RUN_TASK_INDEX ?? "0"}/${order.tasks}` : "";
+  const task = order.helper
+    ? ` helper ${order.helper} task ${env.CLOUD_RUN_TASK_INDEX ?? "0"}/${order.tasks ?? 1}`
+    : "";
   console.log(
     `[reporting-job] ${order.kind} ${order.subjectId} attempt ${order.attempt}${task}: ${outcome}`,
   );

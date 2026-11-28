@@ -29,6 +29,7 @@ import {
   listQualityAcceptancesTool,
   listQualityAuditsTool,
 } from "../ai/tools/quality-audit-tools.js";
+import { inProcessBudget } from "../job-capacity/budget.js";
 import { buildReferenceGate } from "../ops/content/link-integrity.js";
 import { recordedRuns, sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
 import { reportedCheckSources, runQualityAuditJob } from "../quality/audit-job.js";
@@ -50,7 +51,6 @@ import { runOrder } from "../reporting-jobs/job-entry.js";
 import { createJobReporter, type ReportTransport } from "../reporting-jobs/job-reporter.js";
 import { startReportingJob } from "../reporting-jobs/launcher.js";
 import { JOB_TOKEN_HEADER, type JobOrder } from "../reporting-jobs/protocol.js";
-import { planRunCapacity } from "../reporting-jobs/run-capacity.js";
 import { runJobAttempt } from "../reporting-jobs/run-job.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { claimNextQueuedAudit, drainAuditQueue } from "./fixtures/drain-audits.js";
@@ -1038,6 +1038,8 @@ describe("the audit's job: lease, restart and give-up (#1359)", () => {
       orders,
       launcher: {
         label: "the test",
+        // No CPU budget, as inside the admin (#1776).
+        capacity: async () => inProcessBudget(),
         launch: async (order: JobOrder) => {
           orders.push(order);
           await run(order);
@@ -1164,6 +1166,7 @@ describe("the audit's job: lease, restart and give-up (#1359)", () => {
     try {
       const failing = {
         label: "Cloud Run job caelo-production-audit-run",
+        capacity: async () => inProcessBudget(),
         launch: async (): Promise<string> => {
           throw new Error("PERMISSION_DENIED: run.jobs.runWithOverrides");
         },
@@ -1509,17 +1512,30 @@ describe("the audit's job: lease, restart and give-up (#1359)", () => {
     });
   }
 
-  it("#1764 — the order carries the capacity read at the start; a quota Google refuses is a failed launch", async () => {
+  it("#1776 — the check books its runner and keeps its Lighthouse share; a quota Google refuses is a failed start", async () => {
     const { auditRunId } = await queuedAudit(990);
-    const plan = planRunCapacity("acme-site", "europe-west1", 20);
     const read = launcher(() => {});
     const started = await startReportingJob(ADMIN(), "quality_audit", auditRunId, {
-      launcher: { ...read.launcher, capacity: async () => plan },
+      launcher: {
+        ...read.launcher,
+        capacity: async () => ({
+          source: "quota" as const,
+          budgetVcpu: 14,
+          quotaVcpu: 20,
+          reserveVcpu: 6,
+          projectId: "acme-site",
+          region: "europe-west1",
+        }),
+      },
     });
     expect(started.outcome).toBe("started");
-    // The audit runner sizes its Lighthouse executions from it: 5 at once.
-    expect(read.orders[0]?.capacity).toEqual(plan);
-    expect(read.orders[0]?.capacity?.lighthouseTasks).toBe(5);
+    const booked = (
+      (await op(SYS, "job_capacity.list", {})) as {
+        bookings: { kind: string; subjectId: string; vcpu: number; reserveVcpu: number }[];
+      }
+    ).bookings.find((b) => b.subjectId === auditRunId);
+    // Its runner, and 5 Lighthouse runs of 2 vCPU kept free for its batches.
+    expect(booked).toMatchObject({ kind: "quality_audit", vcpu: 1, reserveVcpu: 10 });
 
     const { auditRunId: second } = await queuedAudit(991);
     const refused = launcher(() => {});
@@ -1531,13 +1547,13 @@ describe("the audit's job: lease, restart and give-up (#1359)", () => {
         },
       },
     });
-    expect(failed).toMatchObject({ outcome: "launch-failed", attempt: 1 });
+    expect(failed).toMatchObject({ outcome: "launch-failed" });
     if (failed.outcome !== "launch-failed") return;
     expect(failed.message).toContain("Cloud Run CPU quota");
-    // Nothing was started without the width.
+    // Nothing was started, nor an attempt begun, without the budget.
     expect(refused.orders).toEqual([]);
     // The next tick tries again (and leaves no released work for the tests after).
     await runReportingJobBackstop(ADMIN(), refused);
-    expect(refused.orders.filter((o) => o.subjectId === second).map((o) => o.attempt)).toEqual([2]);
+    expect(refused.orders.filter((o) => o.subjectId === second).map((o) => o.attempt)).toEqual([1]);
   });
 });

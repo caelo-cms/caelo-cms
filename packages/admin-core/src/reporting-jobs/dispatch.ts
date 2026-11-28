@@ -31,7 +31,7 @@ import {
   type ReportingJobKindDef,
 } from "./kind.js";
 import { reportingJobKind } from "./kinds.js";
-import { startReportingJob } from "./launcher.js";
+import { admitWaitingJobs } from "./launcher.js";
 import {
   deferSchema,
   hashJobToken,
@@ -156,7 +156,9 @@ export async function admitJobReport(
       tokenHash: hashJobToken(request.token),
       leaseSeconds: JOB_TIMING[def.kind].leaseSeconds,
       ratePerMinute: REPORTS_PER_MINUTE,
-    })) as { admitted: true } | { admitted: false; reason: string; retryAfterSeconds?: number };
+    })) as
+      | { admitted: true; helperId: string | null }
+      | { admitted: false; reason: string; retryAfterSeconds?: number };
     if (!admitted.admitted) {
       switch (admitted.reason) {
         case "stale":
@@ -179,7 +181,7 @@ export async function admitJobReport(
           return refusal(refused(401, "not-admitted", "no such attempt, or not its token"));
       }
     }
-    return await prepareAction(deps, def, envelope);
+    return await prepareAction(deps, def, envelope, admitted.helperId);
   } catch (e) {
     return refusal(failure(def, envelope, e));
   }
@@ -221,6 +223,7 @@ async function prepareAction(
   deps: AdminJobDeps,
   def: ReportingJobKindDef,
   envelope: ReportEnvelope,
+  helperId: string | null,
 ): Promise<ReportAdmission> {
   const { subjectId, attempt } = envelope;
   switch (envelope.action) {
@@ -247,6 +250,13 @@ async function prepareAction(
     case "defer": {
       const d = deferSchema.safeParse(envelope.payload);
       if (!d.success) return answeredNow(refused(400, "bad-input", issuesOf(d.error)));
+      if (helperId !== null) {
+        // #1776 — a helper gives back only its own booking, never the
+        // attempt. Every task of it runs the same image, so all of them
+        // defer; releasing the booking once is the same answer each time.
+        await op(deps, "job_capacity.release", { bookingId: helperId, kind: def.kind, subjectId });
+        return answeredNow(answered({}));
+      }
       await op(deps, "reporting_jobs.release", {
         kind: def.kind,
         subjectId,
@@ -297,7 +307,11 @@ async function prepareAction(
       long: action.long === true,
       async run(signal) {
         try {
-          const result = await action.handle(deps, subjectId, input.data, signal ? { signal } : {});
+          const result = await action.handle(deps, subjectId, input.data, {
+            helperId,
+            attempt,
+            ...(signal ? { signal } : {}),
+          });
           if (result.done) {
             await op(deps, "reporting_jobs.finish", {
               kind: def.kind,
@@ -306,17 +320,17 @@ async function prepareAction(
               outcome: result.done.outcome,
               note: result.done.note ?? null,
             });
-          } else if (result.scaleOut) {
-            const scaled = (await op(deps, "reporting_jobs.scale_out", {
-              kind: def.kind,
-              subjectId,
-              attempt,
-              tasks: result.scaleOut.tasks,
-              reason: result.scaleOut.reason.slice(0, 2000),
-            })) as { scaled: boolean };
-            // The released lease lets the next attempt begin now; a start
-            // that fails is the backstop's to retry, as after any launch.
-            if (scaled.scaled) await startReportingJob(deps, def.kind, subjectId);
+          }
+          // #1776 — CPU came free or the work wants more: start what waited
+          // and add helpers now, not at the next tick. A failure here is
+          // the tick's to retry; the report's own answer stands.
+          if (result.done || result.readmit) {
+            await admitWaitingJobs(deps).catch((e: unknown) =>
+              console.error(
+                `[job-capacity] admission after a ${def.kind} report failed (the next tick runs it):`,
+                e instanceof Error ? e.message : e,
+              ),
+            );
           }
           return answered(result.value);
         } catch (e) {

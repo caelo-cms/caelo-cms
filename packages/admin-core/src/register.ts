@@ -367,6 +367,24 @@ import {
   takeRenderOp,
 } from "./ops/imports-crawl.js";
 import {
+  admitJobCapacityOp,
+  bookJobCapacityOp,
+  cancelJobCapacityOp,
+  leaveJobCapacityOp,
+  listJobCapacityOp,
+  recordJobCapacityExecutionOp,
+  releaseJobCapacityOp,
+  reserveLighthouseOp,
+  setJobCapacityBudgetOp,
+  sweepJobCapacityOp,
+} from "./ops/job_capacity.js";
+import {
+  claimJobPieceOp,
+  finishJobPieceOp,
+  openJobPieceScopesOp,
+  registerJobPiecesOp,
+} from "./ops/job_pieces.js";
+import {
   getLinkMigrationReportOp,
   migrateLinksToReferencesOp,
   revertLinkMigrationOp,
@@ -578,7 +596,6 @@ import {
   readReportingJobUploadOp,
   recordReportingJobLaunchOp,
   releaseReportingJobOp,
-  scaleOutReportingJobOp,
   sweepReportingJobsOp,
 } from "./ops/reporting_jobs.js";
 import {
@@ -1553,12 +1570,25 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(recordReportingJobLaunchOp);
   registry.register(authorizeReportingJobOp);
   registry.register(releaseReportingJobOp);
-  registry.register(scaleOutReportingJobOp);
   registry.register(finishReportingJobOp);
   registry.register(listExpiredReportingJobsOp);
   registry.register(putReportingJobUploadPartOp);
   registry.register(readReportingJobUploadOp);
   registry.register(sweepReportingJobsOp);
+  registry.register(setJobCapacityBudgetOp);
+  registry.register(bookJobCapacityOp);
+  registry.register(admitJobCapacityOp);
+  registry.register(reserveLighthouseOp);
+  registry.register(recordJobCapacityExecutionOp);
+  registry.register(releaseJobCapacityOp);
+  registry.register(leaveJobCapacityOp);
+  registry.register(cancelJobCapacityOp);
+  registry.register(listJobCapacityOp);
+  registry.register(sweepJobCapacityOp);
+  registry.register(registerJobPiecesOp);
+  registry.register(claimJobPieceOp);
+  registry.register(finishJobPieceOp);
+  registry.register(openJobPieceScopesOp);
   // #1574 — build orders: a build inside the request its carrier job holds open.
   registry.register(createBuildOrderOp);
   registry.register(claimBuildOrderOp);

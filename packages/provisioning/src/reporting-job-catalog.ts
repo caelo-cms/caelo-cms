@@ -69,10 +69,33 @@ export interface ReportingJobSpec {
   readonly writeBuckets: readonly { readonly bucket: string; readonly why: string }[];
   /** Jobs it starts itself, with its order as an override (and reads their executions). */
   readonly runJobs: readonly { readonly job: string; readonly why: string }[];
+  /**
+   * #1776 — further jobs of the same kind on larger machines: the same
+   * account, env and grants, more CPU and memory (a plugin batch's sizes).
+   */
+  readonly machines: readonly {
+    readonly jobName: string;
+    readonly cpu: string;
+    readonly memory: string;
+  }[];
 }
 
-/** What a kind declares of its job; the catalog adds its label and names. */
-export type ReportingKindJob = Omit<ReportingJobSpec, "label" | "jobName" | "serviceAccountId">;
+/** #1776 — a kind's larger machine: a job of its own, named `caelo-<env>-<name>-<suffix>`. */
+export interface ReportingJobSize {
+  /** The size its work names (admin-core `KindCapacity.size`). */
+  readonly size: "M" | "L";
+  readonly suffix: "m" | "l";
+  /** The admin env var naming the job. */
+  readonly jobEnvVar: string;
+  readonly cpu: string;
+  readonly memory: string;
+}
+
+/** What a kind declares of its job; the catalog adds its label, names and machines. */
+export type ReportingKindJob = Omit<
+  ReportingJobSpec,
+  "label" | "jobName" | "serviceAccountId" | "machines"
+>;
 
 /** What a kind's setup waits for: its step comes after that one, and is skipped without it. */
 export type ReportingJobPrerequisite =
@@ -112,6 +135,17 @@ export interface ReportingJobKindEntry {
   };
   /** What fails while its image lags behind the admin's (upgrade/admin-image-jobs.ts). */
   readonly lagging: string;
+  /** #1776 — its larger machines, when its work names a size. */
+  readonly sizes?: readonly ReportingJobSize[];
+}
+
+/** `caelo-<env>-<name>-<suffix>`: a larger machine's job name. */
+export function reportingJobSizeName(
+  entry: Pick<ReportingJobKindEntry, "name">,
+  size: Pick<ReportingJobSize, "suffix">,
+  env: string,
+): string {
+  return `${reportingJobName(entry, env)}-${size.suffix}`;
 }
 
 /** `caelo-<env>-<name>`: the kind's job name. */
@@ -386,6 +420,12 @@ export const REPORTING_JOB_CATALOG: readonly ReportingJobKindEntry[] = [
       consequence: "plugins' batch runs (backfills) fail after their last attempt",
     },
     lagging: "plugins' batch runs fail after their last attempt",
+    // #1776 — a batch declares the machine one task needs (plugin-sdk
+    // BATCH_SIZES): S is the job above, M and L are jobs of their own.
+    sizes: [
+      { size: "M", suffix: "m", jobEnvVar: "CAELO_PLUGIN_BATCH_JOB_M", cpu: "2", memory: "4Gi" },
+      { size: "L", suffix: "l", jobEnvVar: "CAELO_PLUGIN_BATCH_JOB_L", cpu: "4", memory: "16Gi" },
+    ],
   },
 ];
 
@@ -399,6 +439,11 @@ export function reportingJobSpec(
     jobName: reportingJobName(entry, place.env),
     serviceAccountId: reportingJobAccountId(place.env, entry.name),
     ...entry.job(place),
+    machines: (entry.sizes ?? []).map((s) => ({
+      jobName: reportingJobSizeName(entry, s, place.env),
+      cpu: s.cpu,
+      memory: s.memory,
+    })),
   };
 }
 
@@ -417,6 +462,10 @@ export function reportingJobAdminEnv(
 ): { readonly name: string; readonly value: string }[] {
   return REPORTING_JOB_CATALOG.flatMap((e) => [
     { name: e.jobEnvVar, value: reportingJobResource(e, projectId, region, env) },
+    ...(e.sizes ?? []).map((s) => ({
+      name: s.jobEnvVar,
+      value: `projects/${projectId}/locations/${region}/jobs/${reportingJobSizeName(e, s, env)}`,
+    })),
     { name: e.serviceAccountEnvVar, value: reportingJobServiceAccountEmail(e, projectId, env) },
   ]);
 }
