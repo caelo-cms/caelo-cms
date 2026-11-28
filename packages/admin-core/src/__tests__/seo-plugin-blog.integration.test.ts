@@ -37,6 +37,7 @@ import { lockPluginRow } from "../locks.js";
 import { createStructuredDataCheck } from "../quality/checks/structured-data.js";
 import { registerAdminOps } from "../register.js";
 import { runSeoPass } from "./fixtures/seo-pass.js";
+import { wipeSeoPluginRows } from "./fixtures/seo-plugin-rows.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -359,6 +360,7 @@ beforeAll(async () => {
   });
   expect(report.failed).toEqual([]);
   await syncPluginHost(true);
+  await wipeSeoPluginRows(ADMIN_URL);
   await seo("set_schema_mappings_many", {
     mappings: [
       {
@@ -390,11 +392,9 @@ afterAll(async () => {
     await sqlSystem(async (tx) => {
       await tx.unsafe(`DELETE FROM chat_sessions WHERE title LIKE '${PFX}-%'`);
     }).catch(() => undefined);
+    await wipeSeoPluginRows(ADMIN_URL as string);
     resetPluginHost();
     await sqlSystem(async (tx) => {
-      await tx.unsafe(
-        "DO $$ BEGIN IF to_regclass('plugin_seo.type_mappings') IS NOT NULL THEN DELETE FROM plugin_seo.type_mappings; END IF; END $$",
-      );
       if (previous) {
         await tx`UPDATE site_defaults SET site_name = ${previous.site_name}, organization_json = ${JSON.stringify(previous.organization_json ?? {})}::text::jsonb WHERE id = 1`;
       }

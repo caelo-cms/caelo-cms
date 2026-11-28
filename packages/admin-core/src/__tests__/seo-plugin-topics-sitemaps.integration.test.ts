@@ -39,6 +39,7 @@ import { lockPluginRow } from "../locks.js";
 import { registerAdminOps } from "../register.js";
 import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
 import { runSeoPass } from "./fixtures/seo-pass.js";
+import { wipeSeoPluginRows } from "./fixtures/seo-plugin-rows.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -225,9 +226,6 @@ async function cleanup(): Promise<void> {
       `DELETE FROM media_variants WHERE asset_id IN (SELECT id FROM media_assets WHERE original_name LIKE '${PFX}-%')`,
     );
     await tx.unsafe(`DELETE FROM media_assets WHERE original_name LIKE '${PFX}-%'`);
-    await tx.unsafe(
-      "DO $$ BEGIN IF to_regclass('plugin_seo.page_index') IS NOT NULL THEN DELETE FROM plugin_seo.page_index; DELETE FROM plugin_seo.type_mappings; END IF; END $$",
-    );
   });
 }
 
@@ -336,6 +334,8 @@ beforeAll(async () => {
   });
   expect(report.failed).toEqual([]);
   await syncPluginHost(true);
+  // The index of earlier runs would answer for pages this run does not have.
+  await wipeSeoPluginRows(ADMIN_URL);
   await seo("set_schema_mappings_many", {
     mappings: [
       { pageType: `${PFX}-news`, schemaType: "NewsArticle" },
@@ -375,6 +375,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   try {
+    await wipeSeoPluginRows(ADMIN_URL as string);
     resetPluginHost();
     await sqlSystem(async (tx) => {
       await tx`UPDATE site_defaults SET site_name = ${siteNameBefore}, home_page_id = NULL WHERE id = 1`;
