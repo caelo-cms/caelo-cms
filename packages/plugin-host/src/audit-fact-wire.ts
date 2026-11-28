@@ -27,14 +27,7 @@ import type {
   PluginAuditFindingsArgs,
   PluginAuditPageFacts,
 } from "@caelo-cms/plugin-sdk";
-import { SANDBOX_MESSAGE_BYTES } from "./sandbox-protocol.js";
-
-/**
- * The bytes a call's args may take on the sandbox wire: one message, less
- * room for the rest of it (the plugin's slug and version, the invocation,
- * the site's theme tokens and the handle flags; a few KB in practice).
- */
-export const AUDIT_CALL_ARGS_BYTES = SANDBOX_MESSAGE_BYTES - 64 * 1024;
+import { jsonWireBytes as jsonBytes, PLUGIN_CALL_ARGS_BYTES } from "./call-wire-budget.js";
 
 /** The facts a cut may shorten, each a list of entries. */
 const CUTTABLE: readonly PluginAuditFactName[] = [
@@ -45,13 +38,6 @@ const CUTTABLE: readonly PluginAuditFactName[] = [
   "jsonLd",
   "socialMeta",
 ];
-
-const encoder = new TextEncoder();
-
-/** The bytes `value` takes as JSON on the wire. */
-function jsonBytes(value: unknown): number {
-  return encoder.encode(JSON.stringify(value)).length;
-}
 
 /**
  * One page's facts cut to at most `maxBytes` of JSON: the largest list
@@ -101,7 +87,7 @@ export function cutPageFacts(facts: PluginAuditPageFacts, maxBytes: number): Plu
 
 /**
  * A batch call cut into consecutive calls whose args each take at most
- * `maxBytes` of JSON (default {@link AUDIT_CALL_ARGS_BYTES}). A call
+ * `maxBytes` of JSON (default {@link PLUGIN_CALL_ARGS_BYTES}). A call
  * without facts, or one that fits, comes back as it is.
  *
  * @throws when the call's page list alone does not fit (a batch call that
@@ -110,7 +96,7 @@ export function cutPageFacts(facts: PluginAuditPageFacts, maxBytes: number): Plu
  */
 export function auditCallsThatFit(
   args: PluginAuditFindingsArgs,
-  maxBytes: number = AUDIT_CALL_ARGS_BYTES,
+  maxBytes: number = PLUGIN_CALL_ARGS_BYTES,
 ): PluginAuditFindingsArgs[] {
   const facts = args.facts;
   if (facts === undefined || jsonBytes(args) <= maxBytes) return [args];

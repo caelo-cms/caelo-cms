@@ -17,8 +17,9 @@
  * should be a module), `links` (#849: broken internal links, missing
  * assets, redirect chains and loops, orphan pages) and `references` (#724:
  * stored links to deleted, language-less or unpublished pages),
- * `security-headers` (#1454: what the build's CSP cannot allow) and
- * `render` (#1604: content the staged build could not render) — maintainer decision:
+ * `security-headers` (#1454: what the build's CSP cannot allow),
+ * `render` (#1604: content the staged build could not render) and
+ * `structured-data` (#1753: the integrity of each page's JSON-LD graph) — maintainer decision:
  * core topics like Lighthouse, not plugin add-ons. The rule about pages without a meta description
  * is enforced before the build by `deploy.trigger` (#730,
  * deploy/missing-seo.ts), so a staged build can never contain such a page.
@@ -35,6 +36,7 @@ import { createReferencesCheck, type ReferenceSources } from "./references.js";
 import { createRenderCheck, type RenderSources } from "./render.js";
 import { createSecurityHeadersCheck } from "./security-headers.js";
 import { createStructureCheck, type StructureSources } from "./structure.js";
+import { createStructuredDataCheck } from "./structured-data.js";
 
 /** Who contributed a check. */
 export type CheckSource =
@@ -129,7 +131,8 @@ export class CheckRegistry {
 
 /**
  * The checks core ships: Lighthouse and the `structure`, `links`,
- * `references`, `security-headers` and `render` findings checks.
+ * `references`, `security-headers`, `render` and `structured-data`
+ * findings checks.
  *
  * @param options.structure - where the structure check reads module
  *   templates and layouts (required: a core check that silently did not
@@ -155,5 +158,6 @@ export function createCoreCheckRegistry(options: {
   registry.register(createReferencesCheck(options.references), CORE);
   registry.register(createSecurityHeadersCheck(), CORE);
   registry.register(createRenderCheck(options.render), CORE);
+  registry.register(createStructuredDataCheck(), CORE);
   return registry;
 }

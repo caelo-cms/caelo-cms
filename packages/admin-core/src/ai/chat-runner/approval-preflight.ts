@@ -31,6 +31,7 @@ import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cm
 import type { ExecutionContext } from "@caelo-cms/shared";
 
 import { approverPermissionsOf } from "../../ops/_approver-permission.js";
+import { stalePluginViewBeforeApproval } from "../plugin-approval-staleness.js";
 import type { ToolRegistry } from "../tools/index.js";
 
 /** A payload that cannot apply, phrased for the model that has to fix it. */
@@ -84,6 +85,35 @@ export function preflightGatedCall(
       "Fix the named fields and call the tool again. Do not ask the operator about this — " +
       "no approval was requested and none is pending.",
   };
+}
+
+/**
+ * #1705 — a draft-bound plugin tool (`approvedOnChatBranch`) whose approved
+ * call would refuse to apply: another chat changed the plugin's rows about
+ * what the call names, and this chat has not seen it
+ * (`plugin-approval-staleness.ts`). Null for every other call, and when the
+ * view is current.
+ */
+export async function preflightDraftBoundPluginCall(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  aiCtx: ExecutionContext,
+  toolName: string,
+  args: unknown,
+): Promise<PreflightRejection | null> {
+  const plugin = pluginToolsRegistry
+    .list()
+    .find(({ spec }) => spec.name === toolName && spec.approvalMode);
+  if (plugin?.spec.approvedOnChatBranch !== true) return null;
+  const reason = await stalePluginViewBeforeApproval({
+    registry,
+    adapter,
+    aiCtx,
+    pluginSlug: plugin.pluginSlug,
+    toolName,
+    args,
+  });
+  return reason === null ? null : { toolName, reason };
 }
 
 /**

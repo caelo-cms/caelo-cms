@@ -259,6 +259,11 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
       "chat-runner fixes which plugin skills a chat's pinned `# Skills` index left out (#1008)",
   },
   "chat.mark_message_interrupted": { kind: "internal", reason: "chat-runner abort bookkeeping" },
+  "plugins.unseen_draft_rows": {
+    kind: "internal",
+    reason:
+      "approval preflight of a draft-bound plugin tool (#1705): the chat-runner and the MCP queue ask it before a card is shown; the AI re-reads the rows it names with get_plugin_draft_rows",
+  },
   "chat.acquire_turn_lease": {
     kind: "internal",
     reason: "chat-runner turn serialization across admin instances (issue #628)",

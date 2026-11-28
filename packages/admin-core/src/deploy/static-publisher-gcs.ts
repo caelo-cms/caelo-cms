@@ -213,8 +213,12 @@ export function createGcsStaticPublisher(
           `promoteToProduction: no staged files found under gs://${h.stagingBucketName}/${prefix}. Run Stage first.`,
         );
       }
-      const { buildRobotsTxtWithSitemap, envNoindexBuildError, manifestBakesEnvNoindex } =
-        await import("@caelo-cms/static-generator");
+      const {
+        buildRobotsTxtWithSitemap,
+        envNoindexBuildError,
+        extraSitemapFiles,
+        manifestBakesEnvNoindex,
+      } = await import("@caelo-cms/static-generator");
       // routing-manifest.json changes every build (runId, builtAt), so the
       // hash-skip never leaves it out of the staging prefix.
       const stagingManifest = h.stagingBucket.file(`${prefix}routing-manifest.json`);
@@ -283,7 +287,11 @@ export function createGcsStaticPublisher(
       const robotsBody = buildRobotsTxtWithSitemap(
         toTarget.robotsDefault,
         siteBaseUrl,
-        { sitemap: buildFiles.has("sitemap.xml"), feed: buildFiles.has(FEED_FILE) },
+        {
+          sitemap: buildFiles.has("sitemap.xml"),
+          feed: buildFiles.has(FEED_FILE),
+          extraSitemaps: extraSitemapFiles((f) => buildFiles.has(f)),
+        },
         robotsRules,
       );
       await uploadBytes(

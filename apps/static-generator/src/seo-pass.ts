@@ -47,12 +47,14 @@
  */
 
 import { type BuildPluginServices, composeHeadBlock } from "@caelo-cms/plugin-host";
+import { SITEMAP_KIND_FILES } from "@caelo-cms/plugin-sdk";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   ARTICLE_MODIFIED_TIME_PENDING,
   applyDocumentLanguage,
   type BreadcrumbJsonLdItem,
   breadcrumbJsonLdItems,
+  buildPageGraph,
   completeSeoOrigins,
   injectSeoIntoHead,
   MAX_IMAGE_PREVIEW_VALUES,
@@ -61,9 +63,11 @@ import {
   type PageSeoHeadFields,
   type PageTypeSeo,
   type PageUrlStyle,
+  PLUGIN_STRUCTURED_DATA_POINT,
   pagedUrl,
   pageTypeSeoSchema,
   pickShareImage,
+  pluginValueRefusedMarker,
   type ResolvedPageSeoHead,
   type RobotsRules,
   renderSeoHead,
@@ -85,6 +89,11 @@ import type { ContentStates } from "./content-states.js";
 import type { MediaPass, OgImageOutcome } from "./media-pass.js";
 import type { RenderFailure } from "./nested-modules-pass.js";
 import { SITEMAP_IMAGE_NS, sitemapImageLines, sitemapImagesOf } from "./sitemap-images.js";
+import {
+  ExtraSitemaps,
+  prepareStructuredDataPass,
+  structuredDataRenderFailure,
+} from "./structured-data-pass.js";
 
 interface PageSeoBundle {
   pageId: string;
@@ -120,6 +129,8 @@ export interface SeoPagesContext {
   bodyDigest: string | null;
   /** #1142 — the trail the page's breadcrumbs rendered (`ListPageContext.breadcrumbTrail`). */
   breadcrumbTrail?: readonly string[] | null;
+  /** #1759 — the pages its page queries showed (`ListPageContext.listedPages`). */
+  listedPages?: readonly string[];
   /**
    * #1257 — page `n` ≥ 2 of a paginated overview (same page id as page
    * 1): self-canonical, `noindex` and out of the sitemap unless indexable.
@@ -129,8 +140,19 @@ export interface SeoPagesContext {
 
 /** The SEO pass of one build, prepared once and applied page batch by page batch. */
 export interface SeoPass {
-  /** Inject head meta + `<html lang>` into one batch of pages, in place. */
-  apply(pages: SeoPagesContext[]): Promise<void>;
+  /**
+   * Inject head meta, the JSON-LD graph + `<html lang>` into one batch of
+   * pages, in place. Returns what the batch could not render as given
+   * (#1753: plugin structured data core refused), for the build's render
+   * failures.
+   */
+  apply(pages: SeoPagesContext[]): Promise<RenderFailure[]>;
+  /**
+   * #1761 — write the news and video sitemaps (when the sitemap is on and
+   * plugins listed pages for them) from what every batch collected; call
+   * once after the last batch. Returns the files written, for robots.txt.
+   */
+  writeExtraSitemaps(write: (relPath: string, content: string) => Promise<void>): Promise<string[]>;
   /**
    * Record one batch's indexable pages in the live comparison, once their
    * HTML is final (after the plugin pass): page 1 of every indexable page,
@@ -485,6 +507,21 @@ export async function prepareSeoPass(args: {
   const followUpsOf = new Map<string, number[]>();
   // #1762 — page 1's library images, for its sitemap entry.
   const imagesOf = new Map<string, string[]>();
+  // #1753, #1761 — what plugins add to the graphs and the news and video
+  // sitemaps; null when no plugin contributes (nothing is loaded then).
+  const structured = await prepareStructuredDataPass({
+    tx,
+    plugins,
+    media: args.media,
+    siteBaseUrl: settings.siteBaseUrl,
+    pageUrlStyle,
+    site: { organization: Boolean(settings.organization.name), name: settings.siteName },
+    publishAt: contentStates.publishAt,
+  });
+  const extraSitemaps = new ExtraSitemaps(settings.siteName);
+  // `<html lang>`: the build always has the site language.
+  const languageOf = (pageId: string): string =>
+    contributions.lang.get(pageId) ?? settings.siteLanguage;
 
   return {
     renderFailures,
@@ -528,6 +565,13 @@ export async function prepareSeoPass(args: {
         imagesOf.set(bundle.pageId, sitemapImagesOf(p.html, settings.siteBaseUrl));
         // #1752 — the article's modified time is the date the record gives.
         p.html = setArticleModifiedTime(p.html, contentStates.changedAt(bundle.pageId));
+        // #1753 — and every graph value that asked for it: one that kept the
+        // marker would ship undated (the vocabulary refuses every such shape).
+        if (p.html.includes(ARTICLE_MODIFIED_TIME_PENDING)) {
+          throw new Error(
+            `seo-pass: page ${bundle.pageId} still carries an undated modified date after dating it`,
+          );
+        }
       }
     },
 
@@ -606,6 +650,28 @@ export async function prepareSeoPass(args: {
         for (const [id, url] of urls) ownUrls.set(id, url);
       }
 
+      // #1753 — the plugins' structured data of this batch's pages (page 1
+      // of each; a follow-up page and the 404 page carry core's nodes only).
+      const batchFailures: RenderFailure[] = [];
+      const own = pages
+        .filter((p) => !p.followUp && p.pageId !== notFoundPageId && bundleById.has(p.pageId))
+        .map((p) => {
+          const b = bundleById.get(p.pageId) as PageSeoBundle;
+          return {
+            pageId: b.pageId,
+            lang: languageOf(b.pageId),
+            description: headOf(b, false).metaDescription.value,
+            shareImage: shareImageOf.get(b.pageId) ?? null,
+            live: isIndexable(b),
+            listed: p.listedPages ?? [],
+          };
+        });
+      const sd = structured && own.length > 0 ? await structured.forBatch(own) : null;
+      for (const [pageId, markers] of sd?.refused ?? []) {
+        const b = bundleById.get(pageId);
+        if (b) for (const m of markers) batchFailures.push(structuredDataRenderFailure(b, m));
+      }
+
       // #390 — canonical follows the MATERIALIZED composed path; home
       // designation, prefixes, and slug formats are already baked into
       // pages.current_path by the write ops.
@@ -633,22 +699,68 @@ export async function prepareSeoPass(args: {
                 modifiedTime: ARTICLE_MODIFIED_TIME_PENDING,
               }
             : null;
+        const canonical =
+          notFound !== null
+            ? notFound.canonical
+            : p.followUp
+              ? followUpUrlOf(bundle, p.followUp.page)
+              : publicUrlOf(bundle);
+        // #1753 — one graph: core's nodes with fixed ids, then what plugins
+        // add. A page in the live record carries its live dates, the
+        // modified one dated with `article:modified_time` in recordStates.
+        const recorded = !p.followUp && isIndexable(bundle);
+        const lang = languageOf(bundle.pageId);
+        const built = buildPageGraph(
+          {
+            siteBaseUrl: settings.siteBaseUrl,
+            canonical,
+            siteName: settings.siteName,
+            siteLanguage: settings.siteLanguage,
+            pageLanguage: lang,
+            pageTitle: bundle.title,
+            description: head.metaDescription.value,
+            imageUrl: ogImageUrl,
+            organization: settings.organization,
+            breadcrumbs:
+              notFound !== null ? [] : breadcrumbJsonLdItems(p.breadcrumbTrail ?? null, crumbOf),
+            liveDates: recorded
+              ? {
+                  published: bundle.firstPublishedAt ?? contentStates.publishAt,
+                  modified: ARTICLE_MODIFIED_TIME_PENDING,
+                }
+              : null,
+          },
+          p.followUp || isNotFoundPage ? [] : (sd?.parts.get(bundle.pageId) ?? []),
+          sd?.mediaUrl ?? (() => null),
+        );
+        for (const r of built.refusals) {
+          batchFailures.push(
+            structuredDataRenderFailure(
+              bundle,
+              pluginValueRefusedMarker(r.plugin, PLUGIN_STRUCTURED_DATA_POINT, r.field, r.rule),
+            ),
+          );
+        }
+        // #1761 — the news and video sitemaps list pages of the live record.
+        if (recorded && sd?.sitemap) {
+          extraSitemaps.add(bundle, {
+            loc: publicUrlOf(bundle),
+            language: lang,
+            publishedAt: bundle.firstPublishedAt ?? contentStates.publishAt,
+            news: sd.sitemap.news.get(bundle.pageId),
+            videos: sd.sitemap.videos.get(bundle.pageId),
+            mediaUrl: sd.mediaUrl,
+          });
+        }
         const headBlock = renderSeoHead({
           head,
           pageTitle: bundle.title,
           siteName: settings.siteName,
           article,
           ogImageUrl,
-          organization: settings.organization,
           feed: args.feed,
-          ...(notFound !== null
-            ? { canonical: notFound.canonical }
-            : {
-                canonical: p.followUp
-                  ? followUpUrlOf(bundle, p.followUp.page)
-                  : publicUrlOf(bundle),
-                breadcrumbs: breadcrumbJsonLdItems(p.breadcrumbTrail ?? null, crumbOf),
-              }),
+          canonical,
+          jsonLd: built.graph,
         });
         const contributed = contributions.head.get(bundle.pageId);
         p.html = injectSeoIntoHead(
@@ -673,6 +785,13 @@ export async function prepareSeoPass(args: {
           }),
         );
       }
+      return batchFailures;
+    },
+
+    async writeExtraSitemaps(write) {
+      // Gated with sitemap.xml: robots.txt lists them next to it.
+      if (!settings.sitemapEnabled || settings.siteBaseUrl.length === 0) return [];
+      return extraSitemaps.write(write);
     },
 
     async writeSitemap(write) {
@@ -956,15 +1075,38 @@ export function requireSiteLanguage(settings: StoredSeoSettings): SiteSeoSetting
  * AND by every publisher's promote, which rewrites robots.txt for the
  * destination target from the files and the rules the build carries
  * (`deploy_runs.robots_rules`), never from the settings as they are by
- * then.
+ * then. #1761 — `extraSitemaps` are the news and video sitemaps the build
+ * wrote (`SITEMAP_KIND_FILES`), listed after the others.
  */
 export function buildRobotsTxtWithSitemap(
   robots: "index" | "noindex",
   siteBaseUrl: string,
-  emitted: { readonly sitemap: boolean; readonly feed: boolean },
+  emitted: {
+    readonly sitemap: boolean;
+    readonly feed: boolean;
+    readonly extraSitemaps?: readonly string[];
+  },
   rules: RobotsRules,
 ): string {
-  return robotsTxt({ robots, siteBaseUrl, sitemap: emitted.sitemap, feed: emitted.feed, rules });
+  const body = robotsTxt({
+    robots,
+    siteBaseUrl,
+    sitemap: emitted.sitemap,
+    feed: emitted.feed,
+    rules,
+  });
+  const extra = emitted.extraSitemaps ?? [];
+  if (robots === "noindex" || extra.length === 0) return body;
+  const base = siteBaseUrl.replace(/\/$/, "");
+  const lines = extra.map((file) => `Sitemap: ${base}/${file}`).join("\n");
+  // robotsTxt ends its Sitemap: lines with a newline, or its groups with a
+  // blank line before the first Sitemap: line.
+  return emitted.sitemap || emitted.feed ? `${body}${lines}\n` : `${body}\n${lines}\n`;
+}
+
+/** The news and video sitemaps a build's files carry, for robots.txt. */
+export function extraSitemapFiles(hasFile: (relPath: string) => boolean): string[] {
+  return Object.values(SITEMAP_KIND_FILES).filter((file) => hasFile(file));
 }
 
 /**

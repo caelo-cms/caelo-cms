@@ -119,6 +119,26 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     },
     "site_defaults.get": { measured: ["site_defaults.get"] },
   },
+  seo: {
+    "lists.list": {
+      notBackground:
+        "the topic tools, the write hint after an AI write and the Stage audit read the site's vocabularies (role vocabulary), never in a consumer or cron",
+    },
+    "lists.merge_terms": { notBackground: "the merge_terms tool merges the terms it names" },
+    "page_types.list": {
+      notBackground: "get_schema_mapping and set_schema_mappings_many read the page types",
+    },
+    "pages.list": {
+      notBackground: "the write hint reads the few topic pages a write names, by path",
+    },
+    "quality_audits.staged_pages": {
+      notBackground:
+        "the Stage audit's batch calls read the pages each batch names, by the audit run",
+    },
+    "site_defaults.get": {
+      notBackground: "suggest_internal_links reads the home page the click depth starts at",
+    },
+  },
   "site-assistant": {
     "lists.get": {
       notBackground: "the Stage audit reads the test-question list the settings name, by id",

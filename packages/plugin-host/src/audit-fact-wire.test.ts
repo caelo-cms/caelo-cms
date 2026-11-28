@@ -9,7 +9,8 @@
 
 import { describe, expect, it } from "bun:test";
 import type { PluginAuditFindingsArgs, PluginAuditPageFacts } from "@caelo-cms/plugin-sdk";
-import { AUDIT_CALL_ARGS_BYTES, auditCallsThatFit, cutPageFacts } from "./audit-fact-wire.js";
+import { auditCallsThatFit, cutPageFacts } from "./audit-fact-wire.js";
+import { PLUGIN_CALL_ARGS_BYTES } from "./call-wire-budget.js";
 import { callInParts, type PluginAuditFindings } from "./audit-findings.js";
 import { SANDBOX_MESSAGE_BYTES } from "./sandbox-protocol.js";
 
@@ -57,8 +58,8 @@ function batch(all: PluginAuditPageFacts[], own: boolean): PluginAuditFindingsAr
 
 describe("audit fact batches on the sandbox wire", () => {
   it("leaves the room of one message for the envelope", () => {
-    expect(AUDIT_CALL_ARGS_BYTES).toBeLessThan(SANDBOX_MESSAGE_BYTES);
-    expect(SANDBOX_MESSAGE_BYTES - AUDIT_CALL_ARGS_BYTES).toBe(64 * 1024);
+    expect(PLUGIN_CALL_ARGS_BYTES).toBeLessThan(SANDBOX_MESSAGE_BYTES);
+    expect(SANDBOX_MESSAGE_BYTES - PLUGIN_CALL_ARGS_BYTES).toBe(64 * 1024);
   });
 
   it("keeps a call that fits at the byte as one call, and cuts it one byte later", () => {
@@ -80,7 +81,7 @@ describe("audit fact batches on the sandbox wire", () => {
     expect(bytes(args)).toBeGreaterThan(SANDBOX_MESSAGE_BYTES);
     const parts = auditCallsThatFit(args);
     expect(parts.length).toBeGreaterThan(1);
-    for (const part of parts) expect(bytes(part)).toBeLessThanOrEqual(AUDIT_CALL_ARGS_BYTES);
+    for (const part of parts) expect(bytes(part)).toBeLessThanOrEqual(PLUGIN_CALL_ARGS_BYTES);
     expect(parts.flatMap((p) => p.facts ?? [])).toEqual(all);
   });
 
@@ -97,7 +98,7 @@ describe("audit fact batches on the sandbox wire", () => {
     const big = facts(7, 300, 6000);
     const args = batch([facts(1, 10), big], true);
     const parts = auditCallsThatFit(args);
-    for (const part of parts) expect(bytes(part)).toBeLessThanOrEqual(AUDIT_CALL_ARGS_BYTES);
+    for (const part of parts) expect(bytes(part)).toBeLessThanOrEqual(PLUGIN_CALL_ARGS_BYTES);
     const cut = parts.flatMap((p) => p.facts ?? []).find((f) => f.pageId === big.pageId);
     expect(cut?.truncated).toBe(true);
     expect(cut?.truncatedFacts).toEqual(["texts"]);

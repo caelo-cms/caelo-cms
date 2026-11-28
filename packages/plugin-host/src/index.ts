@@ -136,6 +136,7 @@ export {
   resolveContentVariants,
 } from "./content-variants.js";
 export {
+  hasDeferralContributors,
   type ResolvedDeferral,
   type ResolvedDeferrals,
   resolveModuleDeferrals,
@@ -415,11 +416,23 @@ export {
   SHARE_IMAGES_PAGES_PER_CALL,
 } from "./share-images.js";
 export {
+  type CollectedSitemapEntries,
+  collectSitemapEntries,
+  hasSitemapEntriesContributors,
+  type ResolvedVideoEntry,
+} from "./sitemap-entries.js";
+export {
   parseListFilter,
   publicListSql,
   registerPluginStorageOps,
   STORAGE_OPS,
 } from "./storage-ops.js";
+export {
+  type CollectedStructuredData,
+  collectStructuredData,
+  hasStructuredDataContributors,
+  type StructuredDataInput,
+} from "./structured-data.js";
 export { recordExternalToolApproval } from "./tool-approval-binding.js";
 export {
   pluginToolsRegistry,

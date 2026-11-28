@@ -7,6 +7,7 @@
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
+import type { ModuleKind } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { headOverlaySql } from "../draft.js";
 import type {
@@ -27,11 +28,13 @@ export async function loadModuleState(
   moduleId: string,
 ): Promise<ModuleState | null> {
   const rows = (await tx.execute(sql`
-    SELECT slug, display_name, type, html, css, js, fields, deleted_at
+    SELECT slug, display_name, description, kind, type, html, css, js, fields, deleted_at
     FROM modules WHERE id = ${moduleId}::uuid LIMIT 1
   `)) as unknown as {
     slug: string;
     display_name: string;
+    description: string;
+    kind: ModuleKind;
     type: string | null;
     html: string;
     css: string;
@@ -46,6 +49,8 @@ export async function loadModuleState(
     schemaVersion: 1,
     slug: r.slug,
     displayName: r.display_name,
+    description: r.description,
+    kind: r.kind,
     // v0.12.3 — `type` is NOT NULL post-0103; tolerate a null only for
     // an in-flight pre-migration row by falling back to slug.
     type: r.type ?? r.slug,

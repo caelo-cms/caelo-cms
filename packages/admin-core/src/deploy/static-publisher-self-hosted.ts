@@ -144,8 +144,12 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     const toCurrent = join(toDir, "current");
     const overlayBuildId = `${basename(sourceBuildDir)}-${toTarget.name}`;
     const overlayDir = join(toBuildsDir, overlayBuildId);
-    const { buildRobotsTxtWithSitemap, envNoindexBuildError, manifestBakesEnvNoindex } =
-      await import("@caelo-cms/static-generator");
+    const {
+      buildRobotsTxtWithSitemap,
+      envNoindexBuildError,
+      extraSitemapFiles,
+      manifestBakesEnvNoindex,
+    } = await import("@caelo-cms/static-generator");
     const manifestRaw = await Bun.file(join(sourceBuildDir, "routing-manifest.json"))
       .text()
       .catch(() => "{}");
@@ -170,6 +174,7 @@ export const selfHostedStaticPublisher: StaticPublisher = {
         {
           sitemap: existsSync(join(sourceBuildDir, "sitemap.xml")),
           feed: existsSync(join(sourceBuildDir, FEED_FILE)),
+          extraSitemaps: extraSitemapFiles((f) => existsSync(join(sourceBuildDir, f))),
         },
         robotsRules,
       ),

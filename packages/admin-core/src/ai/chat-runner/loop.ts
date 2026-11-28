@@ -45,6 +45,7 @@ import { buildApprovalPreview } from "./approval.js";
 import {
   approverPermissionsForGatedCall,
   fullPreviewArgsForGatedCall,
+  preflightDraftBoundPluginCall,
   preflightGatedCall,
   serverApprovalPreview,
 } from "./approval-preflight.js";
@@ -909,7 +910,15 @@ export async function* runToolLoop(
       const rejected: { req: ApprovalRequest; reason: string }[] = [];
       const askable: ApprovalRequest[] = [];
       for (const req of run.approvalRequests) {
-        let bad = preflightGatedCall(tools, registry, req.name, req.arguments);
+        let bad =
+          preflightGatedCall(tools, registry, req.name, req.arguments) ??
+          (await preflightDraftBoundPluginCall(
+            registry,
+            adapter,
+            args.aiCtxWithBranch,
+            req.name,
+            req.arguments,
+          ));
         if (!bad) {
           try {
             await args.filteredTools

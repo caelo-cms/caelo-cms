@@ -78,10 +78,14 @@ async function preview(pageId: string): Promise<string> {
 }
 
 const nav = (html: string): string => /<nav[\s\S]*?<\/nav>/.exec(html)?.[0] ?? "";
-const crumbsLd = (html: string): string | null =>
-  [...html.matchAll(/<script type="application\/ld\+json">(.*?)<\/script>/g)]
-    .map((m) => m[1] as string)
-    .find((s) => s.includes('"BreadcrumbList"')) ?? null;
+/** #1753 — the BreadcrumbList node of the page's one JSON-LD graph, as JSON. */
+const crumbsLd = (html: string): string | null => {
+  const graph = [...html.matchAll(/<script type="application\/ld\+json">(.*?)<\/script>/g)].flatMap(
+    (m) => (JSON.parse(m[1] as string) as { "@graph"?: Record<string, unknown>[] })["@graph"] ?? [],
+  );
+  const node = graph.find((n) => n["@type"] === "BreadcrumbList");
+  return node ? JSON.stringify(node) : null;
+};
 const CRUMBS_HTML =
   '<nav aria-label="{{site_text.breadcrumb_label}}"><ol>{{#crumbs}}<li>{{#is_current}}<span aria-current="page">{{short_title}}</span>{{/is_current}}{{^is_current}}<a href="{{link}}">{{short_title}}</a>{{/is_current}}</li>{{/crumbs}}</ol></nav>';
 const CRUMBS_FIELD = {
@@ -211,8 +215,8 @@ describe("#1142 breadcrumbs", () => {
     const previewLd = crumbsLd(await preview(ids.team));
     expect(previewLd).not.toBeNull();
     expect(JSON.parse(previewLd as string)).toEqual({
-      "@context": "https://schema.org",
       "@type": "BreadcrumbList",
+      "@id": `${BASE}/t1142-about/t1142-team/#breadcrumb`,
       itemListElement: [
         { "@type": "ListItem", position: 1, name: "Start", item: `${BASE}/` },
         { "@type": "ListItem", position: 2, name: "About", item: `${BASE}/t1142-about/` },
