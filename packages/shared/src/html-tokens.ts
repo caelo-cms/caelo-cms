@@ -11,13 +11,15 @@
  * (the #1732 review ran `<td onfocus=…>` from a richtext inside a table).
  * Every start and end tag is seen, whatever a tree builder would do with
  * it. The tokenizer stays in its data state, as no tree builder switches it
- * to raw text: the checks refuse every element whose content is raw text,
- * so the prose they admit is read as the browser reads it.
+ * to raw text: the plugin checks refuse every element whose content is raw
+ * text, so the prose they admit is read as the browser reads it. A core
+ * value's check (#1748) asks for the switch a tree builder makes
+ * ({@link HtmlTokenOptions.textElements}).
  *
  * Linear and flat: no recursion however deep the markup nests.
  */
 
-import { type Token, Tokenizer } from "parse5";
+import { type Token, Tokenizer, TokenizerMode } from "parse5";
 
 /** One token: a start or end tag, a comment (a `<?…>` too), a doctype, or text. */
 export type HtmlToken =
@@ -34,15 +36,117 @@ export type HtmlToken =
       readonly selfClosing: boolean;
       /** Offset of the `<`. */
       readonly start: number;
+      /** Offset just past the tag's `>`. */
+      readonly end: number;
     }
   | { readonly kind: "end"; readonly name: string; readonly start: number }
   | { readonly kind: "comment"; readonly data: string; readonly start: number }
   | { readonly kind: "doctype"; readonly start: number }
   | { readonly kind: "text"; readonly value: string };
 
+/** How a tree builder switches the tokenizer after an HTML start tag ({@link HtmlTokenOptions.textElements}). */
+const TEXT_STATES: Readonly<Record<string, (typeof TokenizerMode)[keyof typeof TokenizerMode]>> = {
+  title: TokenizerMode.RCDATA,
+  textarea: TokenizerMode.RCDATA,
+  style: TokenizerMode.RAWTEXT,
+  xmp: TokenizerMode.RAWTEXT,
+  iframe: TokenizerMode.RAWTEXT,
+  noembed: TokenizerMode.RAWTEXT,
+  noframes: TokenizerMode.RAWTEXT,
+  // Scripting on, as in a browser.
+  noscript: TokenizerMode.RAWTEXT,
+  script: TokenizerMode.SCRIPT_DATA,
+  plaintext: TokenizerMode.PLAINTEXT,
+};
+
+/** SVG and MathML elements whose content is HTML again (the HTML standard's integration points). */
+const INTEGRATION_POINTS: ReadonlySet<string> = new Set([
+  "foreignobject",
+  "desc",
+  "title",
+  "mi",
+  "mo",
+  "mn",
+  "ms",
+  "mtext",
+  "annotation-xml",
+]);
+
+/** HTML start tags that end SVG and MathML content around them (the HTML standard's foreign content rules). */
+const FOREIGN_BREAKOUT: ReadonlySet<string> = new Set([
+  "b",
+  "big",
+  "blockquote",
+  "body",
+  "br",
+  "center",
+  "code",
+  "dd",
+  "div",
+  "dl",
+  "dt",
+  "em",
+  "embed",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "head",
+  "hr",
+  "i",
+  "img",
+  "li",
+  "listing",
+  "menu",
+  "meta",
+  "nobr",
+  "ol",
+  "p",
+  "pre",
+  "ruby",
+  "s",
+  "small",
+  "span",
+  "strong",
+  "strike",
+  "sub",
+  "sup",
+  "table",
+  "tt",
+  "u",
+  "ul",
+  "var",
+]);
+
+/** Whether start tag `t` ends the SVG / MathML content it stands in. */
+function breaksOutOfForeign(t: Token.TagToken): boolean {
+  if (FOREIGN_BREAKOUT.has(t.tagName)) return true;
+  return t.tagName === "font" && t.attrs.some((a) => ["color", "face", "size"].includes(a.name));
+}
+
+/** Options of {@link htmlTokens}. */
+export interface HtmlTokenOptions {
+  /**
+   * #1748 — read the content of `<script>`, `<style>`, `<textarea>`,
+   * `<title>` and the other text elements as text, as a browser's tree
+   * builder makes its tokenizer read it in HTML content (outside SVG and
+   * MathML): a core value's own balanced `<textarea></div></textarea>` is
+   * no `</div>`. Off for the plugin checks, which refuse those elements.
+   */
+  readonly textElements?: boolean;
+}
+
 /** The tokens of `html`, in order. A tag left unfinished at the end is no token (the tokenizer drops it). */
-export function htmlTokens(html: string): HtmlToken[] {
+export function htmlTokens(html: string, options: HtmlTokenOptions = {}): HtmlToken[] {
   const out: HtmlToken[] = [];
+  // The SVG / MathML elements open around the current token, and the HTML
+  // integration points among them (`foreignObject`, `mtext`, …), where
+  // HTML, text elements included, is read again.
+  const foreign: { readonly name: string; readonly html: boolean }[] = [];
+  const inHtml = () =>
+    foreign.length === 0 || (foreign[foreign.length - 1] as { html: boolean }).html;
   const text = (t: Token.CharacterToken) => {
     const last = out[out.length - 1];
     if (last?.kind === "text") out[out.length - 1] = { kind: "text", value: last.value + t.chars };
@@ -52,6 +156,22 @@ export function htmlTokens(html: string): HtmlToken[] {
     { sourceCodeLocationInfo: true },
     {
       onStartTag(t) {
+        if (options.textElements) {
+          // An HTML element that SVG or MathML cannot hold ends them (the
+          // standard's breakout tags): back to HTML before it is read.
+          if (!inHtml() && breaksOutOfForeign(t)) {
+            while (foreign.length > 0 && !inHtml()) foreign.pop();
+          }
+          if (inHtml()) {
+            const textState = TEXT_STATES[t.tagName];
+            if (textState !== undefined) tokenizer.state = textState;
+            else if ((t.tagName === "svg" || t.tagName === "math") && !t.selfClosing) {
+              foreign.push({ name: t.tagName, html: false });
+            }
+          } else if (!t.selfClosing) {
+            foreign.push({ name: t.tagName, html: INTEGRATION_POINTS.has(t.tagName) });
+          }
+        }
         out.push({
           kind: "start",
           name: t.tagName,
@@ -65,9 +185,11 @@ export function htmlTokens(html: string): HtmlToken[] {
           }),
           selfClosing: t.selfClosing,
           start: t.location?.startOffset ?? -1,
+          end: t.location?.endOffset ?? -1,
         });
       },
       onEndTag(t) {
+        if (options.textElements && foreign[foreign.length - 1]?.name === t.tagName) foreign.pop();
         out.push({ kind: "end", name: t.tagName, start: t.location?.startOffset ?? -1 });
       },
       onComment(t) {

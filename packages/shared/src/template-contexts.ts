@@ -174,6 +174,75 @@ export interface PlaceholderContexts {
    * Null when {@link endsInContent}. What the AI is shown to rewrite.
    */
   readonly endsOutsideFrom: number | null;
+  /**
+   * #1748 — where each value tag sits for a CORE value, by the offset of
+   * its `{{` (the inner one of a `{{{…}}}` too), checked by
+   * `core-value-structure.ts`. The values reading's places (more than one
+   * where parse5 copied a marker), kept also where a plugin's value is
+   * refused because a section could change the reading: a core value is
+   * refused only where it surely changes the structure around it. A tag
+   * the reading lost (a marker parse5 dropped) has no entry.
+   */
+  readonly corePlaces: ReadonlyMap<number, readonly CorePlace[]>;
+}
+
+/**
+ * #1748 — where a value tag sits, as the structure rule for a CORE value
+ * reads it (`core-value-structure.ts`): what in the value would change the
+ * markup around it depends only on this. `before` and `after` are the
+ * template's text right before and after the tag ({@link CORE_AFTER}
+ * characters each, up to another value tag), which can complete what the
+ * value starts or the value what they start: the `>` of a `</textarea` or
+ * of a comment's `--`, the letter after a trailing `<`.
+ */
+export type CorePlace =
+  /**
+   * Element content. `open`: the start tags of the elements around the
+   * value, outermost first (`<div><template>`), to read the value inside
+   * them; null when they cannot be written back (inside `<head>`).
+   * `plain`: no SVG, MathML or `<select>` around it.
+   */
+  | {
+      readonly kind: "content";
+      readonly open: string | null;
+      readonly plain: boolean;
+      readonly after: string;
+      /** Another value tag follows right after `after`. */
+      readonly valueAfter: boolean;
+      /**
+       * The tag stands right inside a table's structure (`<table>{{x}}<tr>`),
+       * where the parser foster-parents text out of the table but still
+       * reads every tag against it: any markup there can restructure it.
+       */
+      readonly inTable: boolean;
+    }
+  /** The text of an HTML element only its end tag ends: `script`, `style`, `title`, `textarea`, … */
+  | ({ readonly kind: "raw-text"; readonly element: string } & Neighbours)
+  /** A comment's text. */
+  | ({ readonly kind: "comment" } & Neighbours)
+  /** An attribute's value: its quote (null unquoted), and whether the value starts it. */
+  | { readonly kind: "attribute"; readonly quote: '"' | "'" | null; readonly atStart: boolean }
+  /** A place the reading lost (its marker dropped by the parse): every place's rule at once. */
+  | { readonly kind: "unknown" }
+  /** A tag's name (`inName`) or its attribute list (`<div {{attrs}}>`). */
+  | {
+      readonly kind: "tag";
+      readonly inName: boolean;
+      /** The template's text right before (up to another value tag): a name may start right after its `<`. */
+      readonly before: string;
+      readonly after: string;
+    };
+
+/**
+ * The template's text right before and after a value tag in raw text or a
+ * comment (never past another value tag), and whether another value tag is
+ * that near: its value may supply the rest of an end the value starts.
+ */
+export interface Neighbours {
+  readonly before: string;
+  readonly after: string;
+  readonly valueBefore: boolean;
+  readonly valueAfter: boolean;
 }
 
 const cache = new Map<string, PlaceholderContexts>();
@@ -253,6 +322,7 @@ function computeContexts(html: string): PlaceholderContexts {
     return {
       byStart,
       nestedOutsideContent: new Set(),
+      corePlaces: new Map(),
       endsInContent: ends && select === Number.POSITIVE_INFINITY,
       endsOutsideFrom:
         select !== Number.POSITIVE_INFINITY
@@ -281,6 +351,31 @@ function computeContexts(html: string): PlaceholderContexts {
     // A triple-stache's inner `{{` is where the section pass sees the tag.
     if (html[tag.start + 2] === "{") byStart.set(tag.start + 1, context);
   }
+  const corePlaces = new Map<number, readonly CorePlace[]>();
+  for (const [i, tag] of tags.entries()) {
+    if (tag.kind !== "value") continue;
+    let places = values.corePlaces.get(i) ?? [];
+    // Where a section or a value-named element could change the reading
+    // (`{{#show}}<textarea>{{/show}}{{body}}`), a render may put the value
+    // in plain content too: it must keep that markup as well.
+    if (tag.start > unsafeFrom) {
+      const content = places.find((p) => p.kind === "content");
+      places = [
+        ...places,
+        {
+          kind: "content",
+          open: "",
+          plain: true,
+          after: content?.kind === "content" ? content.after : "",
+          valueAfter: content?.kind === "content" ? content.valueAfter : false,
+          inTable: false,
+        },
+      ];
+    }
+    if (places.length === 0) continue;
+    corePlaces.set(tag.start, places);
+    if (html[tag.start + 2] === "{") corePlaces.set(tag.start + 1, places);
+  }
   // Where the reading of the end marker holds in every render (not where
   // the value rules stop trusting the reading: a value after an unquoted
   // `alt={{alt}}` is refused, but the module still ends where it ends).
@@ -292,6 +387,7 @@ function computeContexts(html: string): PlaceholderContexts {
   return {
     byStart,
     nestedOutsideContent,
+    corePlaces,
     endsInContent,
     endsOutsideFrom: endsInContent
       ? null
@@ -386,6 +482,8 @@ type Place =
       readonly foreign: Element | null;
       /** The nearest `<select>` ancestor, or null (see {@link selectContent}). */
       readonly select: Element | null;
+      /** The open elements around it, innermost first (#1748: a core value's check rebuilds them). */
+      readonly chain: Ancestors | null;
     }
   | { readonly at: "comment"; readonly node: DefaultTreeAdapterTypes.CommentNode }
   | { readonly at: "doctype" }
@@ -395,6 +493,12 @@ type Place =
       readonly element: Element;
       readonly attribute: Attribute;
     };
+
+/** The elements open around a place, innermost first, as a linked list (no copy per level). */
+interface Ancestors {
+  readonly element: Element;
+  readonly up: Ancestors | null;
+}
 
 /** Parse `text` as a `<body>`'s content, the way a browser with scripting on reads it. */
 function parseBody(text: string): DefaultTreeAdapterTypes.DocumentFragment {
@@ -422,11 +526,12 @@ function placesOf(root: Node, markers: MarkerSet): Map<number, Place[]> {
     readonly parent: Element | null;
     readonly foreign: Element | null;
     readonly select: Element | null;
+    readonly chain: Ancestors | null;
   };
-  const stack: Frame[] = [{ node: root, parent: null, foreign: null, select: null }];
+  const stack: Frame[] = [{ node: root, parent: null, foreign: null, select: null, chain: null }];
   // Children are pushed in reverse, so they come off the stack in document order.
   for (let frame = stack.pop(); frame !== undefined; frame = stack.pop()) {
-    const { node, parent, foreign, select } = frame;
+    const { node, parent, foreign, select, chain } = frame;
     const children: readonly Node[] =
       "content" in node && node.content
         ? (node.content as DefaultTreeAdapterTypes.DocumentFragment).childNodes
@@ -441,6 +546,7 @@ function placesOf(root: Node, markers: MarkerSet): Map<number, Place[]> {
           parent,
           foreign,
           select,
+          chain,
         });
       } else if (child.nodeName === "#comment") {
         const comment = child as DefaultTreeAdapterTypes.CommentNode;
@@ -461,6 +567,7 @@ function placesOf(root: Node, markers: MarkerSet): Map<number, Place[]> {
           foreign: element.namespaceURI !== H.NS.HTML ? element : foreign,
           select:
             element.namespaceURI === H.NS.HTML && element.tagName === "select" ? element : select,
+          chain: { element, up: chain },
         });
       }
     }
@@ -537,6 +644,8 @@ function readValues(
    * unquoted value that renders empty moves the end of its tag.
    */
   readonly endHolds: boolean;
+  /** Per value tag (by index), its places for a core value. */
+  readonly corePlaces: ReadonlyMap<number, readonly CorePlace[]>;
 } {
   let text = "";
   const segments: Segment[] = [];
@@ -609,9 +718,37 @@ function readValues(
   let endHolds = unsafeFrom === Number.POSITIVE_INFINITY;
   // Per start tag, the unquoted values that may render empty.
   const emptyable = new Map<Element, Map<number, number>>();
+  // Where each value tag's marker stands in the reading, and its neighbours'.
+  const around = new Map<number, Around>();
+  for (const [k, m] of markerSpans.entries()) {
+    const prev = markerSpans[k - 1];
+    const next = markerSpans[k + 1];
+    const from = Math.max(m.a - CORE_AFTER, prev?.end ?? 0);
+    const to = Math.min(m.end + CORE_AFTER, next?.a ?? text.length);
+    around.set(m.tag, {
+      before: text.slice(from, m.a),
+      after: text.slice(m.end, to),
+      valueBefore: prev !== undefined && prev.end >= m.a - CORE_AFTER,
+      valueAfter: next !== undefined && next.a <= m.end + CORE_AFTER,
+      at: m.a,
+    });
+  }
+  const tableRanges = tableStructureRanges(root);
+  const corePlaces = new Map<number, readonly CorePlace[]>();
   for (const [i, tag] of tags.entries()) {
     if (tag.kind !== "value") continue;
     const found = places.get(i) ?? [];
+    const near = around.get(i) ?? NOWHERE;
+    const core = found
+      .map((place) =>
+        corePlaceOf(place, near, text, markers, fosteredFrom(place, near.at, tableRanges)),
+      )
+      .filter((c): c is CorePlace => c !== null);
+    // A marker the parse dropped (a repeated attribute, an `<img>` in a
+    // `<select>`): the browser still reads the value somewhere this reading
+    // cannot say, so it is held to every place at once.
+    if (found.length === 0) core.push({ kind: "unknown" });
+    if (core.length > 0) corePlaces.set(i, core);
     const read: PlaceholderContext[] = [];
     for (const place of found) {
       if (place.at === "tag-name" && couldChangeReading(place.element.tagName, markers)) {
@@ -656,7 +793,169 @@ function readValues(
   for (const [element, ranges] of emptyable) {
     if (!tagEndHolds(text, element, ranges)) endHolds = false;
   }
-  return { contexts, unsafeFrom, endsInContent: isPlainContent(places.get(end)), endHolds };
+  return {
+    contexts,
+    unsafeFrom,
+    endsInContent: isPlainContent(places.get(end)),
+    endHolds,
+    corePlaces,
+  };
+}
+
+/**
+ * #1748 — a value tag's place as the core value rule reads it, or null
+ * where no value can change the structure (a doctype).
+ *
+ * @param mark the tag's marker; `at` where it starts in `text`, the reading.
+ */
+/** The content ranges of the table structure elements of a parse (`table`, `tbody`, `thead`, `tfoot`, `tr`). */
+function tableStructureRanges(
+  root: Node,
+): readonly { readonly element: Element; readonly from: number; readonly to: number }[] {
+  const out: { element: Element; from: number; to: number }[] = [];
+  const stack: Node[] = [root];
+  for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
+    const children: readonly Node[] =
+      "content" in node && node.content
+        ? (node.content as DefaultTreeAdapterTypes.DocumentFragment).childNodes
+        : "childNodes" in node
+          ? node.childNodes
+          : [];
+    for (const child of children) if ("tagName" in child) stack.push(child);
+    if (!("tagName" in node)) continue;
+    const e = node as Element;
+    if (e.namespaceURI !== H.NS.HTML || !TABLE_STRUCTURE.has(e.tagName)) continue;
+    const loc = e.sourceCodeLocation;
+    const from = loc?.startTag?.endOffset;
+    if (from === undefined) continue;
+    out.push({ element: e, from, to: loc?.endTag?.startOffset ?? loc?.endOffset ?? from });
+  }
+  return out;
+}
+
+/** Whether `text` (of the reading) holds nothing but value markers. */
+function onlyMarkers(text: string, markers: MarkerSet): boolean {
+  let rest = text;
+  for (const i of markers.find(text)) rest = rest.replace(markers.mark(i), "");
+  return rest === "";
+}
+
+/** Elements whose own content is table structure: text right inside one is foster-parented. */
+const TABLE_STRUCTURE: ReadonlySet<string> = new Set(["table", "tbody", "thead", "tfoot", "tr"]);
+
+/**
+ * Whether a text place at reading offset `at` stands right inside table
+ * structure: its marker lies inside a table structure element that is not
+ * among the elements the parse put it in (it was foster-parented out).
+ */
+function fosteredFrom(
+  place: Place,
+  at: number,
+  ranges: readonly { readonly element: Element; readonly from: number; readonly to: number }[],
+): boolean {
+  if (place.at !== "text" || at < 0) return false;
+  const chain = new Set<Element>();
+  for (let c = place.chain; c !== null; c = c.up) chain.add(c.element);
+  return ranges.some((r) => at >= r.from && at < r.to && !chain.has(r.element));
+}
+
+function corePlaceOf(
+  place: Place,
+  near: Around,
+  text: string,
+  markers: MarkerSet,
+  inTable = false,
+): CorePlace | null {
+  const { before, after, valueBefore, valueAfter, at } = near;
+  switch (place.at) {
+    case "text": {
+      const parent = place.parent;
+      const name = parent?.tagName.toLowerCase() ?? "";
+      if (
+        parent?.namespaceURI === H.NS.HTML &&
+        (name === "script" || name === "style" || TEXT_ONLY_ELEMENTS.has(name))
+      ) {
+        return { kind: "raw-text", element: name, before, after, valueBefore, valueAfter };
+      }
+      return {
+        kind: "content",
+        open: openTagsOf(place.chain),
+        plain: place.foreign === null && place.select === null,
+        after,
+        valueAfter: valueAfter && after.length === 0,
+        inTable,
+      };
+    }
+    case "comment":
+      return { kind: "comment", before, after, valueBefore, valueAfter };
+    case "attr-value": {
+      const loc = attributeLocation(place.element, place.attribute);
+      const span = loc ? attributeValueSpan(text, loc.startOffset, loc.endOffset) : null;
+      if (!span) return null;
+      const q = text[span.valueStart - 1];
+      return {
+        kind: "attribute",
+        quote: span.quoted && (q === '"' || q === "'") ? q : null,
+        // At the value's start, or after values only, which may render empty.
+        atStart: at >= span.valueStart && onlyMarkers(text.slice(span.valueStart, at), markers),
+      };
+    }
+    case "tag-name":
+      return { kind: "tag", inName: true, before, after };
+    case "attr-name":
+      return { kind: "tag", inName: false, before, after };
+    case "doctype":
+      return null;
+  }
+}
+
+/** How much of the template around a value tag a {@link CorePlace} keeps: enough for an end tag's name. */
+const CORE_AFTER = 16;
+
+/**
+ * The template's text around a value tag's marker in the values reading,
+ * up to {@link CORE_AFTER} characters and never past another value tag's
+ * marker, and whether such a tag is that near (its value may supply the
+ * rest of what the window holds).
+ */
+interface Around {
+  readonly before: string;
+  readonly after: string;
+  readonly valueBefore: boolean;
+  readonly valueAfter: boolean;
+  /** The marker's offset in the reading; -1 when it has none. */
+  readonly at: number;
+}
+
+const NOWHERE: Around = { before: "", after: "", valueBefore: false, valueAfter: false, at: -1 };
+
+/**
+ * The start tags of `chain`'s elements, outermost first, which put a value
+ * read after them where the template puts it; null when they cannot (an
+ * element of `<head>` or a frameset reads otherwise in a body). Attributes
+ * are left out: none changes how the content is read, but the encoding
+ * that makes a MathML `<annotation-xml>` hold HTML.
+ */
+function openTagsOf(chain: Ancestors | null): string | null {
+  const tags: string[] = [];
+  for (let c = chain; c !== null; c = c.up) {
+    const e = c.element;
+    const name = e.tagName;
+    if (e.namespaceURI === H.NS.HTML) {
+      if (name === "html" || name === "body") continue;
+      if (name === "head" || name === "frameset" || name === "frame") return null;
+    }
+    const encoding =
+      e.namespaceURI === H.NS.MATHML && name === "annotation-xml"
+        ? e.attrs.find((a) => a.name === "encoding")
+        : undefined;
+    tags.push(
+      encoding
+        ? `<${name} encoding="${encoding.value.replaceAll('"', "&quot;").replaceAll("<", "&lt;")}">`
+        : `<${name}>`,
+    );
+  }
+  return tags.reverse().join("");
 }
 
 /**

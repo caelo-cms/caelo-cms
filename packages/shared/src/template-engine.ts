@@ -70,6 +70,11 @@
  * Unlike `field-not-declared` these block Publish live: an unknown
  * `{{name}}` can be literal copy, a broken path cannot. A Stage reports
  * them instead of stopping (#1604).
+ * #1748: `value-breaks-markup:<field>:<rule>` for a core value that
+ * changes the markup around its placeholder (a `<?xml` in element content,
+ * a `</div>`, a quote in its attribute; `core-value-structure.ts`). The
+ * value still renders as written; a Stage reports it, Publish live
+ * refuses it.
  * Epic #724: `link-target-missing:page/<id>` / `…:media/<id>` for an
  * internal reference (`caelo:page/<id>`, `caelo:media/<id>`) whose
  * target does not exist, `link-resolver-unavailable:<kind>/<id>` for
@@ -98,6 +103,8 @@
 
 import Mustache from "mustache";
 import { MODULE_FIELD_SECTION_KINDS, type ModuleFieldKind } from "./content.js";
+import { valueBreaksMarkupMarker } from "./core-value-messages.js";
+import { coreValueProblemAt } from "./core-value-structure.js";
 import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
 import { type SourceDef, sourceDefSchema } from "./lists/list-type.js";
 import { PAGE_KEY_UNKNOWN, PAGE_PATH_UNKNOWN } from "./lists/page-paths.js";
@@ -449,32 +456,9 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
     return resolve(key, ref, placement);
   };
 
-  // 1. {{#name}}…{{/name}} and {{^name}}…{{/name}} sections, list
-  //    entries and dot access (template-sections.ts).
-  let html = renderSections(sourceHtml, {
-    fields: fieldByName,
-    values: cvs,
-    partials,
-    missing,
-    mkSentinel,
-    lists: input.lists,
-    holder: input.listHolder ?? { contentInstanceId: null },
-    moduleLevelKeys: new Set(THEME_ASSET_KEYS),
-    ...(input.refusePluginValues !== undefined
-      ? { refusePluginValues: input.refusePluginValues }
-      : {}),
-    renderModuleList: (name, field) =>
-      renderModuleList(name, field as TemplateField, cvs, partials, missing, mkSentinel),
-  });
-
-  // 2. {{>name}} single partials.
-  html = html.replace(PARTIAL_RE, (match, name: string) =>
-    renderPartialRef(match, name, fieldByName, cvs, partials, missing, mkSentinel),
-  );
-
-  // 3. {{name}} primitives. Pre-rewrite to canonical lowercase form
-  //    so the (lowercased) view picks them up regardless of source
-  //    casing. Unknowns become sentinels for loud-raw.
+  // The view Mustache renders the {{name}} primitives with (step 3).
+  // Pre-rewritten to canonical lowercase form so it picks them up
+  // regardless of source casing. Unknowns become sentinels for loud-raw.
   const declaredFieldNames = new Set<string>();
   for (const f of input.fields) {
     declaredFieldNames.add(f.name);
@@ -503,6 +487,51 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
     if (link.href.length > 0) view[lower] = link.href;
     else delete view[lower];
   }
+  // #1748 — a core value that changes the markup around its placeholder
+  // (core-value-structure.ts: a `<?xml` in element content, a `</div>`, a
+  // quote in its attribute) renders as it always has and fails as
+  // `value-breaks-markup:<field>:<rule>`: the preview lists it, a Stage
+  // records it, Publish live refuses it. Once per field and rule.
+  const breaking = new Set<string>();
+  const coreValue = (start: number, value: string, field: string): void => {
+    const problem = coreValueProblemAt(sourceHtml, start, value);
+    if (problem === null) return;
+    const marker = valueBreaksMarkupMarker(field, problem.rule);
+    if (breaking.has(marker)) return;
+    breaking.add(marker);
+    missing.push(marker);
+  };
+
+  // 1. {{#name}}…{{/name}} and {{^name}}…{{/name}} sections, list
+  //    entries and dot access (template-sections.ts).
+  let html = renderSections(sourceHtml, {
+    coreValue,
+    moduleText: (name) => {
+      const value = view[name];
+      return typeof value === "string" ? value : null;
+    },
+    fields: fieldByName,
+    values: cvs,
+    partials,
+    missing,
+    mkSentinel,
+    lists: input.lists,
+    holder: input.listHolder ?? { contentInstanceId: null },
+    moduleLevelKeys: new Set(THEME_ASSET_KEYS),
+    ...(input.refusePluginValues !== undefined
+      ? { refusePluginValues: input.refusePluginValues }
+      : {}),
+    renderModuleList: (name, field) =>
+      renderModuleList(name, field as TemplateField, cvs, partials, missing, mkSentinel),
+  });
+
+  // 2. {{>name}} single partials.
+  html = html.replace(PARTIAL_RE, (match, name: string) =>
+    renderPartialRef(match, name, fieldByName, cvs, partials, missing, mkSentinel),
+  );
+
+  // 3. {{name}} primitives (the view is built above, before the section
+  //    pass, which checks what Mustache substitutes from it).
   // #1729 — the section pass substitutes every tag of a plugin's value by
   // its context (template-contexts.ts). One it did not reach must never
   // render as an object or unchecked: it fails loudly where Mustache would

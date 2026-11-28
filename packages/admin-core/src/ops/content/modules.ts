@@ -59,6 +59,7 @@ import {
   type ModulePlacements,
   usageOfModules,
 } from "./module-placements.js";
+import { moduleWriteValueProblems } from "./value-structure.js";
 
 const moduleRowSchema = z.object({
   id: z.string(),
@@ -449,6 +450,29 @@ export const createModuleOp = defineOperation({
       });
     }
     const persistedFields = listDefaults.value;
+    // #1748 — a default, a bound shared list's entry or a site text the
+    // HTML would place where it breaks the markup around it.
+    const breaking = await moduleWriteValueProblems(tx, ctx.chatBranchId ?? null, {
+      slug: input.slug,
+      html: persistedHtml,
+      fields: persistedFields,
+    });
+    if (breaking !== null) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "modules.create",
+        input,
+        succeeded: false,
+        resultSummary: "value-breaks-markup",
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "modules.create",
+        message: breaking,
+        refusal: true,
+      });
+    }
     // v0.9.0 — branch-scoped uniqueness. Same-branch slug clash
     // surfaces as the unique-index violation at INSERT below; check
     // here narrows it to a clean error. We only check the caller's
@@ -767,6 +791,34 @@ export const updateModuleOp = defineOperation({
         });
       }
       persistedFields = listDefaults.value;
+    }
+    // #1748 — see modules.create; only a write of the HTML or the fields
+    // answers for what they place.
+    if (persistedHtml !== undefined || persistedFields !== undefined) {
+      const prevHtml = branchBase ? branchBase.html : prev.html;
+      const breaking = await moduleWriteValueProblems(tx, branchId, {
+        slug: branchBase ? branchBase.slug : prev.slug,
+        html: persistedHtml ?? prevHtml,
+        fields: persistedFields ?? prevFields,
+        previous: { html: prevHtml, fields: prevFields },
+      });
+      if (breaking !== null) {
+        await recordAudit(tx, {
+          actorId: ctx.actorId,
+          requestId: ctx.requestId,
+          operation: "modules.update",
+          input,
+          succeeded: false,
+          entityId: input.moduleId,
+          resultSummary: "value-breaks-markup",
+        });
+        return err({
+          kind: "HandlerError",
+          operation: "modules.update",
+          message: breaking,
+          refusal: true,
+        });
+      }
     }
 
     // v0.5.1 — branched writes skip the live UPDATE. Module code stays

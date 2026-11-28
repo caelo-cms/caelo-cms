@@ -75,6 +75,7 @@ import {
   injectSeoIntoHead,
   isFieldPathMarker,
   isListFailureMarker,
+  isValueBreaksMarkupMarker,
   linkMarkersOf,
   listThemeCssVarNames,
   type NestedModuleResource,
@@ -611,6 +612,8 @@ async function renderPreview(
       pageLinkMarkers.push(...linkMarkersOf(result.missingSlots));
       pageListMarkers.push(...result.missingSlots.filter(isListFailureMarker));
       fieldPathMarkers.push(...result.missingSlots.filter(isFieldPathMarker));
+      // #1748 — a value that breaks the markup around it renders as written.
+      fieldPathMarkers.push(...result.missingSlots.filter(isValueBreaksMarkupMarker));
       withheldNestedMarkers.push(...result.missingSlots.filter(isWithheldNestedMarker));
       // Every module the recursion touched gets its CSS/JS staged (the
       // composer dedupes by moduleId, issue #158) through a virtual
@@ -1033,6 +1036,7 @@ async function renderPreview(
       ...new Set([
         ...fieldPathMarkers,
         ...composed.moduleFailures.map((f) => f.reason).filter(isFieldPathMarker),
+        ...composed.moduleFailures.map((f) => f.reason).filter(isValueBreaksMarkupMarker),
       ]),
       // #1708 — a withheld module nested in a field: left out here as in
       // the build, which reports it; Publish live refuses it.

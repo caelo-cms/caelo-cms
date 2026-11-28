@@ -85,6 +85,12 @@ export interface LoadListEntitiesOptions {
    * reusing such a slug instead of colliding with the row.
    */
   readonly includeArchivedPluginTypes?: boolean;
+  /**
+   * Lists only: the lists of these list types (#1748: the site texts a
+   * module reads). Live rows that are not deleted, as the type index holds
+   * them; a branch's pending state still applies to each.
+   */
+  readonly listTypeIds?: readonly string[];
 }
 
 function iso(v: string | Date | null): string | null {
@@ -158,12 +164,17 @@ export async function loadListEntities<K extends ListEntityKind>(
   const spec = LIST_ENTITY_TABLES[kind];
   if (opts.ids !== undefined && opts.ids.length === 0) return [];
   if (opts.slugs !== undefined && opts.slugs.length === 0) return [];
+  if (opts.listTypeIds !== undefined && opts.listTypeIds.length === 0) return [];
   const visible = branchId
     ? sql`(chat_branch_id IS NULL OR chat_branch_id = ${branchId}::uuid)`
     : sql`chat_branch_id IS NULL`;
   const idFilter = opts.ids ? sql` AND id = ANY(${uuidArray(opts.ids)})` : sql``;
   // Slugs never change after create, so the live column filters correctly.
   const slugFilter = opts.slugs ? sql` AND slug = ANY(${textArray(opts.slugs)})` : sql``;
+  const typeFilter =
+    kind === "list" && opts.listTypeIds
+      ? sql` AND list_type_id = ANY(${uuidArray(opts.listTypeIds)}) AND deleted_at IS NULL`
+      : sql``;
   const columns: SQL =
     kind === "list"
       ? sql`name, purpose, list_type_id::text AS list_type_id, items`
@@ -181,7 +192,7 @@ export async function loadListEntities<K extends ListEntityKind>(
     SELECT id::text AS id, slug, ${columns}, version, updated_at, deleted_at,
            chat_branch_id::text AS chat_branch_id
     FROM ${sql.raw(spec.table)}
-    WHERE ${visible}${idFilter}${slugFilter}${availability}
+    WHERE ${visible}${idFilter}${slugFilter}${typeFilter}${availability}
     ORDER BY slug, created_at
   `)) as unknown as LiveRow[];
   if (rows.length === 0) return [];

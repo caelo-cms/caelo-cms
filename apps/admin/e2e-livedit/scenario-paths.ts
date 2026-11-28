@@ -120,6 +120,8 @@ const MODULES = [
   `${SHARED}/preview-compose.ts`,
   // #1729 — where the page puts each module, for its plugins' values.
   `${SHARED}/page-reading.ts`,
+  // #1748 — the structure rule for core values, its texts and write walks.
+  `${SHARED}/core-value-*.ts`,
 ] as const;
 
 /**
