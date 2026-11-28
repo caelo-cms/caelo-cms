@@ -199,7 +199,7 @@ async function knownQueries(ctx: Ctx): Promise<Record<string, string[]>> {
   if (!ctx.adminQuery) return {};
   const rows = await ctx.adminQuery.list<"popular_queries", { text: string; lang: string }>(
     "popular_queries",
-    { status: "approved", limit: 2000 },
+    { status: "approved", limit: 1000 },
   );
   const out: Record<string, string[]> = {};
   for (const r of rows) {
