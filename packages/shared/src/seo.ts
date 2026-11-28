@@ -10,6 +10,16 @@
 import { z } from "zod";
 import { blankNonMarkup } from "./html-blank.js";
 import { robotsRulesSchema } from "./robots-rules.js";
+import {
+  type ArticleTimes,
+  MAX_IMAGE_PREVIEW_VALUES,
+  OG_DESCRIPTION_HARD_MAX,
+  OG_TITLE_HARD_MAX,
+  type ResolvedPageSeoHead,
+  robotsMetaContent,
+  SEO_TEXT_FIELDS,
+  SEO_TITLE_HARD_MAX,
+} from "./seo-head.js";
 import { trimSlashes } from "./url.js";
 
 export const CHANGEFREQ_VALUES = [
@@ -23,22 +33,69 @@ export const CHANGEFREQ_VALUES = [
 ] as const;
 export type Changefreq = (typeof CHANGEFREQ_VALUES)[number];
 
-/** Recommended length caps — server enforces, client trims with feedback. */
-export const SEO_TITLE_RECOMMENDED_MAX = 60;
-export const SEO_DESCRIPTION_RECOMMENDED_MAX = 160;
-
 export const SEO_DESCRIPTION_HARD_MAX = 320;
 export const SEO_CANONICAL_MAX = 2048;
+
+/** A one-line head text (SEO title, og:title): trimmed, no line breaks. */
+const lineText = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .refine((v) => !/[\r\n]/.test(v), "one line, no line breaks");
+
+/** A page's own SEO title; "" = none (the page type's or site's title template applies). */
+export const seoTitleSchema = lineText(SEO_TITLE_HARD_MAX);
+/** A page's own og:title; "" = none (it shares the SEO title, else the page title). */
+export const ogTitleSchema = lineText(OG_TITLE_HARD_MAX);
+/** A page's own og:description; "" = none (it shares the meta description). */
+export const ogDescriptionSchema = z.string().trim().max(OG_DESCRIPTION_HARD_MAX);
+
+/** `max-snippet` / `max-video-preview`: -1 = no limit, 0 = none, null = no directive. */
+const previewLimit = (max: number) => z.number().int().min(-1).max(max).nullable();
+
+/** A page placement by where it sits (`set_placement_content` addresses it the same way). */
+export const placementRefSchema = z
+  .object({ blockName: z.string().min(1).max(128), position: z.number().int().min(0) })
+  .strict();
+
+/**
+ * #1752 — the robots directives a page stores besides `noindex`, as one
+ * `<meta name="robots">` renders them (`robotsMetaContent`).
+ */
+export const seoRobotsInputShape = {
+  nofollow: z.boolean().optional(),
+  noarchive: z.boolean().optional(),
+  nosnippet: z.boolean().optional(),
+  noimageindex: z.boolean().optional(),
+  maxSnippet: previewLimit(100_000).optional(),
+  maxImagePreview: z.enum(MAX_IMAGE_PREVIEW_VALUES).optional(),
+  maxVideoPreview: previewLimit(86_400).optional(),
+} as const;
 
 export const seoSetInputSchema = z
   .object({
     pageId: z.string().uuid(),
+    seoTitle: seoTitleSchema.optional(),
     metaDescription: z.string().max(SEO_DESCRIPTION_HARD_MAX).optional(),
+    ogTitle: ogTitleSchema.optional(),
+    ogDescription: ogDescriptionSchema.optional(),
     ogImageAssetId: z.string().uuid().nullable().optional(),
     canonicalUrl: z.string().max(SEO_CANONICAL_MAX).nullable().optional(),
     noindex: z.boolean().optional(),
+    ...seoRobotsInputShape,
+    /**
+     * #1752 — the placements whose content search engines must not quote in
+     * a snippet (`data-nosnippet`), REPLACING the stored list; [] clears it.
+     */
+    nosnippetPlacements: z.array(placementRefSchema).max(64).optional(),
     changefreq: z.enum(CHANGEFREQ_VALUES).optional(),
     priority: z.number().min(0).max(1).optional(),
+    /**
+     * #1752 — AI-written texts a person read and keeps (origin `ai` →
+     * `reviewed`). A person only: the op refuses it from any other actor.
+     */
+    reviewed: z.array(z.enum(SEO_TEXT_FIELDS)).max(SEO_TEXT_FIELDS.length).optional(),
   })
   .strict();
 export type SeoSetInput = z.infer<typeof seoSetInputSchema>;
@@ -51,6 +108,14 @@ export const seoAutofillInputSchema = z
     // ships without a description — and then refuse every later autofill.
     metaDescription: z.string().trim().min(1).max(SEO_DESCRIPTION_HARD_MAX),
     ogImageAssetId: z.string().uuid().nullable().optional(),
+    /**
+     * #1752 — the page's first own SEO title / og:title / og:description.
+     * Fill-once like the description: written only while empty and while
+     * the page was never published live; a different stored value refuses.
+     */
+    seoTitle: seoTitleSchema.pipe(z.string().min(1)).optional(),
+    ogTitle: ogTitleSchema.pipe(z.string().min(1)).optional(),
+    ogDescription: ogDescriptionSchema.pipe(z.string().min(1)).optional(),
   })
   .strict();
 export type SeoAutofillInput = z.infer<typeof seoAutofillInputSchema>;
@@ -58,12 +123,24 @@ export type SeoAutofillInput = z.infer<typeof seoAutofillInputSchema>;
 export const seoOptimizeInputSchema = z
   .object({
     pageId: z.string().uuid(),
-    metaDescription: z.string().min(1).max(SEO_DESCRIPTION_HARD_MAX),
+    metaDescription: z.string().min(1).max(SEO_DESCRIPTION_HARD_MAX).optional(),
+    /** #1752 — re-optimized own texts; "" removes the page's own value. */
+    seoTitle: seoTitleSchema.optional(),
+    ogTitle: ogTitleSchema.optional(),
+    ogDescription: ogDescriptionSchema.optional(),
     ogImageAssetId: z.string().uuid().nullable().optional(),
     /** Optional user-supplied context (keyword research, intent shifts) recorded in audit. */
     context: z.string().max(4000).optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (v) =>
+      v.metaDescription !== undefined ||
+      v.seoTitle !== undefined ||
+      v.ogTitle !== undefined ||
+      v.ogDescription !== undefined,
+    "pass at least one of `metaDescription`, `seoTitle`, `ogTitle`, `ogDescription`",
+  );
 export type SeoOptimizeInput = z.infer<typeof seoOptimizeInputSchema>;
 
 /** Organization JSON-LD fields — structured only, never raw markup (CLAUDE.md §2). */
@@ -220,19 +297,6 @@ export function checkPublicSiteBaseUrl(
   return { ok: true, url: origin };
 }
 
-export interface PageSeoRow {
-  pageId: string;
-  metaDescription: string;
-  ogImageAssetId: string | null;
-  canonicalUrl: string | null;
-  noindex: boolean;
-  changefreq: Changefreq;
-  priority: number;
-  autofilledAt: string | null;
-  optimizedAt: string | null;
-  updatedAt: string;
-}
-
 export interface SiteSeoSettings {
   siteBaseUrl: string;
   sitemapEnabled: boolean;
@@ -246,6 +310,10 @@ export interface SiteSeoSettings {
    *  plugin assigns its own locale to (see document-language.ts). Always
    *  set here: the static generator refuses to build while it is NULL. */
   siteLanguage: string;
+  /** #1752 — `site_defaults.site_name`: `og:site_name` and `{site_name}`; null = not set. */
+  siteName: string | null;
+  /** #1752 — `site_defaults.seo_title_template`: the `<title>` of pages without their own. */
+  titleTemplate: string;
   organization: {
     name?: string;
     url?: string;
@@ -301,8 +369,22 @@ export function resolveCanonicalUrl(args: {
 }
 
 export interface SeoMetaInput {
-  title: string;
-  metaDescription: string;
+  /**
+   * #1752 — every resolved head value (`resolvePageSeoHead`): the build and
+   * the preview hand over the same resolution, so they render the same tags.
+   */
+  head: ResolvedPageSeoHead;
+  /** The page's own title: the JSON-LD `WebPage` name. */
+  pageTitle: string;
+  /** `og:site_name`; null = the site has no name yet (no tag). */
+  siteName: string | null;
+  /**
+   * `article:published_time` / `article:modified_time` of an `article`
+   * page, from the live page record; null = none (not an article, or not
+   * live). The build passes `ARTICLE_MODIFIED_TIME_PENDING` (seo-head.ts)
+   * as the modified time and dates it after the live comparison.
+   */
+  article: ArticleTimes | null;
   /**
    * Absolute canonical URL, or null when the site base URL is not
    * configured yet (#551). Only the admin preview renders with null — it
@@ -310,7 +392,6 @@ export interface SeoMetaInput {
    * `site-base-url-unset`; the static generator refuses to build instead.
    */
   canonical: string | null;
-  noindex: boolean;
   ogImageUrl: string | null;
   organization: SiteSeoSettings["organization"];
   /**
@@ -359,7 +440,7 @@ export function breadcrumbJsonLdItems(
 /**
  * Render the <head> meta block for a page. Returns the HTML string
  * the renderer injects just before </head>. Order is canonical
- * (W3C-recommended): charset / viewport stay in the layout; meta
+ * (W3C-recommended): charset / viewport stay in the layout; title, meta
  * description + canonical + robots + Open Graph + Twitter card +
  * JSON-LD.
  *
@@ -368,34 +449,44 @@ export function breadcrumbJsonLdItems(
 export function renderSeoHead(input: SeoMetaInput): string {
   const enc = (s: string): string =>
     s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const { head } = input;
+  const description = head.metaDescription.value;
 
   const lines: string[] = [];
-  lines.push(`<title>${enc(input.title)}</title>`);
-  if (input.metaDescription) {
-    lines.push(`<meta name="description" content="${enc(input.metaDescription)}" />`);
+  lines.push(`<title>${enc(head.title.value)}</title>`);
+  if (description) {
+    lines.push(`<meta name="description" content="${enc(description)}" />`);
   }
   if (input.canonical) {
     lines.push(`<link rel="canonical" href="${enc(input.canonical)}" />`);
   }
-  if (input.noindex) {
-    lines.push(`<meta name="robots" content="noindex" />`);
-  }
+  // #1752 — every directive in one tag; `max-image-preview` is always set.
+  lines.push(`<meta name="robots" content="${enc(robotsMetaContent(head.robots))}" />`);
   if (input.feed) {
     lines.push(
       `<link rel="alternate" type="application/atom+xml" title="${enc(input.feed.title)}" href="${enc(input.feed.url)}" />`,
     );
   }
   // Open Graph
-  lines.push(`<meta property="og:title" content="${enc(input.title)}" />`);
-  if (input.metaDescription) {
-    lines.push(`<meta property="og:description" content="${enc(input.metaDescription)}" />`);
+  lines.push(`<meta property="og:title" content="${enc(head.ogTitle.value)}" />`);
+  if (head.ogDescription.value) {
+    lines.push(`<meta property="og:description" content="${enc(head.ogDescription.value)}" />`);
   }
-  lines.push(`<meta property="og:type" content="website" />`);
+  lines.push(`<meta property="og:type" content="${head.ogType.value}" />`);
   if (input.canonical) {
     lines.push(`<meta property="og:url" content="${enc(input.canonical)}" />`);
   }
+  if (input.siteName) {
+    lines.push(`<meta property="og:site_name" content="${enc(input.siteName)}" />`);
+  }
   if (input.ogImageUrl) {
     lines.push(`<meta property="og:image" content="${enc(input.ogImageUrl)}" />`);
+  }
+  if (head.ogType.value === "article" && input.article) {
+    lines.push(
+      `<meta property="article:published_time" content="${enc(input.article.publishedTime)}" />`,
+      `<meta property="article:modified_time" content="${enc(input.article.modifiedTime)}" />`,
+    );
   }
   // Twitter card
   lines.push(
@@ -405,10 +496,10 @@ export function renderSeoHead(input: SeoMetaInput): string {
   const ld: Record<string, unknown> = {
     "@context": "https://schema.org",
     "@type": "WebPage",
-    name: input.title,
+    name: input.pageTitle,
     ...(input.canonical ? { url: input.canonical } : {}),
   };
-  if (input.metaDescription) ld.description = input.metaDescription;
+  if (description) ld.description = description;
   if (input.ogImageUrl) ld.image = input.ogImageUrl;
   if (input.organization.name) {
     ld.publisher = {

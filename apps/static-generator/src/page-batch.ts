@@ -51,6 +51,8 @@ export interface ModuleRow {
   content_values: string | null;
   content_instance_id: string;
   sync_mode: "synced" | "unsynced";
+  /** #1752 — the page keeps this placement's content out of snippets (`data-nosnippet`). */
+  nosnippet?: boolean;
   /** Set once content variants replaced the instance's values: no stored instance renders. */
   variant?: true;
 }
@@ -79,6 +81,7 @@ export type ComposeBlock = {
     fields?: ComposeField[];
     contentValues?: Record<string, unknown>;
     contentInstanceId?: string;
+    nosnippet?: boolean;
   }[];
 };
 
@@ -140,6 +143,7 @@ export function groupModulesByBlock(rows: readonly ModuleRow[]): ComposeBlock[] 
       fields: parseModuleFields(r.fields),
       contentValues: parseContentValues(r.content_values),
       ...(r.variant ? {} : { contentInstanceId: r.content_instance_id }),
+      ...(r.nosnippet ? { nosnippet: true } : {}),
     });
     grouped.set(r.block_name, arr);
   }
@@ -249,7 +253,13 @@ export async function loadBatch(args: {
            m.slug, m.display_name, m.html, m.css, m.js, m.fields::text AS fields,
            ci.values::text AS content_values,
            pm.content_instance_id::text AS content_instance_id,
-           pm.sync_mode
+           pm.sync_mode,
+           -- #1752 — decided on the stored content, before content variants.
+           EXISTS (
+             SELECT 1 FROM pages_seo s
+              WHERE s.page_id = pm.page_id
+                AND s.nosnippet_content ? pm.content_instance_id::text
+           ) AS nosnippet
     FROM page_modules pm
       JOIN modules m            ON m.id  = pm.module_id
       -- PR #61 follow-up — every placement carries a

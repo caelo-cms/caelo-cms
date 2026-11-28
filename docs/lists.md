@@ -42,6 +42,7 @@ nodes and page-type properties.
 | `icon` | icon name (`[a-z0-9-]+`) | `{{f}}` = name | the module maps names to its own sprite / icon font |
 | `module` | `{ moduleId, contentInstanceId }` | `{{>f}}` | `accepts?: string[]` module types; the entry is the content holder, so this works in site chrome |
 | `term` | `string[]` of `caelo:term/<listId>/<itemId>` | `{{#f}}{{name}}{{/f}}` iterates the referenced vocabulary entries | `list: <vocabulary list slug>`, `multiple: boolean` |
+| `page` | `string[]` of `caelo:page/<id>`, in order, each once, ≤ 50 | `{{#f}}<a href="{{link}}">{{title}}</a>{{/f}}` iterates the named pages as page-shaped entries (§6) | page properties only (#1754); `pageType?: <page type slug>`, `multiple: boolean` |
 
 Field definition (Zod `fieldDefSchema`):
 
@@ -54,9 +55,13 @@ Field definition (Zod `fieldDefSchema`):
   default?: unknown;       // validated against the type
   ext?: Record<string, unknown>; // plugin-declared attributes, keyed by plugin slug (section 9)
   // per type: maxLength (text, richtext), options (select), min/max (number),
-  // accepts (module), list + multiple (term)
+  // accepts (module), list + multiple (term), pageType + multiple (page)
 }
 ```
+
+`module` is a list-entry field only (a page places a module instead), and
+`page` a page property only (a list entry points at a page with a `link`
+field): `checkPageTypeDef` and `checkListTypeDef` refuse them elsewhere.
 
 Reserved names (cannot be field, node or children names): `id node index
 depth first last items page recurse`, and any name starting `is_`, `has_`,
@@ -94,9 +99,11 @@ SourceDef =
 Static rules (`checkListTypeDef`, returns AI-actionable issues):
 unknown node kind in any `allow`; a recursive kind without `max_depth`;
 `current_from` naming a non-link field; duplicate field names in a node;
-reserved names; `children` and `source` together; vocabulary types
-(`role: "vocabulary"`) must have exactly one node kind with a `text` field
-named `name` and a `text` field named `slug`.
+reserved names; `children` and `source` together; a `page` field (#1754);
+vocabulary types (`role: "vocabulary"`) must have exactly one node kind with
+a `text` field named `name`, a `text` field named `slug` and a `link` field
+named `landing_page` (`TERM_OVERVIEW_FIELD`, the term's overview page, §6
+"A term's overview page").
 
 ### Shipped types
 
@@ -108,10 +115,13 @@ Seeded as stored data (migration 0352), editable like any other type:
 | `links` | content | `link` {label: text required, link: link required} |
 | `menu` | navigation | `entry` {label, link} → children `children` allow `entry`; `max_depth: 3`; `current_from: link` |
 | `categories` | vocabulary | `category` {name, slug, description: richtext, landing_page: link} → children `children` allow `category`; `max_depth: 6` |
-| `tags` | vocabulary | `tag` {name, slug, color: text} |
+| `tags` | vocabulary | `tag` {name, slug, color: text, landing_page: link} |
 
 `packages/shared/src/lists/default-types.ts` exports them (the migration
-and tests use the same objects).
+and tests use the same objects). Migration 0896 (#1754) gave every stored
+vocabulary type, `tags` and the site's own included, a `landing_page` link
+field ("Overview page") on each top-level entry kind that had none, in the
+live rows and every list-type snapshot.
 
 Migration 0358 (#1142) adds a sixth type, `site-texts` (content, `text`
 {key: text required, text: text required}, exported as `SITE_TEXTS_TYPE`),
@@ -232,6 +242,56 @@ consulted the default.
 Page types replace `templates.kind`: the AI reads "this module sits on
 three News pages" from the page type (CLAUDE.md §1A).
 
+### Page references (#1754)
+
+An author, a reviewer, a speaker, a venue, a manufacturer is a normal page
+of a page type of its own (maintainer decision, epic #1751: no separate
+author concept, no author = login account). The page that names it carries
+a `page` property:
+
+```ts
+{ name: "authors", label: "Authors", type: "page", pageType: "author", multiple: true }
+{ name: "reviewed_by", label: "Reviewed by", type: "page" }      // one page, any type
+```
+
+Why a field type of its own, not `link` with "many": a link is an address
+(`{href, target}`, external URLs, anchors) a template prints; a page
+reference is a relation to a page whose data the template shows (title,
+image, `props.role`) and that page queries match on. It stores bare page
+ids in order, can ask for a page type, and so is checkable, indexable and
+renderable as pages — none of which a list of hrefs is.
+
+Writes (`pages.create` / `build_page`, `pages.update(_many)`,
+`pages.duplicate`, and the re-check of a type's pages in
+`page_types.upsert_many`) take each page as a path (what reads show:
+`withHumanisedLinks` turns every `caelo:page/<id>` into the path), a
+`caelo:page/<id>` or a bare page id, and store `caelo:page/<id>`
+(`admin-core/src/lists/page-refs.ts`, called from `fitPageToType`). The
+named pages are read in the caller's view by id and path through
+`pages.list` — exactly those pages, never the site. Refused, each with the
+fix: a page that does not exist, a page of another type than `pageType`,
+the page itself, a page twice, more than one without `multiple`. A
+reference is an id, so it survives renames and moves (#724); the reference
+integrity check reports a deleted target like any other link
+(`references/missing-page`, fix `update_pages_many`). `page_types.upsert_many`
+refuses a `pageType` that names no page type (one created in the same call
+counts), and `page_types.delete_many` refuses to delete a type a `page`
+property asks for.
+
+Rendering: `{{#page.props.authors}}<a href="{{link}}">{{title}}</a>{{/page.props.authors}}`
+(and `{{#props.authors}}…` on any page-shaped entry) iterates the named
+pages in stored order as page-shaped entries (§6). Like every generated
+page entry, a page the build does not ship (a draft author) is left out; a
+named page that is gone renders `list-missing:page/<id>`, which the
+preview lists and Publish live refuses. With the `link-resolve` partition,
+a named page shows in the rendering page's language: its version in that
+variant (same group) when there is one, else the page itself, whose link
+then fails as `link-variant-missing` like every link to an untranslated
+page. The named pages are render dependencies of the page (`pages` in
+`render-deps.json`): editing an author's title or role rebuilds every
+article that shows it. An overlay cannot replace a `page` value (it is
+structure, like `module` and `term`).
+
 ## 6. Sources
 
 ```ts
@@ -240,11 +300,12 @@ PageQuery = {
   terms?: string[];               // caelo:term/<listId>/<itemId>
   terms_mode?: "any" | "all";     // default any
   parent?: string;                // caelo:page/<id> — direct children only
+  refers_to?: { property: string; page: "self" | string }; // #1754, below
   exclude_current?: boolean;      // default true
   order: "published_desc" | "published_asc" | "title_asc" | `prop_desc:${string}` | `prop_asc:${string}`;
   limit: number;                  // 1..50
 }
-QueryKnob = "page_type" | "terms" | "terms_mode" | "parent" | "exclude_current" | "order" | "limit"
+QueryKnob = "page_type" | "terms" | "terms_mode" | "parent" | "refers_to" | "exclude_current" | "order" | "limit"
 SystemSourceName = "breadcrumbs" | "children" | "siblings" | "page_terms" | "term_pages" | "pagination"
 ```
 
@@ -260,7 +321,49 @@ breadcrumbs and navigation), `link` (`caelo:page/<id>`), `published_at`, `update
 `summary` (SEO description), `image` (social image, media), `page_type`,
 `props.<name>`, `terms.<vocabulary slug>` (iterable), `is_current`.
 `page_terms` and term-shaped entries expose the vocabulary entry's values
-(`name`, `slug`, …) plus `link` = its `landing_page` when set.
+(`name`, `slug`, …) plus `link` = its `landing_page` when set (empty
+otherwise: wrap the chip's anchor in `{{#link}}…{{/link}}`).
+
+**`refers_to` (#1754)** keeps the pages whose `page` property `property`
+names `page`: `"self"` is the rendering page (the articles of this author,
+the talks of this speaker), `caelo:page/<id>` a fixed page (any page can
+show "articles reviewed by Ben"). It combines with every other filter, the
+order and `paginate` like any query knob, and a placement may set it when
+the source makes it `editable`. Like `parent`, the page may be written as
+its path (reads show paths): a module field's source, a list type's
+source node, an entry's or a placement's knobs and `preview_list_source`
+store or resolve it as `caelo:page/<id>` (`canonicaliseQueryRefs`); the
+query that runs takes references only (`pageQuerySchema` vs. the written
+`pageQueryPartialSchema`). Another language version of `page` (same
+`link-resolve` group) counts as `page` too, so a translated article that
+still names the original author shows on the author's page in its own
+language. A `property` no page type declares as a `page` property renders
+`list-malformed:<field>[query.refers_to.property]` with the fix (a typo
+never matches nothing silently). An author page that lists ALL their
+articles is an overview: `paginate:{}` and a pager, not a `limit`:
+
+```ts
+{ name: "articles", kind: "list", listType: "links", bind: "source",
+  source: { kind: "query", editable: [], defaults: {
+    page_type: "article", refers_to: { property: "authors", page: "self" }, order: "published_desc" } },
+  paginate: {} }
+```
+
+The resolver answers it from a reverse index over the render's page data
+(target page → property → the pages naming it), built once per render
+context on the first `refers_to` query, so the query costs its matches,
+never a scan of every page per author page. Page queries run over the page
+data each preview and build loads anyway; there is no database filter by
+reference, so nothing reaches the query index gate. Writes stay
+request-sized: they read only the pages they name.
+
+**A term's overview page (#1754).** A term never makes a page by itself
+(epic #1751): an important topic gets a curated page of its own, and the
+term entry's `landing_page` link names it. Every vocabulary type has that
+field (§3), so this works for categories, tags and the site's own
+vocabularies alike. Term chips link there through `link`; a `breadcrumbs`
+source given the vocabulary (`list: "caelo:list/<id>"` on the module
+field, as for `page_terms`) leads through it (below).
 
 `system` sources: `breadcrumbs` (home → root → current via
 `parent_page_id`, current page included, pages not in the build left
@@ -387,6 +490,20 @@ home crumb (never the other language's page). Crumbs other than the last
 are `is_ancestor`, the last `is_current`. Label crumbs with
 `{{short_title}}` — the home page's short title is the "Start" crumb, so
 it is translated with the home page.
+
+**Through a term's overview page (#1754).** A breadcrumbs field that names
+a vocabulary (`list: "caelo:list/<id>"`) leads through the overview page
+of the rendering page's first term in it that has one: the term entry's
+own `landing_page`, else its nearest parent entry's (a "Technical"
+category without a page under "SEO" with one). Then the trail is the
+overview page's own trail plus the page: Home → Topics → SEO → Article,
+for an article filed under `/blog/`. A page the page tree already puts
+below the overview page keeps its tree trail; an overview page the build
+does not ship, one in another language than the page (the home crumb's
+rule), or a term without one leaves the tree trail as it is. The
+vocabulary list is a render dependency, so setting a term's overview page
+rebuilds the pages that show such a trail; the JSON-LD follows the visible
+trail as always.
 
 Like every generated page entry (queries, `children`, `siblings`,
 `term_pages`), a crumb names only a page that is in the build being
@@ -542,6 +659,7 @@ inside itself.
 | `is_current`, `is_ancestor` | from `current_from` and the page being rendered |
 | `has_<children>`, `count_<children>` | per children / items list |
 | `{{page.title}}`, `{{page.props.x}}`, `{{#page.terms.tags}}` | the page being rendered (any module) |
+| `{{#page.props.authors}}{{title}}{{/page.props.authors}}` | the pages a `page` property names, in order, as page-shaped entries (#1754) |
 | `{{site_text.<key>}}` | the site text with that key in the rendering page's variant (any module, #1142) |
 
 Lookup inside an entry: the entry's own keys first, then the enclosing
@@ -826,18 +944,22 @@ tools (`translate_chrome`, `apply_translations` with `kind: "addresses"`,
 
   ```json
   {
-    "version": 1,
-    "pages": { "<pageId>": { "lists": [], "listTypes": [], "queries": [{ "pageType": "news", "terms": [], "parent": null }], "pageTree": false } },
-    "index": { "<pageId>": { "pageType": "news", "terms": [], "parent": null, "title": "…", "inBuild": true } }
+    "version": 4,
+    "pages": { "<pageId>": { "lists": [], "listTypes": [], "queries": [{ "pageType": "article", "terms": [], "parent": null, "refersTo": { "property": "authors", "pages": ["<pageId>"] } }], "pageTree": false, "pages": [] } },
+    "index": { "<pageId>": { "pageType": "article", "terms": [], "parent": null, "refs": { "authors": ["<author id>"] }, "title": "…", "shortTitle": "…", "inBuild": true } }
   }
   ```
 
   An incremental build (`deploy.trigger` with `changedPageIds`,
   `changedListIds`, `changedListTypeIds`) adds every page whose deps intersect the
   change: a changed list or type, a page whose filter attributes before
-  (the file's `index`) or after match a recorded query, and every
-  page-tree reader when a changed page's title, parent or build
-  membership changed. Without a deps file the build renders every page.
+  (the file's `index`) or after match a recorded query — `refs`, the pages
+  each `page` property names, included, so an article that starts or stops
+  naming an author rebuilds the author's page (#1754) — every page whose
+  render showed a changed page as an entry (`pages`: the named authors, the
+  crumbs, the children), and every page-tree reader when a changed page's
+  title, parent or build membership changed. Without a deps file, or with
+  one of an older `version`, the build renders every page.
   A list-domain write whose audit row names no entity, and every page
   type write, rebuild every page.
 - Limits: depth ≤ 8, ≤ 500 entries per list, ≤ 50 per query (per page
@@ -901,8 +1023,8 @@ to every role that holds `content.write`.
 | `lists.preview_source` | `preview_list_source` | what a query / system / plugin source returns for a page (below) |
 | `page_types.list` | `list_page_types` | templates, properties, vocabularies, page count |
 | `page_types.get` | `list_page_types` with `slug` | + sample pages |
-| `page_types.upsert_many` | `upsert_page_types_many` | `dropValues`, `distinctFrom` (duplicate guard, §5); near slugs return `hints` |
-| `page_types.delete_many` | `delete_page_types_many` | refused while pages use it; a tool because the AI creates page types (§11 parity) |
+| `page_types.upsert_many` | `upsert_page_types_many` | `dropValues`, `distinctFrom` (duplicate guard, §5); near slugs return `hints`; a `page` property's `pageType` must exist (or come in the same call) |
+| `page_types.delete_many` | `delete_page_types_many` | refused while pages use it or a `page` property asks for it; a tool because the AI creates page types (§11 parity) |
 | `pages.update_many` (extended) | `update_pages_many` | `pageType`, `properties`, `terms` |
 | `pages.build_page` (extended) | `build_page` | `page.pageType` (required on create unless the template has one type), `page.properties`, `page.terms` |
 | `pages.duplicate` (extended) | `duplicate_page` | `pageType` (omitted = the source's) |

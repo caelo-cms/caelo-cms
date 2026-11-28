@@ -32,7 +32,9 @@ import {
   type MediaFailure,
   type MediaReferenceFailure,
   mediaUrlForRef,
+  NESTED_PLACEMENT_RULE,
   type OgImageFailure,
+  OPEN_MARKUP_RULE,
   PAGE_KEY_TYPES,
   PAGE_KEY_UNKNOWN,
   PAGE_PATH_UNKNOWN,
@@ -46,9 +48,11 @@ import {
   parseOgImageFailureMarker,
   parsePagePathUnknown,
   parsePluginValueRefused,
+  parseSeoTitleVariableMarker,
   renderFailureKind,
   renderFailureMarker,
   replacementMediaUrls,
+  SLOT_PLACEMENT_RULE,
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { languageName } from "../links/link-notice.js";
@@ -127,6 +131,8 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   // #1719 — reference images on a page; share images by what is wrong.
   const referencePages = new Set<string>();
   const shareImagePages = { missing: new Set<string>(), reference: new Set<string>() };
+  // #1752 — a title template variable without a value.
+  const titlePages = new Set<string>();
   // #1729 — what a plugin added to a page's head, or its share image.
   const pluginHeadPages = new Set<string>();
   const pluginShareImagePages = new Set<string>();
@@ -139,7 +145,9 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
             renderFailureMarker(f.reason).slice(PLUGIN_VALUE_REFUSED.length + 1),
           ).source
         : null;
-    if (refusedSource === PLUGIN_HEAD_POINT) {
+    if (parseSeoTitleVariableMarker(f.reason) !== null) {
+      titlePages.add(page);
+    } else if (refusedSource === PLUGIN_HEAD_POINT) {
       pluginHeadPages.add(page);
     } else if (refusedSource === PLUGIN_SHARE_IMAGES_POINT) {
       pluginShareImagePages.add(page);
@@ -182,6 +190,10 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   onPages(
     "The image shown when the page is shared is a reference image, which is never published",
     shareImagePages.reference,
+  );
+  onPages(
+    "The page title template uses a value the site does not have yet (the site's name)",
+    titlePages,
   );
   onPages(
     "A plugin added something to the page's head or sitemap that Caelo does not allow, so it was left out",
@@ -260,12 +272,60 @@ export function pageMarkerHint(marker: string, mod: string): string | undefined 
   }
 }
 
+/** The rules a value is refused with for where the page puts it (`context-*`, shared `template-contexts.ts`). */
+const PLACEMENT_RULE_PREFIX = "context-";
+
+/**
+ * #1787 — how the AI repairs a plugin's value refused for where the page
+ * puts it (`context-*`): the module's markup, the page's other modules, or
+ * the layout's slot, never the plugin's data; null for any other rule.
+ *
+ * @param mod the place in the AI's terms (`module "cookie-banner"`).
+ */
+export function placementRefusalRepair(body: string, mod: string): RenderRepair | null {
+  const { plugin, field, rule } = parsePluginValueRefused(body);
+  if (!rule.startsWith(PLACEMENT_RULE_PREFIX)) return null;
+  const value = `the plugin "${plugin}"'s ${field} value`;
+  switch (rule) {
+    case "context-conditional-markup":
+      return {
+        tool: "update_modules_many",
+        hint: `${mod} puts ${value} after a section, comment or partial that may reshape the markup after it, so Caelo leaves it raw. Rewrite that markup (update_modules_many): a section wraps whole elements ({{#a}}<li>…</li>{{/a}}), text in one quoted attribute value, or whole attributes in a start tag (<input {{#a}}checked{{/a}}>); it never cuts into a tag or attribute name, an unquoted value or a comment.`,
+      };
+    case OPEN_MARKUP_RULE:
+      return {
+        tool: "inspect_page_render",
+        hint: `Caelo leaves every plugin value on this page raw, ${value} in ${mod} too: a module on it, or its template, does not end in plain HTML content in every render. inspect_page_render shows that markup as endsOutsideContent: close what it leaves open (<script>, <style>, <textarea>, <select>, <svg>, a comment or tag), or make its section wrap whole elements or attributes (update_modules_many).`,
+      };
+    case SLOT_PLACEMENT_RULE:
+      return {
+        tool: "move_module",
+        hint: `${mod} stands in a slot of the layout or template that a browser does not read as plain HTML content (inside <noscript>, <svg>, a <select> or a comment), so Caelo leaves its plugin values raw. Place the module in a block in plain content (move_module), or move that <caelo-slot> there (propose_update_layout, propose_update_template).`,
+      };
+    case NESTED_PLACEMENT_RULE:
+      return {
+        tool: "update_modules_many",
+        hint: `${mod} places a nested module outside plain HTML element content (in an attribute, raw text, SVG, a <select>, or after markup a section can change), so Caelo leaves the plugin values inside it raw. Put the {{>…}} or the module list between elements, with update_modules_many.`,
+      };
+    default:
+      return {
+        tool: "update_modules_many",
+        hint: `${mod} puts ${value} where a plugin's value may never go (${rule}): an event handler, style, srcdoc, a script or style body, a tag or attribute name, <meta>, <base>, an SVG animation, a URL loaded as code or a form target, or after a scheme like javascript:. Caelo leaves it raw. Move the placeholder into text or a quoted attribute (title, href) with update_modules_many.`,
+      };
+  }
+}
+
 /**
  * #1729 — how the AI handles a value a plugin handed a page that the host
  * refused (`plugin-value-refused:<plugin>.<source>.<field>:<rule>`, shared
- * `lists/plugin-values.ts`): the plugin's data, not the module's.
+ * `lists/plugin-values.ts`): the plugin's data, or (#1787) where the
+ * module puts it ({@link placementRefusalRepair}).
+ *
+ * @param mod the place in the AI's terms, for a refusal by placement.
  */
-export function pluginValueRefusedHint(body: string): string {
+export function pluginValueRefusedHint(body: string, mod = "a module on this page"): string {
+  const placement = placementRefusalRepair(body, mod);
+  if (placement !== null) return placement.hint;
   const { plugin, source, field, rule } = parsePluginValueRefused(body);
   // #1729 (§6.2) — the head and sitemap vocabulary, and share images.
   if (source === PLUGIN_HEAD_POINT) {
@@ -310,6 +370,9 @@ function pageValueAnswers(path: string, type: string): string {
   if (type === "term" || type === "list") {
     return `is a list of entries: iterate it with {{#page.${path}}}{{name}}{{/page.${path}}}`;
   }
+  if (type === "page") {
+    return `is a list of the pages it names: iterate it with {{#page.${path}}}<a href="{{link}}">{{title}}</a>{{/page.${path}}}`;
+  }
   const paths = [...new Set(type.split("|").flatMap((t) => PAGE_VALUE_PATHS[t] ?? []))];
   const select = type.split("|").includes("select")
     ? `, or the option flag {{#page.${path}_<option>}}`
@@ -335,6 +398,16 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
   if (reference !== null) return mediaReferenceRepair(reference);
   const og = parseOgImageFailureMarker(marker);
   if (og !== null) return shareImageRepair(og);
+  const variable = parseSeoTitleVariableMarker(marker);
+  if (variable !== null) {
+    return {
+      tool: variable === "site_name" ? "set_site_identity" : "set_page_type_seo_many",
+      hint:
+        variable === "site_name"
+          ? "The title template uses {site_name}, and the site has no name: set it with set_site_identity({siteName}), or drop {site_name} from the template (set_page_type_seo_many; get_page_seo names the template)."
+          : `The title template uses {${variable}}, which has no value on this page: fix the template with set_page_type_seo_many (get_page_seo names it).`,
+    };
+  }
   if (isLinkFailureMarker(marker)) {
     return {
       tool: "check_links",
@@ -363,6 +436,15 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
         tool: "set_content_instance_values_many",
         hint: `The link field ${path} in ${mod} holds no link: set it to a URL or { href, target? } (get_content_instance shows what is stored).`,
       };
+    case "list-missing":
+      // #1754 — a page property names a page that was deleted.
+      if (path.startsWith("page/")) {
+        return {
+          tool: "update_pages_many",
+          hint: `A page property shown by ${mod} names a deleted page (${path.slice("page/".length)}): give the page that holds it another page there, or remove the deleted one from the property (update_pages_many properties).`,
+        };
+      }
+      return { tool: "set_content_instance_values_many", hint: `${REFERENCE_REPAIR}.` };
     case PAGE_PROP_UNKNOWN:
       return {
         tool: "list_page_types",
@@ -372,7 +454,12 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
     case PAGE_PATH_UNKNOWN:
       return { tool: "update_modules_many", hint: pageMarkerHint(marker, mod) as string };
     case PLUGIN_VALUE_REFUSED:
-      return { tool: "get_plugin", hint: pluginValueRefusedHint(path) };
+      return (
+        placementRefusalRepair(path, mod) ?? {
+          tool: "get_plugin",
+          hint: pluginValueRefusedHint(path, mod),
+        }
+      );
     default:
       return { tool: "set_content_instance_values_many", hint: `${REFERENCE_REPAIR}.` };
   }

@@ -506,26 +506,32 @@ describe("Power-MCP surface (Power token)", () => {
     expect(content).not.toMatch(/not available on this surface/i);
   });
 
-  it("caches repeats of a caller-supplied toolCallId", async () => {
-    const toolCallId = `mcp-power-test-${crypto.randomUUID()}`;
-    const call = () =>
+  it("caches repeats of a caller-supplied toolCallId for a write, never for a read", async () => {
+    const moduleId = await seedNoteModule(`mcp-power-repeat-${Date.now().toString(36)}`);
+    const call = (toolName: string, args: Record<string, unknown>, toolCallId: string) =>
       execute(registry, adapter, systemCtx, "mcp.execute_tool", {
         plaintextToken: adminToken,
         chatSessionId,
-        toolName: "list_pages",
-        args: {},
+        toolName,
+        args,
         toolCallId,
       });
-    const first = await call();
-    expect(first.ok).toBe(true);
-    const second = await call();
-    expect(second.ok).toBe(true);
-    if (!second.ok || !first.ok) return;
+    const writeId = `mcp-power-test-${crypto.randomUUID()}`;
+    const write = { items: [{ moduleId, values: { note: "once" } }] };
+    const first = await call("create_content_instances", write, writeId);
+    const second = await call("create_content_instances", write, writeId);
+    if (!second.ok || !first.ok) throw new Error("create_content_instances refused");
     expect((first.value as { cached: boolean }).cached).toBe(false);
     expect((second.value as { cached: boolean }).cached).toBe(true);
     expect((second.value as { content: string }).content).toBe(
       (first.value as { content: string }).content,
     );
+    // #1704 — a read runs again: a replay would answer from before a change.
+    const readId = `mcp-power-test-${crypto.randomUUID()}`;
+    const read = await call("list_pages", {}, readId);
+    const reread = await call("list_pages", {}, readId);
+    expect(read.ok && (read.value as { cached: boolean }).cached).toBe(false);
+    expect(reread.ok && (reread.value as { cached: boolean }).cached).toBe(false);
   });
 
   it("gated propose_* tools queue an Owner proposal instead of applying", async () => {

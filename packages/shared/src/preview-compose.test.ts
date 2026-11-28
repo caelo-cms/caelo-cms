@@ -81,6 +81,45 @@ describe("composePagePreview", () => {
     expect(composePagePreview(input(false)).html).not.toContain("data-caelo-content-instance");
   });
 
+  it("keeps a nosnippet placement's module and content stamps on its root, the wrapper outside (#1752)", () => {
+    const html = composePagePreview({
+      templateHtml: `<body><caelo-slot name="x">_</caelo-slot></body>`,
+      templateCss: "",
+      stampContentInstances: true,
+      blocks: [
+        {
+          blockName: "x",
+          modules: [
+            {
+              ...blankModule,
+              html: "<article>A</article>",
+              contentInstanceId: uid(1),
+              nosnippet: true,
+            },
+            {
+              ...blankModule,
+              html: "<section>B</section>",
+              contentInstanceId: uid(2),
+              nosnippet: true,
+            },
+            { ...blankModule, html: "<p>C</p>", contentInstanceId: uid(3) },
+          ],
+        },
+      ],
+    }).html;
+    expect(html).toMatch(
+      new RegExp(
+        `<div data-nosnippet=""><article data-caelo-module-id="[^"]+" data-caelo-content-instance="${uid(1)}">A</article></div>`,
+      ),
+    );
+    expect(html).toMatch(
+      new RegExp(
+        `<section data-caelo-module-id="[^"]+" data-caelo-content-instance="${uid(2)}" data-nosnippet="">B</section>`,
+      ),
+    );
+    expect(html.match(/data-nosnippet/g)).toHaveLength(2);
+  });
+
   it("orders modules within a block by array order", () => {
     const out = composePagePreview({
       templateHtml: `<body><caelo-slot name="x">_</caelo-slot></body>`,

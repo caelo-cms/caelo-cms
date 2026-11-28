@@ -677,7 +677,6 @@ import {
   setSecurityHeadersOp,
 } from "./ops/security_headers.js";
 import {
-  pagesSeoApplyTranslationOp,
   pagesSeoAutofillOp,
   pagesSeoCheckShareImageOp,
   pagesSeoGetManyOp,
@@ -692,6 +691,8 @@ import {
   siteDefaultsSetSeoOp,
 } from "./ops/seo.js";
 import { pagesSeoAutofillManyOp, pagesSeoSetManyOp } from "./ops/seo-bulk.js";
+import { setPageTypeSeoManyOp } from "./ops/seo-templates.js";
+import { pagesSeoApplyTranslationOp } from "./ops/seo-translation.js";
 import { getSiteDefaultsOp, setSiteDefaultsOp, setSiteIdentityOp } from "./ops/site_defaults.js";
 import {
   executeSiteDefaultsProposalOp,
@@ -1680,6 +1681,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(pagesSeoSetManyOp);
   registry.register(pagesSeoAutofillOp);
   registry.register(pagesSeoAutofillManyOp);
+  registry.register(setPageTypeSeoManyOp);
   registry.register(pagesSeoApplyTranslationOp);
   registry.register(pagesSeoOptimizeOp);
   registry.register(pagesSeoOptimizeManyOp);

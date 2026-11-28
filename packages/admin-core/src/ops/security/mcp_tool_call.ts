@@ -22,12 +22,23 @@
  * There is no per-chat write slot: conflicts between concurrent writes are
  * caught per entity, against the version the call read (the snapshot this
  * op returns; tool-call-version.ts, locks.ts).
+ *
+ * #1704 — a replay is only ever the same call. The idempotency key of an
+ * MCP call comes from its JSON-RPC id, and a client may send an id again
+ * for a different call (one that reconnects with its `Mcp-Session-Id` counts
+ * its ids from 0 again). The key's row therefore carries the call it was
+ * reserved for ({@link mcpCallDigest}), and binds it for
+ * {@link IDEMPOTENCY_WINDOW_MS}: inside the window a repeat with the same
+ * digest is the same request (told it runs, or served its result), a key
+ * that names another call is refused; after it the key is free again.
  */
 
+import { createHash } from "node:crypto";
 import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { callIdentity } from "../../ai/chat-runner/repeat-failure-guard.js";
 import { drainTakeoverNotices } from "../../lock-takeover.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { externalAgentActiveMs } from "../chat/agent-runs.js";
@@ -44,11 +55,34 @@ import { findMcpHandoffByToolCall, recordMcpHandoff } from "../mcp_approval_hand
 export const STALE_AFTER_MS = 30_000;
 
 /**
- * How long a reserved idempotency key (0455) holds before a repeat may take
- * it over: longer than any tool call runs (image generation takes minutes),
- * so only a call whose process died leaves one behind that long.
+ * How long an idempotency key (0455) binds the call it was reserved for,
+ * counted from the call's arrival: longer than any tool call runs (image
+ * generation takes minutes) plus the client's wait before it resends, so a
+ * repeat inside it is a resend of that request. A reservation still pending
+ * after it belongs to a call whose process died; a finished one is no
+ * longer a resend's answer (#1704). Either way the next call under the key
+ * takes it over.
  */
-export const RESERVATION_TIMEOUT_MS = 15 * 60_000;
+export const IDEMPOTENCY_WINDOW_MS = 15 * 60_000;
+
+/**
+ * #1704 — what a call is, for its idempotency key: sha256 of the tool name
+ * and the arguments with their object keys sorted, so a resend that
+ * serialises the same arguments in another key order is still the same call.
+ *
+ * @returns 64 hex characters.
+ */
+export function mcpCallDigest(toolName: string, args: Record<string, unknown>): string {
+  return createHash("sha256").update(callIdentity(toolName, args)).digest("hex");
+}
+
+/** A call's idempotency key and the call it names (see {@link mcpCallDigest}). */
+const replayKeyShape = z
+  .object({
+    toolCallId: z.string().min(1).max(128),
+    callDigest: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
 
 const agentShape = z
   .object(mcpAgentInputShape)
@@ -218,11 +252,12 @@ export const mcpBeginToolCallOp = defineOperation({
       label: z.string().min(1).max(200),
       toolName: z.string().min(1).max(120),
       /**
-       * Caller-supplied idempotency key: a cached first result is returned
-       * instead, and the key is reserved before the tool runs so a repeat
-       * that arrives meanwhile does not run it again.
+       * The call's idempotency key and the call it names: the same call
+       * under the key gets its cached first result instead, and the key is
+       * reserved before the tool runs so a repeat that arrives meanwhile
+       * does not run it again (#1704: only ever the same call).
        */
-      toolCallId: z.string().min(1).max(128).optional(),
+      replayKey: replayKeyShape.optional(),
       /** Set when the tool spends the install's AI under a capped credential. */
       costCapMicrocents: z.number().int().nonnegative().optional(),
     })
@@ -239,8 +274,13 @@ export const mcpBeginToolCallOp = defineOperation({
       approval: approvalHandle,
     }),
     z.object({ status: z.literal("cost_capped"), chatSessionId: z.string(), spent: z.string() }),
-    /** The same call (session + toolCallId) is still running; it is not started again. */
+    /** The same call (session + key + digest) is still running; it is not started again. */
     z.object({ status: z.literal("in_progress"), chatSessionId: z.string() }),
+    /**
+     * #1704 — the key still binds a DIFFERENT call (`toolName` is that
+     * call's tool): nothing runs, nothing is served.
+     */
+    z.object({ status: z.literal("key_reused"), chatSessionId: z.string(), toolName: z.string() }),
     z.object({
       status: z.literal("ready"),
       chatSessionId: z.string(),
@@ -256,33 +296,10 @@ export const mcpBeginToolCallOp = defineOperation({
     if (await markPresent(tx, ctx.actorId, session.id, input.agent, input.label)) {
       return ok({ status: "stopped" as const, chatSessionId: session.id });
     }
-    if (input.toolCallId !== undefined) {
-      const rows = (await tx.execute(sql`
-        SELECT result_ok, result_content, pending,
-               (created_at < now() - ${RESERVATION_TIMEOUT_MS}::int * interval '1 millisecond')
-                 AS abandoned
-        FROM chat_tool_results
-        WHERE chat_session_id = ${session.id}::uuid AND tool_call_id = ${input.toolCallId}
-      `)) as unknown as {
-        result_ok: boolean;
-        result_content: string;
-        pending: boolean;
-        abandoned: boolean;
-      }[];
-      const hit = rows[0];
-      if (hit?.pending === true && !hit.abandoned) {
-        return ok({ status: "in_progress" as const, chatSessionId: session.id });
-      }
-      if (hit && !hit.pending) {
-        return ok({
-          status: "cached" as const,
-          chatSessionId: session.id,
-          cached: { ok: hit.result_ok, content: hit.result_content },
-          // The first call recorded the hand-off (the cache keeps only
-          // ok + content); a replay serves the same handle.
-          approval: await findMcpHandoffByToolCall(tx, session.id, input.toolCallId),
-        });
-      }
+    const key = input.replayKey;
+    if (key !== undefined) {
+      const held = await heldKey(tx, session.id, key.toolCallId);
+      if (held) return ok(await answerHeldKey(tx, session.id, key, held));
     }
     if (input.costCapMicrocents !== undefined) {
       const spent = await spentMicrocents(tx, ctx.actorId, session.id, input.agent);
@@ -294,8 +311,15 @@ export const mcpBeginToolCallOp = defineOperation({
         });
       }
     }
-    if (input.toolCallId !== undefined && !(await reserveToolCall(tx, session.id, input))) {
-      return ok({ status: "in_progress" as const, chatSessionId: session.id });
+    if (key !== undefined && !(await reserveToolCall(tx, session.id, input.toolName, key))) {
+      // Another request reserved the key since the read above (it committed
+      // first), or a retry of the call kept under it is running.
+      const held = await heldKey(tx, session.id, key.toolCallId);
+      return ok(
+        held
+          ? await answerHeldKey(tx, session.id, key, held)
+          : { status: "in_progress" as const, chatSessionId: session.id },
+      );
     }
     // Issue #620 — MCP work is activity in this session (the chat list
     // sorts by it); renewed only when stale (see the file header).
@@ -324,26 +348,96 @@ export const mcpBeginToolCallOp = defineOperation({
   },
 });
 
+/** A key's row while it still binds its call ({@link IDEMPOTENCY_WINDOW_MS}). */
+interface HeldKeyRow {
+  tool_name: string;
+  call_digest: string | null;
+  pending: boolean;
+  result_ok: boolean;
+  result_content: string;
+  /** When the call reserved the key (exact, as Postgres text). */
+  reserved_at: string;
+}
+
+/** The row under `toolCallId` when it was reserved inside the window, else null. */
+async function heldKey(
+  tx: TransactionRunner,
+  chatSessionId: string,
+  toolCallId: string,
+): Promise<HeldKeyRow | null> {
+  const rows = (await tx.execute(sql`
+    SELECT tool_name, call_digest, pending, result_ok, result_content,
+           created_at::text AS reserved_at
+    FROM chat_tool_results
+    WHERE chat_session_id = ${chatSessionId}::uuid AND tool_call_id = ${toolCallId}
+      AND created_at >= now() - ${IDEMPOTENCY_WINDOW_MS}::int * interval '1 millisecond'
+  `)) as unknown as HeldKeyRow[];
+  return rows[0] ?? null;
+}
+
 /**
- * Reserve the call's idempotency key (0455) — a fresh `pending` row, or one
- * whose call was abandoned ({@link RESERVATION_TIMEOUT_MS}).
+ * #1704 — what a call gets for a key that still binds a call: the same call
+ * (same digest) is told it runs or is served its result; any other call is
+ * refused. A row without a digest (the previous release, the browser chat)
+ * never proves the same call.
+ */
+async function answerHeldKey(
+  tx: TransactionRunner,
+  chatSessionId: string,
+  key: z.infer<typeof replayKeyShape>,
+  held: HeldKeyRow,
+): Promise<
+  | { status: "key_reused"; chatSessionId: string; toolName: string }
+  | { status: "in_progress"; chatSessionId: string }
+  | {
+      status: "cached";
+      chatSessionId: string;
+      cached: { ok: boolean; content: string };
+      approval: { proposalId: string; domain: string } | null;
+    }
+> {
+  if (held.call_digest !== key.callDigest) {
+    return { status: "key_reused", chatSessionId, toolName: held.tool_name };
+  }
+  if (held.pending) return { status: "in_progress", chatSessionId };
+  return {
+    status: "cached",
+    chatSessionId,
+    cached: { ok: held.result_ok, content: held.result_content },
+    // The first call recorded the hand-off (the cache keeps only ok +
+    // content); a replay serves the same handle — that call's own, not one
+    // an earlier call under a taken-over key recorded.
+    approval: await findMcpHandoffByToolCall(tx, chatSessionId, key.toolCallId, held.reserved_at),
+  };
+}
+
+/**
+ * Reserve the call's idempotency key (0455) for this call — a fresh
+ * `pending` row, or one whose window has passed ({@link IDEMPOTENCY_WINDOW_MS}):
+ * an abandoned reservation, or a finished call no resend can still be
+ * waiting for. A taken-over row forgets everything of the call before it,
+ * including a kept call (#1275), unless a retry of that one is running.
  *
- * @returns false when another request holds it: the same call is running.
+ * @returns false when another request holds the key.
  */
 async function reserveToolCall(
   tx: TransactionRunner,
   chatSessionId: string,
-  input: { toolCallId?: string | undefined; toolName: string },
+  toolName: string,
+  key: z.infer<typeof replayKeyShape>,
 ): Promise<boolean> {
   const rows = (await tx.execute(sql`
     INSERT INTO chat_tool_results
-      (chat_session_id, tool_call_id, tool_name, result_ok, result_content, pending)
-    VALUES (${chatSessionId}::uuid, ${input.toolCallId ?? null}, ${input.toolName}, false, '', true)
+      (chat_session_id, tool_call_id, tool_name, call_digest, result_ok, result_content, pending)
+    VALUES (${chatSessionId}::uuid, ${key.toolCallId}, ${toolName}, ${key.callDigest},
+            false, '', true)
     ON CONFLICT (chat_session_id, tool_call_id) DO UPDATE
-      SET created_at = now(), tool_name = EXCLUDED.tool_name
-      WHERE chat_tool_results.pending
-        AND chat_tool_results.created_at
-            < now() - ${RESERVATION_TIMEOUT_MS}::int * interval '1 millisecond'
+      SET created_at = now(), tool_name = EXCLUDED.tool_name,
+          call_digest = EXCLUDED.call_digest, pending = true, result_ok = false,
+          result_content = '', args = NULL, args_actor_id = NULL
+      WHERE chat_tool_results.created_at
+            < now() - ${IDEMPOTENCY_WINDOW_MS}::int * interval '1 millisecond'
+        AND chat_tool_results.retry_claimed_at IS NULL
     RETURNING id
   `)) as unknown as { id: string }[];
   return rows.length === 1;
@@ -390,6 +484,8 @@ export const mcpFinishToolCallOp = defineOperation({
        * repeat, and a kept call (`args`) is addressed by it.
        */
       cache: z.boolean(),
+      /** #1704 — the call the cached row is for ({@link mcpCallDigest}). */
+      callDigest: replayKeyShape.shape.callDigest,
       /**
        * #1275 — the arguments of a failed call kept for `retry_tool_call`
        * (`_retry-keep.ts` decides), kept for the calling actor only
@@ -413,19 +509,22 @@ export const mcpFinishToolCallOp = defineOperation({
   }),
   handler: async (ctx, input, tx) => {
     if (input.cache) {
-      // The reservation mcp.begin_tool_call made becomes the result.
+      // The reservation mcp.begin_tool_call made becomes the result — only
+      // this call's own: a key another call took over meanwhile (this one
+      // outran the window) keeps that call's row.
       await tx.execute(sql`
         INSERT INTO chat_tool_results
-          (chat_session_id, tool_call_id, tool_name, result_ok, result_content, args,
-           args_actor_id)
+          (chat_session_id, tool_call_id, tool_name, call_digest, result_ok, result_content,
+           args, args_actor_id)
         VALUES (${input.chatSessionId}::uuid, ${input.toolCallId}, ${input.toolName},
-                ${input.result.ok}, ${input.result.content}, ${jsonbParam(input.args)},
-                ${input.args !== undefined ? ctx.actorId : null}::uuid)
+                ${input.callDigest}, ${input.result.ok}, ${input.result.content},
+                ${jsonbParam(input.args)}, ${input.args !== undefined ? ctx.actorId : null}::uuid)
         ON CONFLICT (chat_session_id, tool_call_id) DO UPDATE
           SET result_ok = EXCLUDED.result_ok, result_content = EXCLUDED.result_content,
               args = EXCLUDED.args, args_actor_id = EXCLUDED.args_actor_id,
               pending = false
           WHERE chat_tool_results.pending
+            AND chat_tool_results.call_digest = EXCLUDED.call_digest
       `);
     }
     const approval = await handOffQueuedProposal(tx, ctx.actorId, input);

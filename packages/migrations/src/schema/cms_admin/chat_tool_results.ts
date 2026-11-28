@@ -28,6 +28,11 @@ export const chatToolResults = pgTable(
     argsActorId: uuid("args_actor_id").references(() => actors.id, { onDelete: "cascade" }),
     /** #1275 — set while a retry of the kept call runs (atomic claim). */
     retryClaimedAt: timestamp("retry_claimed_at", { withTimezone: true }),
+    /**
+     * #1704 — sha256 of the MCP call's tool name and arguments: a cached
+     * row is served only to the same call. NULL for browser-chat rows.
+     */
+    callDigest: text("call_digest"),
   },
   (t) => [unique().on(t.chatSessionId, t.toolCallId)],
 );

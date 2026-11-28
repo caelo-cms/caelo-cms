@@ -8,12 +8,47 @@ import {
   pickShareImage,
   renderSeoHead,
   resolveCanonicalUrl,
+  type SeoMetaInput,
   seoAutofillInputSchema,
   seoOptimizeInputSchema,
   seoSetInputSchema,
   siteDefaultsSetSeoInputSchema,
   siteSeoProposalInputSchema,
 } from "./seo.js";
+import { PAGE_SEO_HEAD_DEFAULTS, resolvePageSeoHead } from "./seo-head.js";
+
+/** A head input for a page with this title and description and no other SEO of its own. */
+function headInput(
+  o: Partial<Omit<SeoMetaInput, "head" | "pageTitle">> & {
+    title?: string;
+    metaDescription?: string;
+    noindex?: boolean;
+  } = {},
+): SeoMetaInput {
+  const { title = "Welcome", metaDescription = "A sample description.", noindex, ...rest } = o;
+  return {
+    head: resolvePageSeoHead({
+      pageTitle: title,
+      shortTitle: title,
+      seo: {
+        ...PAGE_SEO_HEAD_DEFAULTS,
+        metaDescription,
+        noindex: noindex ?? false,
+        origins: metaDescription ? { metaDescription: "human" } : {},
+      },
+      pageTypeSeo: undefined,
+      site: { titleTemplate: "{page_title}", siteName: null },
+    }),
+    pageTitle: title,
+    siteName: null,
+    article: null,
+    canonical: "https://example.com/",
+    ogImageUrl: null,
+    organization: {},
+    feed: null,
+    ...rest,
+  };
+}
 
 describe("resolveCanonicalUrl", () => {
   it("uses the explicit override when provided", () => {
@@ -118,22 +153,13 @@ describe("resolveCanonicalUrl", () => {
 });
 
 describe("renderSeoHead", () => {
-  const base = {
-    title: "Welcome",
-    metaDescription: "A sample description.",
-    canonical: "https://example.com/",
-    noindex: false,
-    ogImageUrl: null,
-    organization: {},
-    feed: null,
-  };
+  const base = headInput();
 
   it("links the site's feed when it has one, and nothing when it has none", () => {
     expect(
-      renderSeoHead({
-        ...base,
-        feed: { url: "https://example.com/feed.xml", title: "example.com" },
-      }),
+      renderSeoHead(
+        headInput({ feed: { url: "https://example.com/feed.xml", title: "example.com" } }),
+      ),
     ).toContain(
       '<link rel="alternate" type="application/atom+xml" title="example.com" href="https://example.com/feed.xml" />',
     );
@@ -141,7 +167,7 @@ describe("renderSeoHead", () => {
   });
 
   it("#551: omits canonical, og:url and the JSON-LD url when the base URL is unset", () => {
-    const head = renderSeoHead({ ...base, canonical: null });
+    const head = renderSeoHead(headInput({ canonical: null }));
     expect(head).not.toContain('rel="canonical"');
     expect(head).not.toContain("og:url");
     expect(head).not.toContain('"url"');
@@ -157,15 +183,18 @@ describe("renderSeoHead", () => {
     expect(head).toContain('<meta property="og:url" content="https://example.com/" />');
   });
 
-  it("emits noindex meta only when set", () => {
-    expect(renderSeoHead(base)).not.toContain('content="noindex"');
-    expect(renderSeoHead({ ...base, noindex: true })).toContain(
-      '<meta name="robots" content="noindex" />',
+  it("#1752: one robots meta, noindex only when set, max-image-preview always", () => {
+    expect(renderSeoHead(base)).toContain(
+      '<meta name="robots" content="max-image-preview:large" />',
     );
+    expect(renderSeoHead(headInput({ noindex: true }))).toContain(
+      '<meta name="robots" content="noindex, max-image-preview:large" />',
+    );
+    expect(renderSeoHead(base).match(/name="robots"/g)).toHaveLength(1);
   });
 
   it("emits og:image and twitter summary_large_image when provided", () => {
-    const head = renderSeoHead({ ...base, ogImageUrl: "https://example.com/_assets/x/orig.png" });
+    const head = renderSeoHead(headInput({ ogImageUrl: "https://example.com/_assets/x/orig.png" }));
     expect(head).toContain(
       '<meta property="og:image" content="https://example.com/_assets/x/orig.png" />',
     );
@@ -173,11 +202,12 @@ describe("renderSeoHead", () => {
   });
 
   it("emits a JSON-LD WebPage block; encodes the < character to avoid script-tag breaks", () => {
-    const head = renderSeoHead({
-      ...base,
-      title: "Tag <foo>",
-      organization: { name: "Caelo Inc.", url: "https://caelo.example" },
-    });
+    const head = renderSeoHead(
+      headInput({
+        title: "Tag <foo>",
+        organization: { name: "Caelo Inc.", url: "https://caelo.example" },
+      }),
+    );
     expect(head).toContain('<script type="application/ld+json">');
     expect(head).not.toContain("<foo>"); // angle bracket inside script ld+json should be escaped
     expect(head).toContain('"publisher"');
@@ -185,11 +215,9 @@ describe("renderSeoHead", () => {
   });
 
   it("HTML-encodes attribute values to block injection", () => {
-    const head = renderSeoHead({
-      ...base,
-      title: 'Quote "test"',
-      metaDescription: "<script>alert(1)</script>",
-    });
+    const head = renderSeoHead(
+      headInput({ title: 'Quote "test"', metaDescription: "<script>alert(1)</script>" }),
+    );
     expect(head).toContain('content="Quote &quot;test&quot;"');
     expect(head).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
   });
@@ -419,14 +447,11 @@ describe("checkPublicSiteBaseUrl", () => {
 });
 
 describe("BreadcrumbList JSON-LD (#1142)", () => {
-  const base = {
+  const base = headInput({
     title: "Team",
     metaDescription: "",
     canonical: "https://example.com/about/team/",
-    noindex: false,
-    ogImageUrl: null,
-    organization: {},
-  };
+  });
   const ldBlocks = (head: string): unknown[] =>
     [...head.matchAll(/<script type="application\/ld\+json">(.*?)<\/script>/g)].map((m) =>
       JSON.parse(m[1] as string),

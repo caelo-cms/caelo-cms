@@ -7,14 +7,16 @@
  * terms: pages.create / update / update_many and page_types.upsert_many
  * (which re-checks every page of a changed type). The template must be one
  * of the type's templates; properties are validated with the shared field
- * system (a missing value takes the property's `default`); terms must be
- * entries of the type's vocabulary lists, with the cardinality and
- * `required` the type declares. Every problem comes back as one sentence
- * the AI can act on.
+ * system (a missing value takes the property's `default`); a `page`
+ * property names existing pages of the type it asks for (#1754,
+ * `page-refs.ts`); terms must be entries of the type's vocabulary lists,
+ * with the cardinality and `required` the type declares. Every problem
+ * comes back as one sentence the AI can act on.
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { type PageTypeDef, validateFieldValue } from "@caelo-cms/shared";
+import { canonicalPageRefs, NO_PAGE_REFS, type PageRefIndex, pageRefIssues } from "./page-refs.js";
 import { parseTermRef } from "./page-terms.js";
 import { loadListEntities } from "./store.js";
 
@@ -58,11 +60,20 @@ export async function loadVocabularyIndex(
   return out;
 }
 
-/** Check (and normalise) a page's type-bound state against `def`. */
+/**
+ * Check (and normalise) a page's type-bound state against `def`.
+ *
+ * @param pageRefs #1754 — the pages its `page` properties name
+ *   (`loadPageRefIndex`, page-refs.ts); their values come back as references.
+ * @param selfId the page being written (null for a new page): a `page`
+ *   property cannot name it.
+ */
 export function fitPageToType(
   def: PageTypeDef,
   page: PageTypeBound,
   vocabularies: VocabularyIndex,
+  pageRefs: PageRefIndex = NO_PAGE_REFS,
+  selfId: string | null = null,
 ): PageFit {
   const issues: string[] = [];
   if (!def.templates.includes(page.templateId)) {
@@ -72,9 +83,15 @@ export function fitPageToType(
   }
   const properties: Record<string, unknown> = {};
   for (const f of def.properties) {
-    const v = Object.hasOwn(page.properties, f.name) ? page.properties[f.name] : f.default;
-    for (const i of validateFieldValue(f, v, `properties.${f.name}`)) {
-      issues.push(`${i.path}: ${i.message}`);
+    const written = Object.hasOwn(page.properties, f.name) ? page.properties[f.name] : f.default;
+    const v = f.type === "page" ? canonicalPageRefs(written, pageRefs) : written;
+    // A page that does not exist is named as such, not as a malformed value.
+    const refIssues = f.type === "page" ? pageRefIssues(f, v, pageRefs, selfId) : [];
+    issues.push(...refIssues);
+    if (refIssues.length === 0) {
+      for (const i of validateFieldValue(f, v, `properties.${f.name}`)) {
+        issues.push(`${i.path}: ${i.message}`);
+      }
     }
     if (v !== undefined && v !== null) properties[f.name] = v;
   }

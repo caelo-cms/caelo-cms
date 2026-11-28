@@ -18,7 +18,16 @@ import {
   type TransactionRunner,
   uuidArray,
 } from "@caelo-cms/query-api";
-import { type ExecutionContext, err, ok, type Result } from "@caelo-cms/shared";
+import {
+  type ExecutionContext,
+  err,
+  ok,
+  type Result,
+  SEO_TEXT_FIELDS,
+  type SeoAuthorship,
+  type SeoOrigins,
+  type SeoTextField,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 import {
@@ -29,12 +38,14 @@ import {
   type SnapshotOpKind,
 } from "../snapshots/index.js";
 import type { PageSeoState, PageState } from "../snapshots/state.js";
+import { parsePageSeoState } from "../snapshots/state-schemas.js";
 import {
   applyPageSeoState,
   assetKey,
   loadLivePageSeo,
   PAGE_SEO_COLUMN_DEFAULTS,
   pageKey,
+  sameSeoValue,
   uuidKey,
 } from "./page-seo.js";
 
@@ -72,8 +83,12 @@ export async function peekPageSeo(
   }
   // A pending page snapshot that did not write SEO carries none: the live
   // row is still this page's SEO in the caller's view (seo/page-seo.ts).
+  // The overlay hands over the raw state: its SEO is parsed here, so an
+  // older one gets the #1752 head fields before anything builds on it.
   const current =
-    page.seo ?? (await loadLivePageSeo(tx, [pageId])).get(pageId) ?? PAGE_SEO_COLUMN_DEFAULTS;
+    page.seo !== undefined
+      ? parsePageSeoState(page.seo)
+      : ((await loadLivePageSeo(tx, [pageId])).get(pageId) ?? PAGE_SEO_COLUMN_DEFAULTS);
   return ok({ pageId, page, current });
 }
 
@@ -125,7 +140,35 @@ export async function openPageSeoWrite(
 
 /** True when `next` changes nothing of `current` (no write, no snapshot). */
 export function sameSeo(current: PageSeoState, next: PageSeoState): boolean {
-  return (Object.keys(current) as (keyof PageSeoState)[]).every((k) => current[k] === next[k]);
+  return (Object.keys(current) as (keyof PageSeoState)[]).every((k) =>
+    sameSeoValue(current[k], next[k]),
+  );
+}
+
+/** Who a write's new texts are recorded as: a person, or the AI (a plugin and the platform included). */
+export function seoAuthorOf(ctx: Pick<ExecutionContext, "actorKind">): SeoAuthorship {
+  return ctx.actorKind === "human" ? "human" : "ai";
+}
+
+/**
+ * #1752 — the authorship of `next`'s own texts after a write by `author`: a
+ * text the write changed is the author's, an unchanged one keeps the
+ * authorship `next` carries (an op's `reviewed` mark) or had, an empty one
+ * has none. Every SEO write goes through it ({@link commitPageSeoWrites}),
+ * so no op can store a text without its origin.
+ */
+export function authorshipAfterWrite(
+  current: PageSeoState,
+  next: PageSeoState,
+  author: SeoAuthorship,
+): SeoOrigins {
+  const out: Partial<Record<SeoTextField, SeoAuthorship>> = {};
+  for (const f of SEO_TEXT_FIELDS) {
+    if (next[f].length === 0) continue;
+    const kept = next.origins[f] ?? current.origins[f];
+    out[f] = next[f] !== current[f] || kept === undefined ? author : kept;
+  }
+  return out;
 }
 
 /**
@@ -143,9 +186,16 @@ export async function commitPageSeoWrites(
   if (input.length === 0) return;
   // Asset ids in a state are canonical (the ops normalize them; this keeps
   // any caller from storing an uppercase id every comparison would miss).
+  // #1752 — every own text records who wrote it.
+  const author = seoAuthorOf(ctx);
   const writes = input.map((w) => ({
     opened: w.opened,
-    next: { ...w.next, ogImageAssetId: assetKey(w.next.ogImageAssetId) },
+    next: {
+      ...w.next,
+      ogImageAssetId: assetKey(w.next.ogImageAssetId),
+      nosnippetContent: [...new Set(w.next.nosnippetContent.map(uuidKey))].sort(),
+      origins: authorshipAfterWrite(w.opened.current, w.next, author),
+    },
   }));
   await assertOgImagesUsable(
     tx,

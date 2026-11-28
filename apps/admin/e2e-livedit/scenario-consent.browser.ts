@@ -199,12 +199,28 @@ test("bau mir einen Cookie-Banner — categories as data, hooks wired, runtime o
   expect(stagedHtml).toMatch(/src="\/_caelo\/plugin\/consent-manager\/[^"]+\.js"/);
 
   // The named tool was registered from its template, not pasted into a
-  // module: the runtime holds it until analytics is granted (#1135).
+  // module: the runtime holds it until analytics is granted (#1135). Since
+  // #1729 the runtime is the same reviewed file on every build and the
+  // site's tags reach it as build data, a JSON block in each page, so the
+  // tag must sit in that block under analytics and nowhere else in the page.
   const runtimeSrc = /src="(\/_caelo\/plugin\/consent-manager\/[^"]+\.js)"/.exec(stagedHtml)?.[1];
   const runtime = await page.request.get(`${getStagingUrl().replace(/\/+$/, "")}${runtimeSrc}`);
   expect(runtime.status(), "GET staged consent runtime").toBeLessThan(400);
-  expect(await runtime.text()).toContain("gtag/js?id=G-T454TEST");
-  expect(stagedHtml).not.toContain("G-T454TEST");
+  const dataBlock =
+    /<script type="application\/json" data-caelo-plugin-data="consent-manager">([^<]*)<\/script>/.exec(
+      stagedHtml,
+    );
+  expect(dataBlock, "consent-manager build data in the staged page").not.toBeNull();
+  const buildData = JSON.parse(dataBlock?.[1] ?? "{}") as {
+    tags?: Array<{ category?: string; src?: string | null }>;
+  };
+  expect(buildData.tags ?? []).toContainEqual(
+    expect.objectContaining({
+      category: "analytics",
+      src: expect.stringContaining("gtag/js?id=G-T454TEST"),
+    }),
+  );
+  expect(stagedHtml.replace(dataBlock?.[0] ?? "", "")).not.toContain("G-T454TEST");
 
   assertNoOrphanLocks(sessionId ?? "");
   assertNoChatRunnerDiagWarnings();

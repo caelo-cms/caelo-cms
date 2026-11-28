@@ -52,7 +52,8 @@
  * comment approval on a Lighthouse run would keep the item out of the
  * HTML for minutes per tick and spend an audit job on data, while what
  * the gate measures cannot change. The SEO gate does not apply either:
- * no `<head>` changes.
+ * the only `<head>` change is an article page's `article:modified_time`,
+ * which moves to the date its sitemap entry gets (#1752).
  *
  * Batching: one build per tick takes every pending mark (up to
  * {@link MAX_MARKS_PER_BUILD}), so many approvals in one tick produce one
@@ -106,6 +107,7 @@ import {
   phaseTimingSchema,
   type Result,
   readDocumentLanguage,
+  setArticleModifiedTime,
 } from "@caelo-cms/shared";
 import {
   bakeRegion,
@@ -214,6 +216,8 @@ interface TargetBake {
    * now show (`pluginRegionsDigest` of its own file).
    */
   readonly pluginDigests: readonly PluginDigest[];
+  /** Per re-baked page, its own file (page 1 of a paginated overview). */
+  readonly ownPaths: ReadonlyMap<string, string>;
 }
 
 const routingManifestSchema = z.object({
@@ -398,10 +402,12 @@ async function bakeTarget(args: {
   // paginated overview's follow-ups carry the same regions): compared with
   // the live record when the run is recorded.
   const pluginDigests: PluginDigest[] = [];
+  const ownPaths = new Map<string, string>();
   for (const [pageId, paths] of pathOf) {
     const own = paths[0];
     const body = own === undefined ? undefined : changed.get(own);
-    if (body === undefined) continue;
+    if (own === undefined || body === undefined) continue;
+    ownPaths.set(pageId, own);
     pluginDigests.push({ pageId, pluginFingerprint: pluginRegionsDigest(body.toString("utf8")) });
   }
   return {
@@ -411,6 +417,7 @@ async function bakeTarget(args: {
     versionMismatch: [...versionMismatch].sort(),
     unknownLinks,
     pluginDigests,
+    ownPaths,
   };
 }
 
@@ -464,6 +471,17 @@ async function patchSearchFiles(args: {
 }): Promise<void> {
   const { publisher, target, live, bake, changes, changedAt } = args;
   if (changes.length === 0) return;
+  // #1752 — an article page's `article:modified_time` is the same date the
+  // sitemap gets (a page without the tag stays as it is).
+  for (const c of changes) {
+    const path = bake.ownPaths.get(c.pageId);
+    const body = path === undefined ? undefined : bake.files.get(path);
+    if (path === undefined || body === undefined) continue;
+    bake.files.set(
+      path,
+      Buffer.from(setArticleModifiedTime(body.toString("utf8"), changedAt), "utf8"),
+    );
+  }
   const files = await publisher.readLiveFiles({ target, live, paths: ["sitemap.xml", FEED_FILE] });
   const sitemap = files.get("sitemap.xml");
   if (sitemap) {

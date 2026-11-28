@@ -76,6 +76,8 @@ interface SettingsRow {
   readonly feed_enabled: boolean;
   readonly organization_json: string | null;
   readonly site_language: string | null;
+  readonly site_name: string | null;
+  readonly seo_title_template: string;
 }
 
 /** The rows a view is derived from (see the file header). */
@@ -130,7 +132,8 @@ async function readMedia(tx: TransactionRunner, ids?: readonly string[]): Promis
 async function readSettings(tx: TransactionRunner): Promise<SettingsRow> {
   const rows = (await tx.execute(sql`
     SELECT site_base_url, sitemap_enabled, feed_enabled,
-           organization_json::text AS organization_json, site_language
+           organization_json::text AS organization_json, site_language, site_name,
+           seo_title_template
     FROM site_defaults WHERE id = 1
   `)) as unknown as SettingsRow[];
   const s = rows[0];
@@ -411,6 +414,8 @@ export function siteViewOf(
       feedEnabled: s.feed_enabled,
       organizationJson: s.organization_json,
       siteLanguage: s.site_language,
+      siteName: s.site_name,
+      seoTitleTemplate: s.seo_title_template,
       homePageId,
     },
   };
