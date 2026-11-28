@@ -33,6 +33,7 @@ import {
   type MediaReferenceFailure,
   mediaUrlForRef,
   NESTED_PLACEMENT_RULE,
+  type NestedModuleWithheld,
   type OgImageFailure,
   OPEN_MARKUP_RULE,
   PAGE_KEY_TYPES,
@@ -47,6 +48,7 @@ import {
   PLUGIN_VALUE_REFUSED,
   parseMediaFailureMarker,
   parseMediaReferenceMarker,
+  parseNestedModuleWithheldMarker,
   parseOgImageFailureMarker,
   parsePagePathUnknown,
   parsePluginValueRefused,
@@ -141,6 +143,8 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   const pluginShareImagePages = new Set<string>();
   const pluginStructuredDataPages = new Set<string>();
   const pluginSitemapPages = new Set<string>();
+  // #1708 — a consent-gated embed nested inside another module.
+  const withheldNestedPages = new Set<string>();
   for (const f of failures) {
     const page = `${f.pageTitle} (${f.pagePath})`;
     const og = parseOgImageFailureMarker(f.reason);
@@ -160,6 +164,8 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
       pluginStructuredDataPages.add(page);
     } else if (refusedSource === PLUGIN_SITEMAP_ENTRIES_POINT) {
       pluginSitemapPages.add(page);
+    } else if (parseNestedModuleWithheldMarker(f.reason) !== null) {
+      withheldNestedPages.add(page);
     } else if (parseMediaFailureMarker(f.reason) !== null) {
       imagePages.add(page);
     } else if (parseMediaReferenceMarker(f.reason) !== null) {
@@ -219,6 +225,10 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   onPages(
     "A plugin added a news or video sitemap entry that Caelo does not allow, so it was left out",
     pluginSitemapPages,
+  );
+  onPages(
+    "Something that waits for visitors' consent (a video, a map, a booking widget) sits inside another section, where it cannot wait, so it was left out",
+    withheldNestedPages,
   );
   const listed = [...others];
   for (const place of listed.slice(0, PLACES_LISTED)) lines.push(`${place} could not be rendered`);
@@ -330,6 +340,29 @@ export function placementRefusalRepair(body: string, mod: string): RenderRepair 
         hint: `${mod} puts ${value} where a plugin's value may never go (${rule}): an event handler, style, srcdoc, a script or style body, a tag or attribute name, <meta>, <base>, an SVG animation, a URL loaded as code or a form target, or after a scheme like javascript:. Caelo leaves it raw. Move the placeholder into text or a quoted attribute (title, href) with update_modules_many.`,
       };
   }
+}
+
+/**
+ * #1708 — how the AI repairs a module a plugin withholds (a consent-gated
+ * embed) that sits inside another module's field, where no gate can hold
+ * it. Shared by the Stage's report, the audit's fix, `inspect_page_render`'s
+ * next steps and the write tools' hint, so all four say the same.
+ *
+ * @param mod the module whose field holds it, in the AI's terms (`module "hero"`).
+ * @param slug the withheld module's slug, when the caller knows it (the
+ *   marker carries only its id).
+ */
+export function nestedModuleWithheldHint(
+  f: NestedModuleWithheld,
+  mod: string,
+  slug?: string,
+): string {
+  const what = slug === undefined ? `Module ${f.moduleId}` : `Module "${slug}" (${f.moduleId})`;
+  return (
+    `${what} is in a field of ${mod}, but plugin "${f.pluginSlug}" withholds it until visitors consent (${f.reason}). Only a module placed on the page directly can wait for consent: nested, it is left out and Publish live is refused. ` +
+    "Move it onto the page (add_module next to that module; set_content_instance_values_many removes it from the field). " +
+    "Allowing its vendor is no way around this."
+  );
 }
 
 /**
@@ -467,6 +500,9 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
   if (reference !== null) return mediaReferenceRepair(reference);
   const og = parseOgImageFailureMarker(marker);
   if (og !== null) return shareImageRepair(og);
+  const withheld = parseNestedModuleWithheldMarker(marker);
+  if (withheld !== null)
+    return { tool: "add_module", hint: nestedModuleWithheldHint(withheld, mod) };
   const variable = parseSeoTitleVariableMarker(marker);
   if (variable !== null) {
     return {

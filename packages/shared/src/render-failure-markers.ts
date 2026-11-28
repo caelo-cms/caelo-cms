@@ -172,3 +172,41 @@ export function parseOgImageFailureMarker(reason: string): OgImageFailure | null
     assetId: m[3] as string,
   };
 }
+
+/**
+ * #1708 — a module a plugin withholds (a consent-gated embed, say) sits
+ * inside another module's `module` / `module-list` field. Only a module
+ * placed on the page directly can be parked behind the plugin's gate, so
+ * the nested one is left out — markup, CSS and JS: rendering it would send
+ * the request the gate exists to hold back. Content, never a Caelo fault:
+ * a Stage ships the page without it and reports it, and Publish live
+ * refuses the build until the module is placed on the page directly.
+ *
+ * `nested-module-withheld:<moduleId>/<pluginSlug>/<reason>`, the reason as
+ * the plugin gave it (a consent category, `unclassified`, …).
+ */
+export const NESTED_MODULE_WITHHELD = "nested-module-withheld";
+
+/** A withheld nested module's marker parts ({@link NESTED_MODULE_WITHHELD}). */
+export interface NestedModuleWithheld {
+  readonly moduleId: string;
+  readonly pluginSlug: string;
+  readonly reason: string;
+}
+
+/** The marker of a withheld module nested inside another module. */
+export function nestedModuleWithheldMarker(f: NestedModuleWithheld): string {
+  return `${NESTED_MODULE_WITHHELD}:${f.moduleId}/${f.pluginSlug}/${f.reason}`;
+}
+
+// Module ids are uuids, plugin slugs and deferral reasons lowercase keys
+// (plugin SDK `deferralReasonKey`), so `/` cannot occur inside a part.
+const NESTED_MODULE_WITHHELD_RE =
+  /^nested-module-withheld:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/([a-z][a-z0-9-]{0,54})\/([a-z][a-z0-9_-]{0,63})$/;
+
+/** The parts of a withheld-nested-module marker, or null for any other reason. */
+export function parseNestedModuleWithheldMarker(reason: string): NestedModuleWithheld | null {
+  const m = NESTED_MODULE_WITHHELD_RE.exec(renderFailureMarker(reason));
+  if (!m) return null;
+  return { moduleId: m[1] as string, pluginSlug: m[2] as string, reason: m[3] as string };
+}

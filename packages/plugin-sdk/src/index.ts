@@ -325,7 +325,10 @@ export const pluginToolSpec = z.object({
    *  a module the chat created or edited): the approved call then runs
    *  on the chat's branch for every approver and goes live with it, so
    *  it judges exactly what the approver was shown. Only meaningful
-   *  with `approvalMode`. */
+   *  with `approvalMode`. Its writes go through the shared draft's
+   *  conflict check, so before the card is shown the host refuses the
+   *  call while another chat changed the plugin's rows about the ids
+   *  the call names and this chat has not seen it (#1705). */
   approvedOnChatBranch: z.boolean().optional(),
   /** The permission the HUMAN a chat call acts for must hold — for the
    *  direct call, or for the approver of an approval-gated one. Use the

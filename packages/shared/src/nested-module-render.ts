@@ -64,6 +64,7 @@
 import { isLinkFailureMarker, type LinkResolver } from "./link-refs.js";
 import type { ListPageContext } from "./lists/resolve.js";
 import { tagModuleId } from "./module-id-tag.js";
+import { nestedModuleWithheldMarker } from "./render-failure-markers.js";
 import {
   caeloMissingComment,
   NESTED_PLACEMENT_RULE,
@@ -144,6 +145,17 @@ export interface NestedRenderResult {
 }
 
 /**
+ * #1708 — which modules a plugin withholds (a consent-gated embed), by
+ * module id: the plugin and its reason, or undefined for a module that
+ * renders normally. A withheld module can be parked behind its gate only
+ * where it is placed on the page directly; nested, it is left out and
+ * reported (see `renderPartial`).
+ */
+export type NestedWithheldLookup = (
+  moduleId: string,
+) => { readonly pluginSlug: string; readonly reason: string } | undefined;
+
+/**
  * v0.11.1 (issue #76) — active theme's resolved asset URLs threaded
  * through the recursion so module HTML carrying `{{theme_logo_url}}`
  * etc. resolves inside nested modules the same way it does in placed
@@ -182,6 +194,8 @@ interface RenderContext {
    * element content: every plugin value here and below is refused with it.
    */
   readonly refusePluginValues?: string;
+  /** #1708 — modules a plugin withholds; nested, they are left out. */
+  readonly withheld?: NestedWithheldLookup;
 }
 
 function isNestedRef(v: unknown): v is NestedRefValue {
@@ -217,12 +231,15 @@ export function renderModuleWithContent(
   linkResolver?: LinkResolver,
   /** #1729 — refuse every plugin value of this module and below with this rule (see `page-reading.ts`). */
   refusePluginValues?: string,
+  /** #1708 — modules a plugin withholds: left out where they are nested. */
+  withheld?: NestedWithheldLookup,
 ): NestedRenderResult {
   const touched = new Set<string>();
   const missing: string[] = [];
   const failures: NestedRenderFailure[] = [];
   const html = renderInner(moduleId, contentInstanceId, {
     ...(refusePluginValues !== undefined ? { refusePluginValues } : {}),
+    ...(withheld ? { withheld } : {}),
     resolver,
     touched,
     missing,
@@ -287,6 +304,7 @@ function renderInner(moduleId: string, contentInstanceId: string, ctx: RenderCon
     listHolder: ci.listHolderId ?? (UUID_RE.test(ci.id) ? ci.id : null),
     linkResolver: ctx.linkResolver,
     ...(ctx.refusePluginValues !== undefined ? { refusePluginValues: ctx.refusePluginValues } : {}),
+    ...(ctx.withheld ? { withheld: ctx.withheld } : {}),
   };
 
   return substituteWithRecursion(mod.html, mod.fields, ci.values, childCtx);
@@ -384,13 +402,30 @@ function renderPartial(
 ): string | undefined {
   const hit = nestedRefForPartial(key, ref, fieldByName, values);
   if (!hit) return undefined;
+  const at = descend(ctx, hit.step);
+  // #1708 — a plugin withholds this module (a consent-gated embed): its
+  // gate is a `<template>` the composer wraps around a PLACED module, and
+  // there is none in here. Rendering it would load the embed before the
+  // visitor consents, so it is left out — markup, CSS and JS (it is not
+  // touched) — and reported where it sits, the way a deleted nested
+  // module is. A Stage ships the page without it; Publish live refuses.
+  const withheld = ctx.withheld?.(hit.ref.moduleId);
+  if (withheld) {
+    const marker = nestedModuleWithheldMarker({
+      moduleId: hit.ref.moduleId,
+      pluginSlug: withheld.pluginSlug,
+      reason: withheld.reason,
+    });
+    fail(at, marker);
+    return comment(marker);
+  }
   // #1027 — a nested module's root carries its own id, exactly like a
   // page placement's (the composer tags those), so the live-edit overlay
   // and the quality checks attribute its markup to the nested module
   // instead of reading it as free HTML of the parent. A failure comment
   // has no element and stays as it is.
   return tagModuleId(
-    renderInner(hit.ref.moduleId, hit.ref.contentInstanceId, descend(ctx, hit.step)),
+    renderInner(hit.ref.moduleId, hit.ref.contentInstanceId, at),
     hit.ref.moduleId,
   );
 }
@@ -540,12 +575,15 @@ export function renderPlacedModule(
     readonly linkResolver?: LinkResolver;
     /** #1729 — refuse every plugin value of this module and below with this rule (see `page-reading.ts`). */
     readonly refusePluginValues?: string;
+    /** #1708 — modules a plugin withholds: left out where they are nested. */
+    readonly withheld?: NestedWithheldLookup;
   },
 ): NestedRenderResult {
   const touched = new Set<string>();
   const missing: string[] = [];
   const failures: NestedRenderFailure[] = [];
   const html = substituteWithRecursion(placement.html, placement.fields, placement.values, {
+    ...(options.withheld ? { withheld: options.withheld } : {}),
     resolver,
     touched,
     missing,
