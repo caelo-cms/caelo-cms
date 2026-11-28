@@ -209,6 +209,12 @@ export type CorePlace =
       readonly after: string;
       /** Another value tag follows right after `after`. */
       readonly valueAfter: boolean;
+      /**
+       * The tag stands right inside a table's structure (`<table>{{x}}<tr>`),
+       * where the parser foster-parents text out of the table but still
+       * reads every tag against it: any markup there can restructure it.
+       */
+      readonly inTable: boolean;
     }
   /** The text of an HTML element only its end tag ends: `script`, `style`, `title`, `textarea`, … */
   | ({ readonly kind: "raw-text"; readonly element: string } & Neighbours)
@@ -344,8 +350,27 @@ function computeContexts(html: string): PlaceholderContexts {
     if (html[tag.start + 2] === "{") byStart.set(tag.start + 1, context);
   }
   const corePlaces = new Map<number, readonly CorePlace[]>();
-  for (const [i, places] of values.corePlaces) {
-    const tag = tags[i] as MustacheSpan;
+  for (const [i, tag] of tags.entries()) {
+    if (tag.kind !== "value") continue;
+    let places = values.corePlaces.get(i) ?? [];
+    // Where a section or a value-named element could change the reading
+    // (`{{#show}}<textarea>{{/show}}{{body}}`), a render may put the value
+    // in plain content too: it must keep that markup as well.
+    if (tag.start > unsafeFrom) {
+      const content = places.find((p) => p.kind === "content");
+      places = [
+        ...places,
+        {
+          kind: "content",
+          open: "",
+          plain: true,
+          after: content?.kind === "content" ? content.after : "",
+          valueAfter: content?.kind === "content" ? content.valueAfter : false,
+          inTable: false,
+        },
+      ];
+    }
+    if (places.length === 0) continue;
     corePlaces.set(tag.start, places);
     if (html[tag.start + 2] === "{") corePlaces.set(tag.start + 1, places);
   }
@@ -706,12 +731,14 @@ function readValues(
       at: m.a,
     });
   }
+  const tableRanges = tableStructureRanges(root);
   const corePlaces = new Map<number, readonly CorePlace[]>();
   for (const [i, tag] of tags.entries()) {
     if (tag.kind !== "value") continue;
     const found = places.get(i) ?? [];
+    const near = around.get(i) ?? NOWHERE;
     const core = found
-      .map((place) => corePlaceOf(place, around.get(i) ?? NOWHERE, text))
+      .map((place) => corePlaceOf(place, near, text, fosteredFrom(place, near.at, tableRanges)))
       .filter((c): c is CorePlace => c !== null);
     if (core.length > 0) corePlaces.set(i, core);
     const read: PlaceholderContext[] = [];
@@ -773,7 +800,51 @@ function readValues(
  *
  * @param mark the tag's marker; `at` where it starts in `text`, the reading.
  */
-function corePlaceOf(place: Place, near: Around, text: string): CorePlace | null {
+/** The content ranges of the table structure elements of a parse (`table`, `tbody`, `thead`, `tfoot`, `tr`). */
+function tableStructureRanges(
+  root: Node,
+): readonly { readonly element: Element; readonly from: number; readonly to: number }[] {
+  const out: { element: Element; from: number; to: number }[] = [];
+  const stack: Node[] = [root];
+  for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
+    const children: readonly Node[] =
+      "content" in node && node.content
+        ? (node.content as DefaultTreeAdapterTypes.DocumentFragment).childNodes
+        : "childNodes" in node
+          ? node.childNodes
+          : [];
+    for (const child of children) if ("tagName" in child) stack.push(child);
+    if (!("tagName" in node)) continue;
+    const e = node as Element;
+    if (e.namespaceURI !== H.NS.HTML || !TABLE_STRUCTURE.has(e.tagName)) continue;
+    const loc = e.sourceCodeLocation;
+    const from = loc?.startTag?.endOffset;
+    if (from === undefined) continue;
+    out.push({ element: e, from, to: loc?.endTag?.startOffset ?? loc?.endOffset ?? from });
+  }
+  return out;
+}
+
+/** Elements whose own content is table structure: text right inside one is foster-parented. */
+const TABLE_STRUCTURE: ReadonlySet<string> = new Set(["table", "tbody", "thead", "tfoot", "tr"]);
+
+/**
+ * Whether a text place at reading offset `at` stands right inside table
+ * structure: its marker lies inside a table structure element that is not
+ * among the elements the parse put it in (it was foster-parented out).
+ */
+function fosteredFrom(
+  place: Place,
+  at: number,
+  ranges: readonly { readonly element: Element; readonly from: number; readonly to: number }[],
+): boolean {
+  if (place.at !== "text" || at < 0) return false;
+  const chain = new Set<Element>();
+  for (let c = place.chain; c !== null; c = c.up) chain.add(c.element);
+  return ranges.some((r) => at >= r.from && at < r.to && !chain.has(r.element));
+}
+
+function corePlaceOf(place: Place, near: Around, text: string, inTable = false): CorePlace | null {
   const { before, after, valueBefore, valueAfter, at } = near;
   switch (place.at) {
     case "text": {
@@ -791,6 +862,7 @@ function corePlaceOf(place: Place, near: Around, text: string): CorePlace | null
         plain: place.foreign === null && place.select === null,
         after,
         valueAfter: valueAfter && after.length === 0,
+        inTable,
       };
     }
     case "comment":

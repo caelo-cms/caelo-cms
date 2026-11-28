@@ -72,6 +72,60 @@ const INTEGRATION_POINTS: ReadonlySet<string> = new Set([
   "annotation-xml",
 ]);
 
+/** HTML start tags that end SVG and MathML content around them (the HTML standard's foreign content rules). */
+const FOREIGN_BREAKOUT: ReadonlySet<string> = new Set([
+  "b",
+  "big",
+  "blockquote",
+  "body",
+  "br",
+  "center",
+  "code",
+  "dd",
+  "div",
+  "dl",
+  "dt",
+  "em",
+  "embed",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "head",
+  "hr",
+  "i",
+  "img",
+  "li",
+  "listing",
+  "menu",
+  "meta",
+  "nobr",
+  "ol",
+  "p",
+  "pre",
+  "ruby",
+  "s",
+  "small",
+  "span",
+  "strong",
+  "strike",
+  "sub",
+  "sup",
+  "table",
+  "tt",
+  "u",
+  "ul",
+  "var",
+]);
+
+/** Whether start tag `t` ends the SVG / MathML content it stands in. */
+function breaksOutOfForeign(t: Token.TagToken): boolean {
+  if (FOREIGN_BREAKOUT.has(t.tagName)) return true;
+  return t.tagName === "font" && t.attrs.some((a) => ["color", "face", "size"].includes(a.name));
+}
+
 /** Options of {@link htmlTokens}. */
 export interface HtmlTokenOptions {
   /**
@@ -103,6 +157,11 @@ export function htmlTokens(html: string, options: HtmlTokenOptions = {}): HtmlTo
     {
       onStartTag(t) {
         if (options.textElements) {
+          // An HTML element that SVG or MathML cannot hold ends them (the
+          // standard's breakout tags): back to HTML before it is read.
+          if (!inHtml() && breaksOutOfForeign(t)) {
+            while (foreign.length > 0 && !inHtml()) foreign.pop();
+          }
           if (inHtml()) {
             const textState = TEXT_STATES[t.tagName];
             if (textState !== undefined) tokenizer.state = textState;

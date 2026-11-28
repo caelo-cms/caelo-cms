@@ -515,3 +515,22 @@ describe("#1748 review, round 6", () => {
     ).toBeNull();
   });
 });
+
+describe("#1748 review, round 7", () => {
+  it("refuses markup right inside a table's structure, where the parser reads it against the table", () => {
+    const html = "<div><table>{{x}}<tr><td>After</td></tr></table></div>";
+    expect(rule(html, "<table></table>")).toBe("markup-in-table");
+    expect(at(html, "plain text")).toBeNull();
+    expect(at("<table><tr><td>{{x}}</td></tr></table>", "<table></table>")).toBeNull();
+  });
+
+  it("leaves SVG at an HTML breakout tag before it reads text elements", () => {
+    expect(at("<div>{{x}}</div>", "<svg><p><textarea></div></textarea></p></svg>")).toBeNull();
+  });
+
+  it("checks a value as plain content too where a section can change its reading", () => {
+    const html = "<div>{{#show}}<textarea>{{/show}}{{x}}{{#show}}</textarea>{{/show}}</div>";
+    expect(rule(html, "</div>")).toBe("end-tag-div");
+    expect(at(html, "Text &amp; more")).toBeNull();
+  });
+});

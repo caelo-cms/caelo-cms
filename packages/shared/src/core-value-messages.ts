@@ -77,6 +77,9 @@ export function valueBreaksMarkupEffect(rule: string, spelling: string): string 
   if (rule === "tag-self-closing") {
     return "its last unquoted value takes in the `/` of the module's self-closing tag, so the element stays open";
   }
+  if (rule === "markup-in-table") {
+    return `${s} stands right inside the module's table, where any tag restructures the table`;
+  }
   return `${s} changes the markup around the value`;
 }
 
@@ -100,8 +103,12 @@ export function valueBreaksMarkupFix(rule: string, spelling: string): string {
     return "Write the `<` of it as &lt;.";
   }
   if (rule === "ends-comment") return "Write the > of it as &gt;.";
-  if (rule === "tag-self-closing")
+  if (rule === "tag-self-closing") {
     return "Quote the last attribute value, or end the value with a space.";
+  }
+  if (rule === "markup-in-table") {
+    return "Put the placeholder in a cell in the module HTML (<td>{{field}}</td>), or write a < meant as text as &lt;.";
+  }
   if (rule === "ends-tag" || rule === "ends-tag-name") {
     return "Write the > as &gt; and keep quotes paired.";
   }

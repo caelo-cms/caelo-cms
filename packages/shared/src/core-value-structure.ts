@@ -234,6 +234,14 @@ function contentProblem(
   }
   const mark = markFor(value);
   const tokens = htmlTokens(`${value} ${mark}`, { textElements: true });
+  // Right inside a table's structure every tag is read against the table
+  // (a `<table>` closes it, a `<td>` opens a row): only text keeps it.
+  if (place.inTable) {
+    const tag = tokens.find((t) => t.kind !== "text");
+    if (tag !== undefined && "start" in tag) {
+      return { rule: "markup-in-table", spelling: tagSpelling(value, tag.start), place: where };
+    }
+  }
   const open: { readonly name: string; readonly at: number }[] = [];
   let nestingOnly = true;
   for (const t of tokens) {
