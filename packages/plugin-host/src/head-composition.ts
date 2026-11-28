@@ -343,7 +343,20 @@ export async function resolveTargetUrls(
   pageIds: readonly string[],
   opts: PublicUrlContext & RenderScope,
 ): Promise<Map<string, string>> {
-  if (pageIds.length === 0) return new Map();
+  return (await resolveTargetPageUrls(pageIds, opts)).urls;
+}
+
+/**
+ * #1753 — {@link resolveTargetUrls}, and which of the URLs are a page's
+ * canonical override: an override may name another site (a syndicated
+ * article's original), so its host says nothing about the hosts this site
+ * serves.
+ */
+export async function resolveTargetPageUrls(
+  pageIds: readonly string[],
+  opts: PublicUrlContext & RenderScope,
+): Promise<{ urls: Map<string, string>; overridden: Set<string> }> {
+  if (pageIds.length === 0) return { urls: new Map(), overridden: new Set() };
   const infra = hostInfra();
   const pages: PublicUrlPage[] = [];
   for (let at = 0; at < pageIds.length; at += TARGET_LOOKUP_BATCH) {
@@ -370,11 +383,12 @@ export async function resolveTargetUrls(
     }
     pages.push(...(r.value as { pages: PublicUrlPage[] }).pages);
   }
-  return resolvePublicPageUrls(
+  const urls = await resolvePublicPageUrls(
     pages,
     { siteBaseUrl: opts.siteBaseUrl, pageUrlStyle: opts.pageUrlStyle },
     opts,
   );
+  return { urls, overridden: new Set(pages.filter((p) => p.canonicalOverride).map((p) => p.id)) };
 }
 
 // ---------------------------------------------------------------------------

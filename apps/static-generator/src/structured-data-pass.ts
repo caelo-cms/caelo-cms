@@ -302,9 +302,15 @@ export async function prepareStructuredDataPass(args: {
         pageTypes: pageTypesOf([...rows, ...relatedRows]),
         site: args.site,
       };
+      // The news and video sitemaps list pages of the live record only (what
+      // `sitemap.xml` lists): a noindex page is not asked, so its entry can
+      // neither be written nor refused.
+      const listed = input.pages.filter((p) => p.live);
       const [collected, sitemap] = await Promise.all([
         graph ? args.plugins.collectStructuredData(input, urlContext) : null,
-        sitemaps ? args.plugins.collectSitemapEntries(input, urlContext) : null,
+        sitemaps && listed.length > 0
+          ? args.plugins.collectSitemapEntries({ ...input, pages: listed }, urlContext)
+          : null,
       ]);
       // Every library image the answers name, published with the build.
       const wanted = new Set<string>();

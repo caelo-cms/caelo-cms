@@ -553,4 +553,33 @@ describe("#1761 news and video sitemaps", () => {
       ),
     ).toBe("User-agent: *\nDisallow: /\n");
   }, 120_000);
+
+  it("never asks about a page the sitemaps do not list: a noindex news page on a site without a name blocks nothing (Codex on #1797)", async () => {
+    const built = [ids.hidden].map((pageId) => ({
+      pageId,
+      pageSlug: pageId,
+      html: "<html><head><title>x</title></head><body>b</body></html>",
+    }));
+    const r = await adapter.withAdminTransaction(SYS, (tx) =>
+      runSeoPass({
+        tx,
+        plugins: localBuildPluginServices,
+        buildDir,
+        mediaRoot: buildDir,
+        pages: built,
+        settings: {
+          siteBaseUrl: BASE,
+          sitemapEnabled: true,
+          siteLanguage: "en",
+          siteName: null,
+          organization: {},
+        },
+        pageUrlStyle: "directory",
+        notFoundPageId: null,
+        unresolved: "report",
+      }),
+    );
+    expect(r.renderFailures).toEqual([]);
+    expect(r.extraSitemaps).toEqual([]);
+  }, 120_000);
 });

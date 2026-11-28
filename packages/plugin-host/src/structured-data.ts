@@ -46,7 +46,7 @@ import {
   renderInvocation,
   runPluginOperation,
 } from "./dispatch.js";
-import { resolveTargetUrls } from "./head-composition.js";
+import { resolveTargetPageUrls } from "./head-composition.js";
 import { checkPluginMedia, describePluginMedia } from "./plugin-values.js";
 import type { PublicUrlContext } from "./public-urls.js";
 import { reportPluginRenderFailure } from "./render-failures.js";
@@ -177,7 +177,7 @@ export async function collectStructuredData(
       }
     }
   }
-  const resolved = await resolveTargetUrls([...pageIds], opts);
+  const { urls: resolved, overridden } = await resolveTargetPageUrls([...pageIds], opts);
   // Absolute as the graph builder makes the page's own (`absolutePageUrl`):
   // a canonical override may be relative to the site.
   const urls = new Map(
@@ -189,8 +189,12 @@ export async function collectStructuredData(
     [...mediaIds].map((id) => [id, checkPluginMedia(`caelo:media/${id}`, facts)]),
   );
   // The site's own hosts: an address on one of them is a page, never `{url}`.
+  // The base URL's, and those its pages are served on (a language's host);
+  // never a canonical override's, which may name another site.
   const ownHosts = new Set<string>([new URL(opts.siteBaseUrl).host]);
-  for (const url of urls.values()) ownHosts.add(new URL(url).host);
+  for (const [id, url] of resolved) {
+    if (!overridden.has(id)) ownHosts.add(new URL(absolutePageUrl(url, opts.siteBaseUrl)).host);
+  }
 
   for (const a of answers) {
     for (const [pageId, part] of a.pages) {

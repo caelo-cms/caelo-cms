@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext, ListItem } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { MERGE_TERMS_MAX_PAGES } from "../ops/lists/merge-terms.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -505,6 +506,17 @@ describe("#1759 lists.merge_terms", () => {
       pageType: `${PFX}-author`,
       properties: { expertise: [ref(dup), ref(keep)] },
     });
+
+    // More pages of the type than one merge may touch, none naming the merged
+    // term: only pages that name it count toward the limit (Codex on #1797).
+    await asSystem(
+      (tx) => tx`
+        INSERT INTO pages (slug, title, template_id, status, page_type_id, properties)
+        SELECT ${`${PFX}-author-`} || g, 'Author ' || g, ${templateId}::uuid, 'draft',
+               (SELECT id FROM page_types WHERE slug = ${`${PFX}-author`} AND chat_branch_id IS NULL),
+               '{}'::jsonb
+          FROM generate_series(1, ${MERGE_TERMS_MAX_PAGES + 1}) g`,
+    );
 
     const r = await op<{ retaggedPages: number }>(SYS, "lists.merge_terms", {
       list: slug,

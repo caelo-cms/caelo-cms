@@ -20,7 +20,7 @@
  * `page_terms_term_idx`) plus the branch's own pending pages: request-sized.
  */
 
-import { defineOperation, uuidArray } from "@caelo-cms/query-api";
+import { defineOperation, textArray, uuidArray } from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -166,9 +166,11 @@ export const mergeTermsOp = defineOperation({
 
     // 1. Re-tag: the pages carrying a merged term, as the caller sees them —
     // as a tag (`page_terms`), or as the value of a `term` property on this
-    // vocabulary (an author's expertise). No index holds property values, so
+    // vocabulary (an author's expertise). No index holds property values:
     // the second are the pages of the page types that declare such a
-    // property (`pages_page_type_idx`), confirmed on their state below.
+    // property (`pages_page_type_idx`) whose properties name a merged term,
+    // confirmed on their state below. Only pages that name one count
+    // toward the limit.
     const listId = list.id;
     const termTypes = (await loadListEntities(tx, "pageType", branchId)).filter(
       (t) =>
@@ -180,7 +182,7 @@ export const mergeTermsOp = defineOperation({
        WHERE list_id = ${listId}::uuid AND item_id = ANY(${uuidArray([...fromAll])})
       ${
         termTypes.length > 0
-          ? sql`UNION SELECT id::text FROM pages WHERE deleted_at IS NULL AND page_type_id = ANY(${uuidArray(termTypes.map((t) => t.id))})`
+          ? sql`UNION SELECT id::text FROM pages WHERE deleted_at IS NULL AND page_type_id = ANY(${uuidArray(termTypes.map((t) => t.id))}) AND properties::text LIKE ANY(${textArray([...fromAll].map((item) => `%"caelo:term/${listId}/${item}"%`))})`
           : sql``
       }
       ${branchId ? sql`UNION SELECT entity_id::text FROM draft_pending_entities WHERE chat_branch_id = ${branchId}::uuid AND entity_kind = 'page'` : sql``}

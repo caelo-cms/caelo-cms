@@ -564,6 +564,45 @@ describe("#1756 the seo plugin on a blog", () => {
     expect(findings).toEqual([]);
   }, 120_000);
 
+  it("an external canonical makes no host the site's own: a profile's sameAs on that host stays (Codex on #1797)", async () => {
+    // A syndicated article points its canonical at the platform the author is on.
+    await run("pages_seo.set", {
+      pageId: ids.article,
+      canonicalUrl: "https://www.linkedin.com/pulse/one-graph-per-page",
+    });
+    try {
+      const built = [ids.article, ids.anna].map((pageId) => ({
+        pageId,
+        pageSlug: pageId,
+        html: "<html><head><title>x</title></head><body>b</body></html>",
+      }));
+      const { renderFailures } = await adapter.withAdminTransaction(SYS, (tx) =>
+        runSeoPass({
+          tx,
+          plugins: localBuildPluginServices,
+          buildDir,
+          mediaRoot: buildDir,
+          pages: built,
+          settings: {
+            siteBaseUrl: BASE,
+            sitemapEnabled: true,
+            siteLanguage: "en",
+            siteName: "Example Blog",
+            organization: { name: "Example GmbH", url: `${BASE}/` },
+          },
+          pageUrlStyle: "directory",
+          notFoundPageId: null,
+          unresolved: "report",
+        }),
+      );
+      expect(renderFailures).toEqual([]);
+      const person = node(graphOf(built[1]?.html as string), `${url("anna")}#person`);
+      expect(person?.sameAs).toBe("https://www.linkedin.com/in/anna-berg");
+    } finally {
+      await run("pages_seo.set", { pageId: ids.article, canonicalUrl: null });
+    }
+  }, 120_000);
+
   it("a mapping set in a chat is a draft: its preview shows it, main keeps the old one", async () => {
     const chat = await run<{ chatSessionId: string; chatBranchId: string }>("chat.create_session", {
       title: `${PFX}-draft`,

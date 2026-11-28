@@ -67,6 +67,9 @@ function flatten(items: readonly ListItemRead[], out: RawTerm[] = []): RawTerm[]
   return out;
 }
 
+/** The most page ids one `pages.list` call takes (its `pageIds` limit). */
+export const PAGE_LOOKUP_BATCH = 1000;
+
 /** Every vocabulary of the site with its terms (the caller's view). */
 export async function readVocabularies(ctx: Ctx): Promise<Vocabulary[]> {
   const cms = cmsOf(ctx);
@@ -87,15 +90,16 @@ export async function readVocabularies(ctx: Ctx): Promise<Vocabulary[]> {
       ),
     ),
   ];
-  const pages =
-    ids.length === 0
-      ? []
-      : (
-          await cms.call<
-            { includeDeleted: false; pageIds: string[] },
-            { pages: { id: string; currentPath: string }[] }
-          >("pages.list", { includeDeleted: false, pageIds: ids })
-        ).pages;
+  // `pages.list` takes at most PAGE_LOOKUP_BATCH ids per call; a site's
+  // vocabularies together can name more overview pages.
+  const pages: { id: string; currentPath: string }[] = [];
+  for (let at = 0; at < ids.length; at += PAGE_LOOKUP_BATCH) {
+    const r = await cms.call<
+      { includeDeleted: false; pageIds: string[] },
+      { pages: { id: string; currentPath: string }[] }
+    >("pages.list", { includeDeleted: false, pageIds: ids.slice(at, at + PAGE_LOOKUP_BATCH) });
+    pages.push(...r.pages);
+  }
   const pathOf = new Map(pages.map((p) => [p.id.toLowerCase(), p.currentPath]));
   const resolve = (href: string | null): Pick<TermInfo, "topicPage" | "topicPageId"> => {
     const m = href ? PAGE_REF_RE.exec(href) : null;
