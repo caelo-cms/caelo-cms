@@ -10,8 +10,8 @@
 import { describe, expect, it } from "bun:test";
 import type { PluginAuditFindingsArgs, PluginAuditPageFacts } from "@caelo-cms/plugin-sdk";
 import { auditCallsThatFit, cutPageFacts } from "./audit-fact-wire.js";
-import { PLUGIN_CALL_ARGS_BYTES } from "./call-wire-budget.js";
 import { callInParts, type PluginAuditFindings } from "./audit-findings.js";
+import { PLUGIN_CALL_ARGS_BYTES } from "./call-wire-budget.js";
 import { SANDBOX_MESSAGE_BYTES } from "./sandbox-protocol.js";
 
 const bytes = (v: unknown) => new TextEncoder().encode(JSON.stringify(v)).length;

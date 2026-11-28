@@ -314,14 +314,14 @@ export function pageDataFindings(
 export const STRUCTURED_DATA_AUDIT_RULE: SeoAuditRule = {
   name: "structured-data",
   facts: async (ctx, { facts, auditRunId }) => {
-    const [mappings, info] = await Promise.all([
-      readMappings(ctx),
-      infoOf(
-        ctx,
-        facts.map((f) => f.pageId),
-      ),
-    ]);
+    // A site that maps no page type has no graph of the plugin to judge:
+    // its batches read nothing more.
+    const mappings = await readMappings(ctx);
     if (mappings.size === 0) return [];
+    const info = await infoOf(
+      ctx,
+      facts.map((f) => f.pageId),
+    );
     const out: PluginAuditFinding[] = [];
     const authorPaths = new Set<string>();
     for (const f of facts) {

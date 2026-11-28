@@ -119,6 +119,9 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     },
     "site_defaults.get": { measured: ["site_defaults.get"] },
   },
+  // #1756, #1759 (topics, schema mapping) and #1757, #1758, #1760, #1763
+  // (checks, crawler policy, overview, previews): only the page-output
+  // observer runs in the background, and it calls no core op.
   seo: {
     "lists.list": {
       notBackground:
@@ -126,10 +129,29 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     },
     "lists.merge_terms": { notBackground: "the merge_terms tool merges the terms it names" },
     "page_types.list": {
-      notBackground: "get_schema_mapping and set_schema_mappings_many read the page types",
+      notBackground:
+        "get_schema_mapping and set_schema_mappings_many read the page types; the overview panel's page type filter",
     },
     "pages.list": {
-      notBackground: "the write hint reads the few topic pages a write names, by path",
+      notBackground:
+        "the write hints read the few topic pages a write names, by path, and the pages an AI SEO write wrote, by id",
+    },
+    "pages.resolve_public_urls": {
+      notBackground: "the editor toolbar place builds the shown page's address",
+    },
+    "pages.search": {
+      notBackground: "the write hints after an AI SEO write look for a similar title, 20 pages",
+    },
+    "pages_seo.get": {
+      notBackground:
+        "the write hints after an AI SEO write and the editor toolbar place read the pages written or shown",
+    },
+    "pages_seo.overview": {
+      notBackground:
+        "the Stage audit reads the staged pages' heads and page types by id (duplicates, structured data), the Owner's overview panel one page of 50",
+    },
+    "pages_seo.share_images": {
+      notBackground: "the editor toolbar place reads the shown page's share image",
     },
     "quality_audits.staged_pages": {
       notBackground:
@@ -137,6 +159,10 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     },
     "site_defaults.get": {
       notBackground: "suggest_internal_links reads the home page the click depth starts at",
+    },
+    "site_defaults.get_seo": {
+      notBackground:
+        "plan_crawler_policy (an AI tool) and the Stage audit read the robots rules, one row; the editor toolbar place reads the base URL for a site-relative canonical",
     },
   },
   "site-assistant": {
@@ -154,37 +180,6 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     "lists.get": {
       notBackground:
         "the page-output observer and the Stage audit read the lists the settings name, by id, once per Stage",
-    },
-  },
-  // #1757, #1758, #1760, #1763 — the seo plugin has no consumer and no cron.
-  seo: {
-    "site_defaults.get_seo": {
-      notBackground:
-        "plan_crawler_policy (an AI tool) and the Stage audit read the robots rules, one row; the editor toolbar place reads the base URL for a site-relative canonical",
-    },
-    "pages_seo.overview": {
-      notBackground:
-        "the Stage audit reads the staged pages' heads by id (duplicates), the Owner's overview panel one page of 50",
-    },
-    "pages_seo.get": {
-      notBackground:
-        "the write hints after an AI SEO write and the editor toolbar place read the pages written or shown",
-    },
-    "pages.list": {
-      notBackground: "the write hints after an AI SEO write read the pages written, by id",
-    },
-    "pages.search": {
-      notBackground: "the write hints after an AI SEO write look for a similar title, 20 pages",
-    },
-    "page_types.list": { notBackground: "the overview panel's page type filter" },
-    "pages.resolve_public_urls": {
-      notBackground: "the editor toolbar place builds the shown page's address",
-    },
-    "pages_seo.share_images": {
-      notBackground: "the editor toolbar place reads the shown page's share image",
-    },
-    "quality_audits.staged_pages": {
-      notBackground: "the Stage audit's batch calls read pages outside their batch, by id",
     },
   },
 };

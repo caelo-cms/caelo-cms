@@ -221,8 +221,18 @@ describe("describeCrawlerPolicy and contradictions", () => {
 });
 
 describe("plan_crawler_policy and the card hint", () => {
+  // Every core read the plugin's hint families make, answered per op: the
+  // robots rules, and no vocabulary (the topic hints read the site's lists).
   const ctxWith = (rules: RobotsRules) =>
-    ({ cms: { call: async () => ({ robotsRules: rules }) } }) as unknown as PluginContextTier1;
+    ({
+      cms: {
+        call: async (op: string) => {
+          if (op === "site_defaults.get_seo") return { robotsRules: rules };
+          if (op === "lists.list") return { lists: [] };
+          throw new Error(`unexpected core call ${op}`);
+        },
+      },
+    }) as unknown as PluginContextTier1;
 
   it("answers the rules to propose and the caveats", async () => {
     const text = await planCrawlerPolicyOperation(ctxWith([]), NO_TRAINING);

@@ -271,11 +271,18 @@ describe("noindex pages robots.txt hides", () => {
 
 describe("through the audit operation", () => {
   it("asks for facts and files the page findings of a batch", async () => {
+    // Every family of the audit runs: the topic and structured-data rules
+    // read the plugin's own tables (empty here) and the site's vocabularies.
     const ctx = {
       cms: {
-        call: async (op: string) =>
-          op === "pages_seo.overview" ? { pages: [], nextCursor: null } : { robotsRules: [] },
+        call: async (op: string) => {
+          if (op === "pages_seo.overview") return { pages: [], nextCursor: null };
+          if (op === "site_defaults.get_seo") return { robotsRules: [] };
+          if (op === "lists.list") return { lists: [] };
+          throw new Error(`unexpected core call ${op}`);
+        },
       },
+      adminQuery: { list: async () => [] },
     } as unknown as PluginContextTier1;
     const first = await seoAudit(ctx, { pages: [{ pageId: PAGE, path: "/guide" }] }, AUDIT_RULES);
     expect(first.factBatches).toEqual([[PAGE]]);

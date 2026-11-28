@@ -24,15 +24,15 @@
 import { definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 import { SEO_CONFIG } from "./config.js";
 import { AUDIT_OPERATION, SEO_OPERATIONS, WRITE_HINTS_OPERATION } from "./operations.js";
+import { AGENT_FILES_OPERATION } from "./rules/agent-files.js";
+import { SEO_OVERVIEW_PANEL } from "./rules/overview.js";
+import { SEO_PREVIEW_TOOLBAR } from "./rules/previews.js";
 import { MAPPINGS_TABLE } from "./schema/mapping.js";
 import { SITEMAP_ENTRIES_OPERATION, STRUCTURED_DATA_OPERATION } from "./schema/operations.js";
 import { SEO_SKILLS } from "./skills.js";
 import { SEO_TOOLS } from "./tools.js";
 import { OBSERVE_OPERATION } from "./topics/operations.js";
 import { PAGE_INDEX_TABLE } from "./topics/page-index.js";
-import { AGENT_FILES_OPERATION } from "./rules/agent-files.js";
-import { SEO_OVERVIEW_PANEL } from "./rules/overview.js";
-import { SEO_PREVIEW_TOOLBAR } from "./rules/previews.js";
 
 export default definePlugin<PluginContextTier1>({
   slug: "seo",

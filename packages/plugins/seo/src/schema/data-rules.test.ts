@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import type { PluginAuditPageFacts } from "@caelo-cms/plugin-sdk";
-import { graphNodes, mainNode, pageDataFindings } from "./data-rules.js";
+import type { PluginAuditPageFacts, PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import {
+  graphNodes,
+  mainNode,
+  pageDataFindings,
+  STRUCTURED_DATA_AUDIT_RULE,
+} from "./data-rules.js";
 import type { SchemaMapping } from "./mapping.js";
 import { SCHEMA_TYPES } from "./types.js";
 
@@ -172,5 +177,83 @@ describe("person and overview rules", () => {
       ] as never,
     });
     expect(rules(f, overview)).toEqual(["structured-data-invalid"]);
+  });
+});
+
+describe("the structured data rule family", () => {
+  const ARTICLE = "00000000-0000-4000-8000-000000000001";
+  const ANA = "00000000-0000-4000-8000-0000000000a1";
+  const RUN = "00000000-0000-4000-8000-0000000000ff";
+  const ctxOf = (noindexAuthor: boolean, mapped = true) => {
+    const calls: string[] = [];
+    const ctx = {
+      adminQuery: {
+        list: async () =>
+          mapped
+            ? [
+                {
+                  id: "m1",
+                  page_type: "post",
+                  schema_type: "BlogPosting",
+                  roles: { authors: "prop:author" },
+                },
+              ]
+            : [],
+      },
+      cms: {
+        call: async (op: string, input: { pageIds?: string[]; paths?: string[] }) => {
+          calls.push(op);
+          if (op === "pages_seo.overview") {
+            return {
+              pages: (input.pageIds ?? []).map((pageId) => ({
+                pageId,
+                path: pageId === ANA ? "/team/ana" : "/blog/x",
+                pageType: pageId === ANA ? "author" : "post",
+                noindex: pageId === ANA && noindexAuthor,
+              })),
+              nextCursor: null,
+            };
+          }
+          if (op === "quality_audits.staged_pages") {
+            return { pages: (input.paths ?? []).map(() => ({ pageId: ANA, path: "/team/ana" })) };
+          }
+          throw new Error(op);
+        },
+      },
+    } as unknown as PluginContextTier1;
+    return { ctx, calls };
+  };
+  const article = facts(
+    "/blog/x",
+    [
+      {
+        "@type": "BlogPosting",
+        "@id": `${URL_}/blog/x/#article`,
+        headline: "Why we test",
+        author: { "@id": `${URL_}/team/ana/#person` },
+      },
+    ],
+    { pageId: ARTICLE, headings: [heading("Why we test")] as never },
+  );
+
+  it("names a noindex author page once, on that page", async () => {
+    const found = await STRUCTURED_DATA_AUDIT_RULE.facts?.(ctxOf(true).ctx, {
+      facts: [article],
+      auditRunId: RUN,
+    });
+    expect(found?.map((f) => [f.rule, f.pageId])).toEqual([["author-page-noindex", ANA]]);
+    const open = await STRUCTURED_DATA_AUDIT_RULE.facts?.(ctxOf(false).ctx, {
+      facts: [article],
+      auditRunId: RUN,
+    });
+    expect(open).toEqual([]);
+  });
+
+  it("judges nothing on a site without a mapping", async () => {
+    const { ctx, calls } = ctxOf(true, false);
+    expect(
+      await STRUCTURED_DATA_AUDIT_RULE.facts?.(ctx, { facts: [article], auditRunId: RUN }),
+    ).toEqual([]);
+    expect(calls).toEqual([]);
   });
 });
