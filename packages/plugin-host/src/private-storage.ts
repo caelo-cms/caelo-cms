@@ -87,7 +87,7 @@ async function snapshot(
 ): Promise<void> {
   await emitPluginRowSnapshot(tx, {
     ...snapshotRef(ctx, t, rowId),
-    actorId: ctx.actorId,
+    actorId: ctx.snapshotActorId ?? ctx.actorId,
     opKind,
     chatBranchId: ctx.chatBranchId ?? null,
     chatTaskId: ctx.chatTaskId ?? null,
@@ -241,7 +241,7 @@ export async function privateUpdateMany(
   const ref = { pluginId: ctx.pluginId, schema: t.schema, table: t.table };
   const header = {
     ...ref,
-    actorId: ctx.actorId,
+    actorId: ctx.snapshotActorId ?? ctx.actorId,
     opKind: "plugin_storage.update" as const,
     chatBranchId: ctx.chatBranchId ?? null,
     chatTaskId: ctx.chatTaskId ?? null,

@@ -25,6 +25,7 @@ import {
   openRelease,
   parseRelease,
   readProfile,
+  readQueryVectors,
   storeFromUrl,
 } from "@caelo-cms/collection-index";
 import {
@@ -292,7 +293,16 @@ export function makeCollectionOps(
         if (!parsed.success)
           for (const issue of parsed.error.issues.slice(0, 5))
             problems.push(`profile.${issue.path.join(".")}: ${issue.message}`);
-        else profile = parsed.data;
+        else {
+          profile = parsed.data;
+          // #1779 — a boost multiplies by a keyword value, read from the
+          // value's postings at search time, never from stored documents.
+          for (const [i, b] of profile.boosts.entries())
+            if (decl.fields[b.field]?.kind !== "keyword")
+              problems.push(
+                `profile.boosts.${i}.field: "${b.field}" is not a keyword field of collection "${input.collection}"`,
+              );
+        }
       }
       for (const [i, w] of input.deleteWhere.entries()) {
         if (decl.fields[w.field]?.kind !== "keyword")
@@ -506,9 +516,12 @@ async function openAdminRelease(
       const cache = new FileCache({ read: (f) => store.read(`${prefix}/${f}`) }, 64 * 1024 * 1024);
       const manifest = parseRelease(await store.read(`${prefix}/${releaseKey}`));
       const release = await openRelease(manifest, cache);
-      const raw = await readProfile(manifest, cache);
+      const [raw, queryVectors] = await Promise.all([
+        readProfile(manifest, cache),
+        readQueryVectors(manifest, cache),
+      ]);
       const parsed = raw === null ? null : searchProfile.safeParse(raw);
-      return { release, profile: parsed?.success ? parsed.data : null };
+      return { release, profile: parsed?.success ? parsed.data : null, queryVectors };
     })();
     entry.catch(() => adminReleases.delete(id));
     adminReleases.set(id, entry);

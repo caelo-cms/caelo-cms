@@ -132,6 +132,7 @@
       "dependencies": {
         "@caelo-cms/font-service": "workspace:*",
         "@caelo-cms/plugin-host": "workspace:*",
+        "@caelo-cms/plugin-sdk": "workspace:*",
         "@caelo-cms/query-api": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
         "drizzle-orm": "0.45.4",
@@ -184,6 +185,7 @@
         "@caelo-cms/plugin-newsletter": "workspace:*",
         "@caelo-cms/plugin-ratings": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
+        "@caelo-cms/plugin-seo": "workspace:*",
         "ajv": "8.20.0",
         "ajv-formats": "3.0.1",
       },
@@ -245,10 +247,12 @@
       "version": "0.0.0",
       "dependencies": {
         "@caelo-cms/shared": "workspace:*",
-        "@huggingface/tokenizers": "0.2.0",
         "onnxruntime-common": "1.31.1",
         "onnxruntime-node": "1.31.1",
         "onnxruntime-web": "1.31.1",
+      },
+      "devDependencies": {
+        "@huggingface/tokenizers": "0.2.0",
       },
     },
     "packages/platform-updater": {
@@ -377,6 +381,13 @@
       },
       "devDependencies": {
         "@caelo-cms/plugin-host": "workspace:*",
+      },
+    },
+    "packages/plugins/seo": {
+      "name": "@caelo-cms/plugin-seo",
+      "version": "0.0.0",
+      "dependencies": {
+        "@caelo-cms/plugin-sdk": "workspace:*",
       },
     },
     "packages/plugins/site-assistant": {
@@ -605,6 +616,8 @@
     "@caelo-cms/plugin-sandbox": ["@caelo-cms/plugin-sandbox@workspace:packages/plugin-sandbox"],
 
     "@caelo-cms/plugin-sdk": ["@caelo-cms/plugin-sdk@workspace:packages/plugin-sdk"],
+
+    "@caelo-cms/plugin-seo": ["@caelo-cms/plugin-seo@workspace:packages/plugins/seo"],
 
     "@caelo-cms/plugin-site-assistant": ["@caelo-cms/plugin-site-assistant@workspace:packages/plugins/site-assistant"],
 

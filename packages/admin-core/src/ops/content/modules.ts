@@ -19,6 +19,7 @@ import {
   err,
   fieldPathProblems,
   type ModuleField,
+  type ModuleKind,
   moduleCreateSchema,
   moduleFieldSchema,
   moduleUpdateSchema,
@@ -58,6 +59,7 @@ import {
   type ModulePlacements,
   usageOfModules,
 } from "./module-placements.js";
+import { moduleWriteValueProblems } from "./value-structure.js";
 
 const moduleRowSchema = z.object({
   id: z.string(),
@@ -133,8 +135,9 @@ type ModuleDbRow = Parameters<typeof rowToModule>[0];
  * rebuilt its edit (and its `expectedSha` guard) on main's body and wrote
  * that back into the branch — silently reverting the chat's earlier edits.
  *
- * Only the columns a module snapshot carries are overlaid; `description` /
- * `kind` / timestamps stay live (the snapshot state has no such fields).
+ * Only the columns a module snapshot carries are overlaid; timestamps stay
+ * live. `description` / `kind` are overlaid since #1746 (a snapshot from
+ * before it has neither, and the live value is what the branch has).
  * A branched DELETE (`deletedAt` set) marks the row deleted for this chat,
  * so the chat stops seeing a module it deleted before publish; a branched
  * edit never un-deletes a live-deleted row. Callers without a branch get
@@ -156,6 +159,8 @@ async function overlayBranchEdits(
       ...r,
       slug: s.slug,
       display_name: s.displayName,
+      description: s.description ?? r.description,
+      kind: s.kind ?? r.kind,
       type: s.type,
       html: s.html,
       css: s.css,
@@ -445,6 +450,29 @@ export const createModuleOp = defineOperation({
       });
     }
     const persistedFields = listDefaults.value;
+    // #1748 — a default, a bound shared list's entry or a site text the
+    // HTML would place where it breaks the markup around it.
+    const breaking = await moduleWriteValueProblems(tx, ctx.chatBranchId ?? null, {
+      slug: input.slug,
+      html: persistedHtml,
+      fields: persistedFields,
+    });
+    if (breaking !== null) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "modules.create",
+        input,
+        succeeded: false,
+        resultSummary: "value-breaks-markup",
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "modules.create",
+        message: breaking,
+        refusal: true,
+      });
+    }
     // v0.9.0 — branch-scoped uniqueness. Same-branch slug clash
     // surfaces as the unique-index violation at INSERT below; check
     // here narrows it to a clean error. We only check the caller's
@@ -601,7 +629,7 @@ export const updateModuleOp = defineOperation({
       slug: string;
       display_name: string;
       description: string;
-      kind: string;
+      kind: ModuleKind;
       type: string | null;
       html: string;
       css: string;
@@ -764,6 +792,34 @@ export const updateModuleOp = defineOperation({
       }
       persistedFields = listDefaults.value;
     }
+    // #1748 — see modules.create; only a write of the HTML or the fields
+    // answers for what they place.
+    if (persistedHtml !== undefined || persistedFields !== undefined) {
+      const prevHtml = branchBase ? branchBase.html : prev.html;
+      const breaking = await moduleWriteValueProblems(tx, branchId, {
+        slug: branchBase ? branchBase.slug : prev.slug,
+        html: persistedHtml ?? prevHtml,
+        fields: persistedFields ?? prevFields,
+        previous: { html: prevHtml, fields: prevFields },
+      });
+      if (breaking !== null) {
+        await recordAudit(tx, {
+          actorId: ctx.actorId,
+          requestId: ctx.requestId,
+          operation: "modules.update",
+          input,
+          succeeded: false,
+          entityId: input.moduleId,
+          resultSummary: "value-breaks-markup",
+        });
+        return err({
+          kind: "HandlerError",
+          operation: "modules.update",
+          message: breaking,
+          refusal: true,
+        });
+      }
+    }
 
     // v0.5.1 — branched writes skip the live UPDATE. Module code stays
     // visible to other chats at its pre-edit state until publish merges
@@ -802,6 +858,8 @@ export const updateModuleOp = defineOperation({
       entityId: input.moduleId,
       resultSummary: `fields=${[
         input.displayName !== undefined && "displayName",
+        input.description !== undefined && "description",
+        input.kind !== undefined && "kind",
         input.html !== undefined && "html",
         input.css !== undefined && "css",
         input.js !== undefined && "js",
@@ -812,13 +870,18 @@ export const updateModuleOp = defineOperation({
 
     // For branched writes, construct the new state from the branch base
     // (above) + input; for live writes, re-load to capture defaults
-    // applied by the DB.
+    // applied by the DB. #1746 — description and kind are branch state
+    // too: a branched write used to drop them, so the chat kept reading
+    // (and the Stage kept merging) the old catalog text. A base snapshot
+    // from before #1746 lacks them; the live row is what the branch has.
     let state: ModuleState | null;
     if (branchBase) {
       const base = branchBase;
       state = {
         ...base,
         displayName: input.displayName ?? base.displayName,
+        description: input.description ?? base.description ?? prev.description,
+        kind: input.kind ?? base.kind ?? prev.kind,
         type: input.type ?? base.type,
         html: persistedHtml ?? base.html,
         css: input.css ?? base.css,

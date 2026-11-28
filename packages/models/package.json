@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "MPL-2.0",
-  "description": "The core embedding-model catalog's runtime (epic #1644, R7): verified model files, the tokenizer, and embedders on ONNX Runtime, native in the index job and WebAssembly in the gateway.",
+  "description": "The core embedding-model catalog's runtime (epic #1644, R7): verified model files, the files derived from them (#1782), the compact tokenizer, and embedders on ONNX Runtime, native in the index job and WebAssembly in the gateway.",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -20,9 +20,11 @@
   },
   "dependencies": {
     "@caelo-cms/shared": "workspace:*",
-    "@huggingface/tokenizers": "0.2.0",
     "onnxruntime-common": "1.31.1",
     "onnxruntime-node": "1.31.1",
     "onnxruntime-web": "1.31.1"
+  },
+  "devDependencies": {
+    "@huggingface/tokenizers": "0.2.0"
   }
 }

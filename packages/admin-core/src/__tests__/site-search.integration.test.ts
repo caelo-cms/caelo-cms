@@ -21,6 +21,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  directoryStore,
+  FileCache,
+  parseRelease,
+  readProfile,
+  scopedStore,
+} from "@caelo-cms/collection-index";
+import {
   bootstrap,
   MAIN_RENDER,
   renderInvocation,
@@ -507,6 +514,21 @@ describe("the site search (#1651)", () => {
       invocation: renderInvocation(MAIN_RENDER),
     } as never);
     expect(String(html)).toContain("Preise Agentur");
+    // #1785 — the next Stage names it in the pages profile as a known query,
+    // whose vector the index carries when semantic search is on.
+    const runId = await stage();
+    const state = await ok<{ collections: { collection: string; releaseKey: string | null }[] }>(
+      "collections.run_state",
+      { runId },
+    );
+    const releaseKey = state.collections.find((c) => c.collection === "pages")?.releaseKey;
+    const scoped = scopedStore(directoryStore(join(root, "collections-staging")), `${SLUG}/pages`);
+    const manifest = parseRelease(await scoped.read(releaseKey as string));
+    const profile = (await readProfile(
+      manifest,
+      new FileCache({ read: (f) => scoped.read(f) }, Number.POSITIVE_INFINITY),
+    )) as { knownQueries?: Record<string, string[]> } | null;
+    expect(profile?.knownQueries?.de).toContain("Preise Agentur");
   });
 
   it("a shared block that drops below a step comes back on every page it is on", async () => {

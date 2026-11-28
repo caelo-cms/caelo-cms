@@ -40,10 +40,12 @@ import {
   contentInstancesCreateManySchema,
   contentInstanceUpdateSchema,
   describeMalformedUuid,
+  describeValueBreaksMarkup,
   type ExecutionContext,
   err,
   forkPlacementContentSchema,
   moduleRefSchema,
+  moduleValueProblems,
   ok,
   parseLinkRef,
   setPlacementContentSchema,
@@ -261,6 +263,18 @@ export async function validateNestedRefs(
       message: `module "${owner.slug}" has no field or placeholder "${key}"`,
       allowed: [...declared],
       next: "Rename it to a declared field, or add the field to the module first (update_modules_many).",
+    });
+  }
+
+  // #1748 — a value that would change the markup around its placeholder
+  // (a `<?xml` in element content, a `</div>`, a quote in its attribute).
+  // A value the row already holds is not this write's doing: it passes,
+  // and a Stage reports it.
+  for (const p of moduleValueProblems(owner.html ?? "", fields, values, grandfathered)) {
+    refusal = true;
+    errors.push({
+      path: ["values", ...p.path],
+      message: describeValueBreaksMarkup(p.where, p.problem, owner.slug),
     });
   }
 

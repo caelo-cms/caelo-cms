@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * A catalog model's tokenizer (#1650): Hugging Face's pure-JS
- * `@huggingface/tokenizers`, so the gateway runs no native code on a
- * visitor's text. `tokenize.test.ts` holds token ids the reference (Rust)
- * implementation produced for German and English edge cases; both must
- * agree, or index and query would be cut into different tokens.
+ * A catalog model's tokenizer (#1650, #1782): the compact byte-level BPE of
+ * bpe.ts, read from the model's derived `tokenizer.bin`. It is JavaScript,
+ * so the gateway runs no native code on a visitor's text, and it cuts text
+ * exactly like `@huggingface/tokenizers` with the publisher's
+ * `tokenizer.json` (`bpe.test.ts`), which in turn agrees with the Rust
+ * reference (`model.test.ts`): index and query are cut into the same tokens.
  */
 
 import type { EmbeddingModel } from "@caelo-cms/shared";
-import { Tokenizer } from "@huggingface/tokenizers";
+import { CompactTokenizer } from "./bpe.js";
 
 /** A text as the graph takes it. */
 export interface Encoded {
@@ -18,13 +19,13 @@ export interface Encoded {
 
 /** Tokenizes a model's texts; long texts are cut to the model's `maxTokens`. */
 export class ModelTokenizer {
-  private readonly tokenizer: Tokenizer;
+  private readonly tokenizer: CompactTokenizer;
 
   constructor(
     private readonly model: EmbeddingModel,
-    tokenizerJson: unknown,
+    tokenizerFile: Uint8Array,
   ) {
-    this.tokenizer = new Tokenizer(tokenizerJson as object, {});
+    this.tokenizer = new CompactTokenizer(tokenizerFile);
   }
 
   /**
@@ -33,7 +34,7 @@ export class ModelTokenizer {
    * a section's heading and first sentences carry its topic.
    */
   encode(text: string, kind: "query" | "passage"): Encoded {
-    const ids = this.tokenizer.encode(this.model.prefixes[kind] + text).ids;
+    const ids = this.tokenizer.encode(this.model.prefixes[kind] + text);
     const max = this.model.maxTokens;
     if (ids.length <= max) return { ids };
     return { ids: [...ids.slice(0, max - 1), ids[ids.length - 1] as number] };

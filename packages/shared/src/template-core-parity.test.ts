@@ -8,10 +8,16 @@
  * same, with core values only and with an unused plugin value added. The
  * #1732 review found 41 templates (every `{{{link}}}`) that changed once a
  * plugin's value was present.
+ *
+ * #1748 — the one deliberate difference: a core value that changes the
+ * markup around its placeholder (the fixture's `<c>`, `D<b>`, `<!-- c -->`)
+ * still renders exactly as before, and now also fails as
+ * `value-breaks-markup`. Those markers are compared apart from the golden.
  */
 
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
+import { isValueBreaksMarkupMarker } from "./core-value-messages.js";
 import { pluginValue } from "./lists/plugin-values.js";
 import {
   CORE_PARITY_FIELD_PATHS,
@@ -34,6 +40,11 @@ const PLUGIN_VALUE = pluginValue(
   "zzz",
 );
 
+/** A render as the golden holds it: the HTML and the markers main recorded (#1748's aside). */
+function asBefore(r: { html: string; missingSlots: readonly string[] }): string {
+  return JSON.stringify([r.html, r.missingSlots.filter((m) => !isValueBreaksMarkupMarker(m))]);
+}
+
 describe("core rendering is the same as before #1732 (#1729)", () => {
   const templates = coreParityTemplates();
 
@@ -45,7 +56,7 @@ describe("core rendering is the same as before #1732 (#1729)", () => {
         fields: CORE_PARITY_FIELDS,
         contentValues: CORE_PARITY_VALUES,
       });
-      return JSON.stringify([r.html, r.missingSlots]) !== JSON.stringify(golden.renders[i]);
+      return asBefore(r) !== JSON.stringify(golden.renders[i]);
     });
     expect(differ).toEqual([]);
   });
@@ -57,9 +68,30 @@ describe("core rendering is the same as before #1732 (#1729)", () => {
         fields: CORE_PARITY_FIELDS,
         contentValues: { ...CORE_PARITY_VALUES, pv: PLUGIN_VALUE },
       });
-      return JSON.stringify([r.html, r.missingSlots]) !== JSON.stringify(golden.renders[i]);
+      return asBefore(r) !== JSON.stringify(golden.renders[i]);
     });
     expect(differ).toEqual([]);
+  });
+
+  it("records #1748's breaking values without changing what renders", () => {
+    const kinds = new Set<string>();
+    for (const html of templates) {
+      const r = renderTemplate({
+        html,
+        fields: CORE_PARITY_FIELDS,
+        contentValues: CORE_PARITY_VALUES,
+      });
+      for (const m of r.missingSlots.filter(isValueBreaksMarkupMarker)) kinds.add(m);
+    }
+    // The fixture's values break where the templates place them: `<c>` and
+    // `D<b>` are never closed, the richtext holds a comment, and a title
+    // with spaces sits in an unquoted attribute.
+    expect([...kinds].sort()).toEqual([
+      "value-breaks-markup:body:comment",
+      "value-breaks-markup:deflt:unclosed-b",
+      "value-breaks-markup:title:attribute-space",
+      "value-breaks-markup:title:unclosed-c",
+    ]);
   });
 
   it("saves a `{{&field.path}}` as before", () => {

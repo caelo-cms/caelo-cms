@@ -155,6 +155,27 @@ describe("GatewayCollections.warm", () => {
     }
   });
 
+  // #1778 — the files wait on the network, the model on the CPU: the load
+  // starts with the prefetch, not after it.
+  it("starts loading the query model while the prefetch is still reading", async () => {
+    const c = collections();
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    let prefetchedBeforeModel: boolean | null = null;
+    const ready = async (): Promise<void> => {
+      prefetchedBeforeModel = log.mock.calls.some((a) =>
+        String(a[0]).includes("index files in memory"),
+      );
+    };
+    try {
+      const embedder = Object.assign(async () => new Float32Array(8), { ready });
+      await c.warm(SLUG, "pages", semanticKey, { embedder });
+      expect(prefetchedBeforeModel).toBe(false);
+      expect(log.mock.calls.some((a) => String(a[0]).includes("index files in memory"))).toBe(true);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("shares one prefetch between callers and logs it once", async () => {
     const c = collections();
     const log = spyOn(console, "log").mockImplementation(() => {});

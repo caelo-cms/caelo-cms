@@ -25,7 +25,7 @@
  * `render/page-path-unknown`, `render/module-missing`,
  * `render/link-target-missing`, `render/media-variant-missing`,
  * `render/media-missing`, `render/media-reference`, `render/og-image-missing`,
- * `render/og-image-reference`, …), plus
+ * `render/og-image-reference`, `render/nested-module-withheld` (#1708), …), plus
  * `render/limit-reached` (info) when the run recorded more failures than
  * it lists.
  */
@@ -33,6 +33,8 @@
 import {
   PLUGIN_HEAD_POINT,
   PLUGIN_SHARE_IMAGES_POINT,
+  PLUGIN_SITEMAP_ENTRIES_POINT,
+  PLUGIN_STRUCTURED_DATA_POINT,
   PLUGIN_VALUE_REFUSED,
   parseMediaFailureMarker,
   parseMediaReferenceMarker,
@@ -98,6 +100,12 @@ function placeText(f: RenderFailure): string {
     if (source === PLUGIN_HEAD_POINT) return `the page's head (plugin "${plugin}")`;
     if (source === PLUGIN_SHARE_IMAGES_POINT) {
       return `the page's share image (og:image, plugin "${plugin}")`;
+    }
+    if (source === PLUGIN_STRUCTURED_DATA_POINT) {
+      return `the page's structured data (JSON-LD, plugin "${plugin}")`;
+    }
+    if (source === PLUGIN_SITEMAP_ENTRIES_POINT) {
+      return `the page's news or video sitemap entry (plugin "${plugin}")`;
     }
   }
   const block = f.blockName === null ? "the site layout" : `the ${f.blockName}`;

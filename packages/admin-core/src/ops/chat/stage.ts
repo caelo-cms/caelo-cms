@@ -31,9 +31,10 @@ import {
   uuidArray,
 } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { notLiveSince } from "../../deploy/release-runs.js";
 import {
   chatHeadRowsSql,
   chatPendingSql,
@@ -42,12 +43,7 @@ import {
   pendingChangeKindSql,
 } from "../../draft.js";
 
-/**
- * Categorized read of every snapshot tagged with the chat's branch
- * grouped by `stage_state`. The picker shows the 'pending' subset for
- * the per-row checkboxes; the 'staged' subset shows what's already
- * queued for publish (so the operator can untick + click Unstage).
- */
+/** One changed entity, labelled for the reader. */
 const entityRefSchema = z
   .object({
     kind: z.enum([
@@ -109,13 +105,23 @@ export const pendingChangesSchema = z.object({
 /** Pending (not yet staged) vs staged change refs of one chat branch. */
 export type PendingChanges = z.infer<typeof pendingChangesSchema>;
 
+/**
+ * Categorized read of a chat's changes that are not live: 'pending' is
+ * what a Stage would take (the chat's draft head); 'staged' is what the
+ * next Publish live ships of it — what its Stages merged since the build
+ * live serves (#1750), and on an isolated chat the entities the per-entity
+ * picker queued.
+ */
 export const listPendingChangesOp = defineOperation({
   name: "chat.list_pending_changes",
   readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ chatSessionId: z.string().uuid() }).strict(),
-  output: pendingChangesSchema,
+  output: pendingChangesSchema.extend({
+    /** More of the chat's staged changes ship with the next Publish live than `staged` lists. */
+    olderStagedNotListed: z.boolean(),
+  }),
   handler: async (_ctx, input, tx) => {
     const binding = await loadChatBinding(tx, input.chatSessionId);
     if (!binding) {
@@ -125,7 +131,18 @@ export const listPendingChangesOp = defineOperation({
         message: "session not found",
       });
     }
-    return ok(await loadPendingChanges(tx, binding));
+    const changes = await loadPendingChanges(tx, binding);
+    // #1750 — plus what this chat's Stages merged that live does not serve yet.
+    const staged = await loadStagedNotLive(tx, binding);
+    return ok({
+      pending: changes.pending,
+      staged: {
+        pages: [...changes.staged.pages, ...staged.changes.staged.pages],
+        globals: [...changes.staged.globals, ...staged.changes.staged.globals],
+        lists: [...changes.staged.lists, ...staged.changes.staged.lists],
+      },
+      olderStagedNotListed: staged.olderNotListed,
+    });
   },
 });
 
@@ -186,40 +203,15 @@ const GROUP_OF: Readonly<Record<string, { group: "pages" | "globals" | "lists"; 
   };
 
 /**
- * {@link loadPendingChanges} for several chats in one statement: their
- * head rows, labelled from the live rows by primary key. The cost is the
- * chats' own pending entities, not the draft's history.
+ * The labelled change rows of `ctes`, which define (after `WITH`) a CTE
+ * `h` of one row per changed entity — columns chat, branch, kind,
+ * entity_id, site_snapshot_id, snapshot_row_id, page_id, plugin_id,
+ * table_name, seo_changed — and whatever CTEs `h` reads. `stageState` is
+ * the SQL of each row's bucket ('pending' | 'staged').
  */
-export async function loadPendingChangesFor(
-  tx: TransactionRunner,
-  chats: readonly HeadChat[],
-): Promise<Map<string, PendingChanges>> {
-  const out = new Map<string, PendingChanges>();
-  for (const c of chats) out.set(c.chatSessionId, emptyPendingChanges());
-  if (chats.length === 0) return out;
-  const rows = (await tx.execute(sql`
-    WITH c AS (
-      SELECT * FROM unnest(
-        ${uuidArray(chats.map((c) => c.chatSessionId))},
-        ${uuidArray(chats.map((c) => c.branchId))},
-        ${textArray(chats.map((c) => c.kind))}
-      ) AS c(id, branch, branch_kind)
-    ),
-    h AS (
-      -- One row per entity: on an isolated branch a change written outside
-      -- any chat and the chat's own change of it are one pending entity.
-      SELECT DISTINCT ON (c.id, d.entity_kind, d.entity_id, d.entity_sub)
-             c.id AS chat, c.branch, d.entity_kind AS kind, d.entity_id,
-             d.site_snapshot_id, d.snapshot_row_id, d.page_id, d.plugin_id, d.table_name,
-             bool_or(d.seo_changed)
-               OVER (PARTITION BY c.id, d.entity_kind, d.entity_id, d.entity_sub) AS seo_changed
-        FROM c
-        CROSS JOIN LATERAL (
-          ${chatHeadRowsSql({ id: "c.id", branch: "c.branch", kind: "c.branch_kind" }, pendingChangeKindSql())}
-        ) d
-       ORDER BY c.id, d.entity_kind, d.entity_id, d.entity_sub,
-                d.header_created_at DESC, d.row_created_at DESC
-    )
+function labelledRowsSql(ctes: SQL, stageState: SQL): SQL {
+  return sql`
+    WITH ${ctes}
     -- Labels by primary key, one lookup per listed entity: correlated
     -- subqueries, because joining every label table lets the planner hash
     -- (seq-scan) all of them, which costs the size of the site.
@@ -284,13 +276,7 @@ export async function loadPendingChangesFor(
                   FROM plugin_row_snapshots x WHERE x.id = h.snapshot_row_id)
                || left(h.entity_id::text, 8)
            END AS detail,
-           -- The mark of THIS pending state (marks are keyed per snapshot):
-           -- a mark of an older snapshot is stale, the newer edit is pending.
-           CASE WHEN h.kind = 'layoutChrome' THEN 'pending' ELSE COALESCE(
-             (SELECT mk.stage_state FROM chat_branch_publish_marks mk
-               WHERE mk.chat_branch_id = h.branch AND mk.entity_kind = h.kind
-                 AND mk.entity_id = h.entity_id AND mk.site_snapshot_id = h.site_snapshot_id),
-             'pending') END AS stage_state,
+           ${stageState} AS stage_state,
            CASE WHEN h.kind = 'layoutChrome'
              THEN (SELECT x.description FROM site_snapshots x WHERE x.id = h.entity_id) END AS description,
            CASE WHEN h.kind = 'layoutChrome'
@@ -323,10 +309,64 @@ export async function loadPendingChangesFor(
            ) END AS page_change,
            CASE WHEN h.kind = 'page' THEN h.seo_changed END AS seo_changed
       FROM h
-     ORDER BY 1, 4, 3
-  `)) as unknown as LabelledRow[];
+     ORDER BY 1, 4, 3`;
+}
 
-  // Kind order inside each group, then label and id (the ORDER BY above).
+/**
+ * {@link loadPendingChanges} for several chats in one statement: their
+ * head rows, labelled from the live rows by primary key. The cost is the
+ * chats' own pending entities, not the draft's history.
+ */
+export async function loadPendingChangesFor(
+  tx: TransactionRunner,
+  chats: readonly HeadChat[],
+): Promise<Map<string, PendingChanges>> {
+  const out = new Map<string, PendingChanges>();
+  for (const c of chats) out.set(c.chatSessionId, emptyPendingChanges());
+  if (chats.length === 0) return out;
+  const rows = (await tx.execute(
+    labelledRowsSql(
+      sql`
+    c AS (
+      SELECT * FROM unnest(
+        ${uuidArray(chats.map((c) => c.chatSessionId))},
+        ${uuidArray(chats.map((c) => c.branchId))},
+        ${textArray(chats.map((c) => c.kind))}
+      ) AS c(id, branch, branch_kind)
+    ),
+    h AS (
+      -- One row per entity: on an isolated branch a change written outside
+      -- any chat and the chat's own change of it are one pending entity.
+      SELECT DISTINCT ON (c.id, d.entity_kind, d.entity_id, d.entity_sub)
+             c.id AS chat, c.branch, d.entity_kind AS kind, d.entity_id,
+             d.site_snapshot_id, d.snapshot_row_id, d.page_id, d.plugin_id, d.table_name,
+             bool_or(d.seo_changed)
+               OVER (PARTITION BY c.id, d.entity_kind, d.entity_id, d.entity_sub) AS seo_changed
+        FROM c
+        CROSS JOIN LATERAL (
+          ${chatHeadRowsSql({ id: "c.id", branch: "c.branch", kind: "c.branch_kind" }, pendingChangeKindSql())}
+        ) d
+       ORDER BY c.id, d.entity_kind, d.entity_id, d.entity_sub,
+                d.header_created_at DESC, d.row_created_at DESC
+    )`,
+      // The mark of THIS pending state (marks are keyed per snapshot): a
+      // mark of an older snapshot is stale, the newer edit is pending.
+      sql`CASE WHEN h.kind = 'layoutChrome' THEN 'pending' ELSE COALESCE(
+             (SELECT mk.stage_state FROM chat_branch_publish_marks mk
+               WHERE mk.chat_branch_id = h.branch AND mk.entity_kind = h.kind
+                 AND mk.entity_id = h.entity_id AND mk.site_snapshot_id = h.site_snapshot_id),
+             'pending') END`,
+    ),
+  )) as unknown as LabelledRow[];
+  addToBuckets(out, rows);
+  return out;
+}
+
+/**
+ * Sort labelled rows into their chat's buckets: kind order inside each
+ * group, then label and id (the ORDER BY of {@link labelledRowsSql}).
+ */
+function addToBuckets(out: Map<string, PendingChanges>, rows: readonly LabelledRow[]): void {
   const sorted = [...rows].sort(
     (a, b) => (GROUP_OF[a.kind]?.order ?? 99) - (GROUP_OF[b.kind]?.order ?? 99),
   );
@@ -341,7 +381,171 @@ export async function loadPendingChangesFor(
     const bucket = r.stage_state === "staged" ? changes.staged : changes.pending;
     bucket[group.group].push(ref);
   }
-  return out;
+}
+
+/**
+ * Snapshot tables of the kinds a chat's change list names, as the draft
+ * head maps them (`caelo_draft_head_tables()`, migration 0477): the column
+ * naming the entity, and what else keys it. `layoutChrome` is a header
+ * kind ({@link stagedNotLiveSql}).
+ */
+const STAGED_ROW_SOURCES: readonly {
+  readonly kind: string;
+  readonly table: string;
+  readonly key: string;
+  readonly sub?: string;
+  readonly pageId?: string;
+  readonly plugin?: true;
+  readonly seo?: true;
+}[] = [
+  { kind: "module", table: "module_snapshots", key: "module_id" },
+  { kind: "template", table: "template_snapshots", key: "template_id" },
+  { kind: "page", table: "page_snapshots", key: "page_id", seo: true },
+  { kind: "pageLayout", table: "page_layout_snapshots", key: "page_id" },
+  {
+    kind: "pageModuleContent",
+    table: "page_module_content_snapshots",
+    key: "page_module_content_id",
+    pageId: "x.page_id",
+  },
+  { kind: "listType", table: "list_type_snapshots", key: "list_type_id" },
+  { kind: "list", table: "list_snapshots", key: "list_id" },
+  { kind: "pageType", table: "page_type_snapshots", key: "page_type_id" },
+  { kind: "contentInstance", table: "content_instance_snapshots", key: "content_instance_id" },
+  { kind: "theme", table: "theme_snapshots", key: "theme_id" },
+  {
+    kind: "pluginRow",
+    table: "plugin_row_snapshots",
+    key: "row_id",
+    sub: "x.plugin_id::text || '/' || x.table_name",
+    plugin: true,
+  },
+];
+
+/** Staged snapshot headers a chat's list reads at most, newest first. */
+export const STAGED_HEADERS_LISTED = 100;
+
+/**
+ * The newest staged headers of a chat that live does not serve yet: those
+ * with `staged_at` at or after `since` (null: nothing is live, every
+ * staged header counts), at most `limit`, newest staged first (one Stage
+ * stamps all its headers with one time; the newer write first).
+ *
+ * The chat's own headers and its subagents' (`caelo_chat_owner`), found
+ * per task on whatever branch they were written: a chat that staged on the
+ * shared draft and then moved to an isolated branch (`chat.isolate_session`,
+ * a site import) keeps its staged draft changes. An isolated branch belongs
+ * to its chat, so on one every staged header of the branch counts too,
+ * whoever wrote it. Each read walks an index of migration 0915 in
+ * `staged_at` order and stops at `limit`, so the read costs the page it
+ * lists, never the chat's history or the shared draft's.
+ */
+function stagedHeadersSql(binding: HeadChat, since: string | null, limit: number): SQL {
+  const chat = sql`${binding.chatSessionId}::uuid`;
+  const notLive = since === null ? sql`` : sql`AND ss.staged_at >= ${since}::timestamptz`;
+  // The owner is checked per task, not per header: a per-row function
+  // filter makes the planner expect a few rows and read every staged
+  // header of the task instead of the page. The draft branch's own index
+  // would read every chat's history of the shared draft.
+  const byTask = sql`
+    SELECT s.id, s.staged_at, s.created_at FROM (
+      SELECT t.task FROM (
+        SELECT ${chat} AS task UNION ALL
+        SELECT cs.id FROM chat_sessions cs WHERE cs.parent_chat_session_id = ${chat}
+      ) t
+       WHERE caelo_chat_owner(t.task) = ${chat}
+    ) t
+    CROSS JOIN LATERAL (
+      SELECT ss.id, ss.staged_at, ss.created_at FROM site_snapshots ss
+       WHERE ss.chat_task_id = t.task AND ss.staged_at IS NOT NULL AND ss.undone_at IS NULL
+         ${notLive}
+       ORDER BY ss.staged_at DESC, ss.created_at DESC LIMIT ${limit}
+    ) s`;
+  const byBranch =
+    binding.kind === "draft"
+      ? sql``
+      : sql`
+    UNION (
+      SELECT ss.id, ss.staged_at, ss.created_at FROM site_snapshots ss
+       WHERE ss.chat_branch_id = ${binding.branchId}::uuid
+         AND ss.staged_at IS NOT NULL AND ss.undone_at IS NULL ${notLive}
+       ORDER BY ss.staged_at DESC, ss.created_at DESC LIMIT ${limit}
+    )`;
+  return sql`
+    SELECT u.id::text AS id FROM ((${byTask}) ${byBranch}) u
+     ORDER BY u.staged_at DESC, u.created_at DESC, u.id DESC LIMIT ${limit}`;
+}
+
+/**
+ * The `h` CTE (see {@link labelledRowsSql}) of the staged headers
+ * `headerIds` of a chat: one row per entity at its newest staged state.
+ */
+function stagedEntitiesSql(binding: HeadChat, headerIds: readonly string[]): SQL {
+  const chat = sql`${binding.chatSessionId}::uuid`;
+  const rows = STAGED_ROW_SOURCES.map(
+    (t) => sql`
+      SELECT ${t.kind}::text AS kind, x.${sql.raw(t.key)} AS entity_id,
+             ${sql.raw(t.sub ?? "''::text")} AS entity_sub, x.id AS snapshot_row_id,
+             hd.id AS site_snapshot_id, hd.created_at AS header_created_at, x.created_at AS row_created_at,
+             ${sql.raw(t.pageId ?? "NULL::uuid")} AS page_id,
+             ${sql.raw(t.plugin ? "x.plugin_id" : "NULL::uuid")} AS plugin_id,
+             ${sql.raw(t.plugin ? "x.table_name" : "NULL::text")} AS table_name,
+             ${t.seo ? sql`hd.op_kind LIKE 'pages\_seo.%'` : sql`false`} AS seo
+        FROM ${sql.raw(t.table)} x JOIN hd ON hd.id = x.site_snapshot_id`,
+  );
+  return sql`
+    hd AS (
+      SELECT ss.id, ss.op_kind, ss.created_at FROM site_snapshots ss
+       WHERE ss.id = ANY(${uuidArray(headerIds)})
+    ),
+    r AS (
+      ${sql.join(rows, sql` UNION ALL `)}
+      UNION ALL
+      -- A layout's chrome change is one change per header, as in the head.
+      SELECT 'layoutChrome', hd.id, '', NULL::uuid, hd.id, hd.created_at, hd.created_at,
+             NULL::uuid, NULL::uuid, NULL::text, false
+        FROM hd WHERE hd.op_kind = 'layout_modules.set'
+    ),
+    h AS (
+      SELECT DISTINCT ON (r.kind, r.entity_id, r.entity_sub)
+             ${chat} AS chat, ${binding.branchId}::uuid AS branch, r.kind, r.entity_id,
+             r.site_snapshot_id, r.snapshot_row_id, r.page_id, r.plugin_id, r.table_name,
+             bool_or(r.seo) OVER (PARTITION BY r.kind, r.entity_id, r.entity_sub) AS seo_changed
+        FROM r
+       ORDER BY r.kind, r.entity_id, r.entity_sub, r.header_created_at DESC, r.row_created_at DESC
+    )`;
+}
+
+/**
+ * Issue #1750 — what a chat's Stages merged that the next Publish live
+ * ships: the `staged` bucket of `chat.list_pending_changes`. A Stage marks
+ * the snapshots it merged staged (`site_snapshots.staged_at`), which takes
+ * them out of the draft head, so without this a chat's staged change
+ * vanished from its own list long before Publish live. The newest
+ * {@link STAGED_HEADERS_LISTED} staged headers are listed;
+ * `olderNotListed` says there are more.
+ */
+export async function loadStagedNotLive(
+  tx: TransactionRunner,
+  binding: HeadChat,
+): Promise<{ changes: PendingChanges; olderNotListed: boolean }> {
+  const out = new Map([[binding.chatSessionId, emptyPendingChanges()]]);
+  const headers = (
+    (await tx.execute(
+      stagedHeadersSql(binding, await notLiveSince(tx), STAGED_HEADERS_LISTED + 1),
+    )) as unknown as { id: string }[]
+  ).map((h) => h.id);
+  const listed = headers.slice(0, STAGED_HEADERS_LISTED);
+  if (listed.length > 0) {
+    const rows = (await tx.execute(
+      labelledRowsSql(stagedEntitiesSql(binding, listed), sql`'staged'`),
+    )) as unknown as LabelledRow[];
+    addToBuckets(out, rows);
+  }
+  return {
+    changes: out.get(binding.chatSessionId) ?? emptyPendingChanges(),
+    olderNotListed: headers.length > STAGED_HEADERS_LISTED,
+  };
 }
 
 function toRef(r: LabelledRow): EntityRef {

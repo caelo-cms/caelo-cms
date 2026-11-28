@@ -389,7 +389,9 @@ export function assertNoRenderFailures(lines: readonly RenderFailure[]): void {
       "set the link to an existing page's path from list_pages (or an existing image from find_media) or remove it; " +
       "a `link-ref-malformed:<text>` is a link written in a form no page or file matches — fix it the same way. " +
       "A `link-variant-missing:page/<id>:<variant>` is a link to a page with no version in this page's variant " +
-      "(its language): give that page a version in it, or point the link at a page that has one.",
+      "(its language): give that page a version in it, or point the link at a page that has one. " +
+      "A `nested-module-withheld:<moduleId>/<plugin>/<reason>` is a module the plugin withholds until visitors consent, placed inside another module's field, where it cannot wait for consent: " +
+      "place it on the page directly (add_module) and remove it from that field (set_content_instance_values_many).",
     lines,
   );
 }

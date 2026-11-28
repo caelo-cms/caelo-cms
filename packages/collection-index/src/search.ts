@@ -38,10 +38,11 @@
 
 import { type AnalyzerOptions, analyze, queryVariants, STEM_PREFIX, stemWord } from "./analyze.js";
 import { compoundTailInitials, splitCompound } from "./compound.js";
+import { defaultProbe, listScore, nearestLists } from "./partitions.js";
 import type { OpenRelease } from "./release.js";
 import { keywordTerm, langTerm } from "./schema.js";
-import { type ParsedDocs, type PostingList, VECTORS_PER_BLOCK } from "./segment.js";
-import { hammingCandidates, int8Score, normalize } from "./vectors.js";
+import { docPosition, type ParsedDocs, type PostingList, VECTORS_PER_BLOCK } from "./segment.js";
+import { defaultRescore, hammingCandidates, int8Score, normalize } from "./vectors.js";
 import { closestWord, type VocabularyWord } from "./vocabulary.js";
 import { COMPOUND_PREFIX } from "./writer.js";
 
@@ -260,8 +261,8 @@ async function allowedMask(
   const n = docs.keys.length;
   const mask = new Uint8Array(n).fill(1);
   for (const key of seg.removed) {
-    const i = docs.indexOf.get(key);
-    if (i !== undefined) mask[i] = 0;
+    const i = docPosition(docs, key);
+    if (i >= 0) mask[i] = 0;
   }
   if (!filter) return mask;
   const restrictTo = async (terms: readonly string[], keep: boolean): Promise<void> => {
@@ -624,8 +625,10 @@ export interface VectorQuery {
   readonly filter?: SearchFilter;
   /** Least cosine similarity a passage needs to count. */
   readonly minSimilarity: number;
-  /** Binary candidates rescored with int8. */
+  /** Binary candidates rescored with int8 per flat segment (default `defaultRescore` of its size). */
   readonly rescore?: number;
+  /** Lists scored per partitioned segment (default `defaultProbe` of its list count). */
+  readonly probe?: number;
 }
 
 /** A document found by its best passage. */
@@ -639,42 +642,68 @@ export interface VectorHitDoc {
 export async function searchVectors(release: OpenRelease, q: VectorQuery): Promise<VectorHitDoc[]> {
   const query = normalize(q.vector);
   const best = new Map<number, VectorHitDoc>();
-  for (let si = 0; si < release.segments.length; si++) {
-    const seg = release.segments[si] as OpenRelease["segments"][number];
-    const v = seg.reader.manifest.vectors;
-    if (!v) continue;
-    if (v.dims !== query.length)
-      throw new RangeError(
-        `search: query vector has ${query.length} dimensions, the collection ${v.dims}`,
-      );
-    const docs = await seg.reader.docs();
-    const allowed = await allowedMask(release, si, docs, q.filter);
-    const files = await seg.reader.codeFiles();
-    const candidates = hammingCandidates(files, query, q.rescore ?? 200, (key) => {
-      if (!allowed) return false;
-      const di = docs.indexOf.get(key);
-      return di === undefined || allowed[di] === 0;
-    });
-    const blocks = [...new Set(candidates.map((c) => Math.floor(c.ordinal / VECTORS_PER_BLOCK)))];
-    const loaded = new Map(
-      await Promise.all(blocks.map(async (b) => [b, await seg.reader.vectorBlock(b)] as const)),
-    );
-    for (const c of candidates) {
-      const file = files[c.file];
-      if (!file) continue;
-      const similarity = int8Score(
-        loaded.get(Math.floor(c.ordinal / VECTORS_PER_BLOCK)) as Uint8Array,
-        c.ordinal % VECTORS_PER_BLOCK,
-        v.dims,
+  // Segments read in parallel: a cold query waits for one round per step, not per segment.
+  await Promise.all(
+    release.segments.map(async (seg, si) => {
+      const v = seg.reader.manifest.vectors;
+      if (!v) return;
+      if (v.dims !== query.length)
+        throw new RangeError(
+          `search: query vector has ${query.length} dimensions, the collection ${v.dims}`,
+        );
+      const docs = await seg.reader.docs();
+      const allowed = await allowedMask(release, si, docs, q.filter);
+      const skip = (key: number): boolean => {
+        if (!allowed) return false;
+        const di = docPosition(docs, key);
+        return di < 0 || allowed[di] === 0;
+      };
+      const keep = (key: number, passage: number, similarity: number): void => {
+        if (similarity < q.minSimilarity) return;
+        const prev = best.get(key);
+        if (!prev || similarity > prev.similarity) best.set(key, { key, passage, similarity });
+      };
+      if (v.partitions) {
+        // #1783 — the nearest lists, read in one round, every passage in them scored with int8.
+        const centroids = await seg.reader.centroids();
+        const lists = await Promise.all(
+          nearestLists(centroids, query, q.probe ?? defaultProbe(centroids.count)).map((li) =>
+            seg.reader.list(li),
+          ),
+        );
+        for (const list of lists) {
+          for (let r = 0; r < list.count; r++) {
+            const key = list.keys[r] as number;
+            if (skip(key)) continue;
+            keep(key, list.passages[r] as number, listScore(list, r, v.dims, query));
+          }
+        }
+        return;
+      }
+      const files = await seg.reader.codeFiles();
+      const candidates = hammingCandidates(
+        files,
         query,
+        q.rescore ?? defaultRescore(v.count),
+        skip,
       );
-      if (similarity < q.minSimilarity) continue;
-      const key = file.keys[c.record] as number;
-      const prev = best.get(key);
-      if (!prev || similarity > prev.similarity)
-        best.set(key, { key, passage: file.passages[c.record] as number, similarity });
-    }
-  }
+      const blocks = [...new Set(candidates.map((c) => Math.floor(c.ordinal / VECTORS_PER_BLOCK)))];
+      const loaded = new Map(
+        await Promise.all(blocks.map(async (b) => [b, await seg.reader.vectorBlock(b)] as const)),
+      );
+      for (const c of candidates) {
+        const file = files[c.file];
+        if (!file) continue;
+        const similarity = int8Score(
+          loaded.get(Math.floor(c.ordinal / VECTORS_PER_BLOCK)) as Uint8Array,
+          c.ordinal % VECTORS_PER_BLOCK,
+          v.dims,
+          query,
+        );
+        keep(file.keys[c.record] as number, file.passages[c.record] as number, similarity);
+      }
+    }),
+  );
   return [...best.values()]
     .sort((a, b) => b.similarity - a.similarity || a.key - b.key)
     .slice(0, q.limit);
@@ -700,4 +729,57 @@ export function fuse(
     .map(([key, score]) => ({ key, score }))
     .sort((a, b) => b.score - a.score || a.key - b.key)
     .slice(0, limit);
+}
+
+/**
+ * The live keys holding each term, across a release (#1779): what a
+ * keyword's postings say, without reading a stored document. A search
+ * resolves boosts and link-text targets this way.
+ */
+export async function keysOfTerms(
+  release: OpenRelease,
+  terms: readonly string[],
+): Promise<Map<string, number[]>> {
+  // Once per term: a term named twice must not list its keys twice.
+  const unique = [...new Set(terms)];
+  const out = new Map<string, number[]>(unique.map((t) => [t, []]));
+  await Promise.all(
+    release.segments.map(async (seg) => {
+      const lists = await Promise.all(unique.map((t) => seg.reader.postings(t)));
+      lists.forEach((list, i) => {
+        if (!list) return;
+        const keys = out.get(unique[i] as string) as number[];
+        for (const k of list.keys) if (!seg.removed.has(k)) keys.push(k);
+      });
+    }),
+  );
+  return out;
+}
+
+/**
+ * The keys of `keys` that are live and pass `filter` (#1779): from the docs
+ * file and the filter's postings, as a search filters, never from stored
+ * documents.
+ */
+export async function keysPassing(
+  release: OpenRelease,
+  keys: readonly number[],
+  filter: SearchFilter | undefined,
+): Promise<Set<number>> {
+  const out = new Set<number>();
+  if (keys.length === 0) return out;
+  await Promise.all(
+    release.segments.map(async (seg, si) => {
+      const m = seg.reader.manifest;
+      const mine = keys.filter((k) => k >= m.firstKey && k <= m.lastKey && !seg.removed.has(k));
+      if (mine.length === 0) return;
+      const docs = await seg.reader.docs();
+      const allowed = await allowedMask(release, si, docs, filter);
+      for (const k of mine) {
+        const at = docPosition(docs, k);
+        if (at >= 0 && (!allowed || allowed[at] === 1)) out.add(k);
+      }
+    }),
+  );
+  return out;
 }

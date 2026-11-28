@@ -274,7 +274,7 @@ async function main(): Promise<void> {
       await answer(release, q);
       lat.push(performance.now() - t);
       files.push(cache.stats.misses);
-      bytes.push(cache.stats.bytesLoaded);
+      bytes.push(cache.stats.bytesRead);
     }
     const p = percentiles(lat);
     const f = percentiles(files);

@@ -281,7 +281,10 @@ export async function makePluginContext(
       ((UNATTENDED_ORIGINS.has(invocation.origin) && !invocation.chatBranchId) || journalWork)
     ) {
       return approval.capabilities.includes("cms_admin_schema")
-        ? { ...callCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) }
+        ? {
+            ...callCtx,
+            adminQuery: makePluginAdminQuery(plugin, infra, invocation, opts.sandboxKind),
+          }
         : callCtx;
     }
     // #1729 — a render point (list sources, head entries, …) reads the
@@ -291,7 +294,10 @@ export async function makePluginContext(
     // broker's pluginAccess rule), so a page view never changes data.
     if (!visitorContext && invocation.origin === "render") {
       return approval.capabilities.includes("cms_admin_schema")
-        ? { ...callCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) }
+        ? {
+            ...callCtx,
+            adminQuery: makePluginAdminQuery(plugin, infra, invocation, opts.sandboxKind),
+          }
         : callCtx;
     }
     if (visitorContext || !AUTHORING_ORIGINS.has(invocation.origin)) return nonAuthorCtx;
@@ -312,7 +318,9 @@ export async function makePluginContext(
     if (!(await authorMayWrite(infra, approval.systemActorId, invocation))) return nonAuthorCtx;
     return {
       ...callCtx,
-      ...(wantsStorage ? { adminQuery: makePluginAdminQuery(plugin, infra, invocation) } : {}),
+      ...(wantsStorage
+        ? { adminQuery: makePluginAdminQuery(plugin, infra, invocation, opts.sandboxKind) }
+        : {}),
       ...(wantsFiles ? { privateFiles: makePluginPrivateFiles(plugin, infra, invocation) } : {}),
       ...(wantsImages ? { images: makePluginImages(plugin, infra, invocation) } : {}),
       ...(wantsFonts ? { fonts: makePluginFonts(plugin, infra, invocation) } : {}),
@@ -352,7 +360,7 @@ export async function makePluginContext(
     });
   }
   if (requested.has("cms_admin_schema")) {
-    tier1.adminQuery = makePluginAdminQuery(plugin, infra, invocation);
+    tier1.adminQuery = makePluginAdminQuery(plugin, infra, invocation, opts.sandboxKind);
   }
   if (requested.has("ai_provider") && infra.aiProvider) {
     tier1.ai = makePluginAi(plugin, infra, invocation);
@@ -533,12 +541,22 @@ function makeScopedQuery(
           ...(invocation.chatTaskId ? { chatTaskId: invocation.chatTaskId } : {}),
         }
       : {};
+  // #1705 — a change-journal batch or rebuild re-derives the plugin's own
+  // rows: its snapshots name the system actor it runs as (`batchInvocation`
+  // in change-consumers.ts), so the shared draft's conflict check can tell
+  // that derived state from a chat's or a person's change (locks.ts). The
+  // storage calls still run as the plugin (its actor scopes its rows).
+  const derived =
+    scope.pool === "admin" && (scope.kind === "journal" || scope.kind === "rebuild")
+      ? { snapshotActorId: invocation.actorId }
+      : {};
   const ctx = {
     actorId: plugin.pluginActorId,
     actorKind: "plugin" as const,
     pluginId: plugin.pluginId,
     requestId: `plugin-${plugin.slug}`,
     ...branch,
+    ...derived,
     ...(plugin.externalApproval
       ? { pluginArtifactDigest: plugin.externalApproval.artifactDigest }
       : {}),
@@ -906,12 +924,15 @@ function makePluginAdminQuery(
   plugin: LoadedPlugin,
   infra: PluginHostInfra,
   invocation: PluginInvocation,
+  /** #1705 — the call's kind: a change-journal batch's writes are the system's. */
+  kind: SandboxKind | undefined,
 ): PluginAdminQuery {
   const handle = makeScopedQuery(plugin, infra, invocation, {
     label: "ctx.adminQuery",
     schemaLabel: "adminSchema",
     schemaMap: plugin.definition.adminSchema ?? {},
     pool: "admin",
+    ...(kind ? { kind } : {}),
   });
   const { upsert } = handle;
   if (!upsert) throw new Error("ctx.adminQuery: the admin pool's handle has no upsert");

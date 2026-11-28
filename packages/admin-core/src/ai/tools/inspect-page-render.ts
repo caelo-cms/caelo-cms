@@ -38,9 +38,18 @@ import {
   pluginsNotRunningHere,
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
-import { markupLeavingContent } from "@caelo-cms/shared";
+import {
+  markupLeavingContent,
+  parseNestedModuleWithheldMarker,
+  VALUE_BREAKS_MARKUP,
+  valueBreaksMarkupRepair,
+} from "@caelo-cms/shared";
 import { z } from "zod";
-import { pageMarkerHint, pluginValueRefusedHint } from "../../deploy/render-failures.js";
+import {
+  nestedModuleWithheldHint,
+  pageMarkerHint,
+  pluginValueRefusedHint,
+} from "../../deploy/render-failures.js";
 import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -485,6 +494,30 @@ function pluginValueRefusedNextStep(marker: string): string | undefined {
   return `${pluginValueRefusedHint(marker.slice(prefix.length))} Publishing is blocked until it is fixed.`;
 }
 
+/**
+ * #1748 — next step for a core value that changes the markup around its
+ * placeholder (`value-breaks-markup:<field>:<rule>`). Same text as the
+ * Stage's report.
+ */
+function valueBreaksMarkupNextStep(marker: string): string | undefined {
+  const prefix = `${VALUE_BREAKS_MARKUP}:`;
+  if (!marker.startsWith(prefix)) return undefined;
+  const { hint } = valueBreaksMarkupRepair(marker.slice(prefix.length), "a module on this page");
+  return `${hint} Publishing is blocked until it is fixed.`;
+}
+
+/**
+ * #1708 — next step for a module a plugin withholds that sits in another
+ * module's field (`nested-module-withheld:<id>/<plugin>/<reason>`): the
+ * preview leaves it out as the build does. Same text as the Stage's report.
+ */
+function withheldNestedNextStep(marker: string): string | undefined {
+  const withheld = parseNestedModuleWithheldMarker(marker);
+  return withheld === null
+    ? undefined
+    : `${nestedModuleWithheldHint(withheld, "another module on this page")} Publishing is blocked until it is fixed.`;
+}
+
 /** `{ nextSteps }` for the flagged site-wide settings, or `{}` when none is flagged. */
 function siteSettingNextSteps(
   missing: readonly string[],
@@ -499,7 +532,9 @@ function siteSettingNextSteps(
         pluginNotRunningNextStep(m) ??
         pluginRenderFailedNextStep(m, pluginFailures) ??
         pluginValueRefusedNextStep(m) ??
-        pageMarkerNextStep(m);
+        valueBreaksMarkupNextStep(m) ??
+        pageMarkerNextStep(m) ??
+        withheldNestedNextStep(m);
       return step ? [[m, step]] : [];
     }),
   );

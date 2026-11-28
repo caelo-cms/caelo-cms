@@ -547,14 +547,17 @@ describe("page output and collections through Stage and Publish live", () => {
     expect(await releasesAs("plugin", crypto.randomUUID())).toEqual([]);
   });
 
-  it("a second Stage delivers only the changed page and writes a delta", async () => {
+  it("a second Stage delivers only the changed page and applies only that change", async () => {
     await setText(PAGES[1] as string, "Neu: Versand in die Schweiz.");
     const run = await stage();
     expect(calls.flatMap((c) => c.pages.map((p) => p.path))).toEqual([`/${PAGES[1]}`]);
     const index = await indexState(run);
     expect(index.state).toBe("ready");
     expect(index.stats.rebuilt).toBe(false);
-    expect(index.stats.segments).toBe(2);
+    // #1781 — a collection under the merge floor stays one segment: the
+    // change is applied to the previous release (no rebuild from the
+    // documents), and the result is rewritten whole, a few pages.
+    expect(index.stats.segments).toBe(1);
     expect(
       await searchStore(join(root, "collections-staging"), index.releaseKey as string, "Versand"),
     ).toEqual([`/${PAGES[1]}`]);

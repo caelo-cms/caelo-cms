@@ -26,8 +26,8 @@
  */
 
 import type { PluginRowLocker } from "@caelo-cms/plugin-host";
-import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
-import { sql } from "drizzle-orm";
+import { SYSTEM_ACTOR_ID, type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
+import { type SQL, sql } from "drizzle-orm";
 import { pendingSnapshotSql, releaseIdleDraftLocks } from "./draft.js";
 import { lockedEntityLabel } from "./entity-labels.js";
 import {
@@ -321,6 +321,21 @@ export async function checkAndAcquireEntityLock(
  * (issues #1260, #1387, {@link observeDraftReads}). A permitted write
  * records it too.
  *
+ * Issue #1705 — one change of a plugin row does not count: the plugin's own
+ * change-journal batch or rebuild re-deriving the row from a committed
+ * change. Its snapshot names the system actor and no chat task (plugin-host
+ * `makeScopedQuery`, `snapshotActorId`; {@link isSystemActorSql}); consent-manager rewrites a module's
+ * verdict that way when the module's embed changes. It is no one's work that
+ * a later write could silently overwrite — the source change it follows is a
+ * chat's write, protected on its own entity — and counting it made every
+ * chat conflict with consequences of its own edits, after the Owner had
+ * approved the write. A plugin that needs its derived state current when it
+ * writes reads it in the same call (consent-manager re-scans the module's
+ * hosts) or swaps (`compareAndSwap`). Every other change counts, a person's
+ * without a chat included, and so does every change of a core entity: a
+ * plugin's `ctx.cms.call` change of a module is content a chat must see
+ * before it overwrites it.
+ *
  * @returns the newer change by another chat, or null when the write may go.
  */
 async function draftConflict(
@@ -336,7 +351,7 @@ async function draftConflict(
     const newer = sql.join(
       tables.map(
         (t) => sql`
-          SELECT ss.created_at, caelo_chat_owner(ss.chat_task_id) AS owner
+          SELECT ss.created_at, caelo_chat_owner(ss.chat_task_id) AS owner, ss.actor_id
           FROM ${sql.raw(t.table)} es JOIN site_snapshots ss ON ss.id = es.site_snapshot_id
           WHERE es.${sql.raw(t.column)} = ${entityId}::uuid
             AND ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}`,
@@ -350,6 +365,7 @@ async function draftConflict(
       FROM changes c
       LEFT JOIN chat_sessions cs ON cs.id = c.owner
       WHERE c.owner IS DISTINCT FROM ${chatSessionId}::uuid
+        ${kind === "pluginRow" ? sql`AND NOT (c.owner IS NULL AND ${isSystemActorSql(sql`c.actor_id`)})` : sql``}
         AND c.created_at > COALESCE(
           (SELECT seen_at FROM draft_entity_observations
             WHERE chat_session_id = ${chatSessionId}::uuid
@@ -363,6 +379,20 @@ async function draftConflict(
   }
   await observeDraftEntity(tx, chatSessionId, kind, entityId);
   return stale;
+}
+
+/**
+ * #1705 — SQL predicate: the snapshot names the system actor, the one the
+ * plugin host runs its own work as (`systemActorId` at bootstrap, the
+ * admin's `SYSTEM_ACTOR_ID`) — never a person, the AI or a plugin acting
+ * for a caller. Compared by id: `actors` rows are visible only to their own
+ * actor, and the check runs in the plugin's transaction. A host booted with
+ * another id records it there, and its changes keep counting (the safe
+ * side). Exported for `plugins.unseen_draft_rows`, which names exactly the
+ * changes a write would refuse.
+ */
+export function isSystemActorSql(actorId: SQL): SQL {
+  return sql`${actorId} = ${SYSTEM_ACTOR_ID}::uuid`;
 }
 
 /**

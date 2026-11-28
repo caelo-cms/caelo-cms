@@ -249,6 +249,13 @@ export interface ListPageContext {
    */
   breadcrumbTrail(): readonly string[] | null;
   /**
+   * #1759 — the pages this render's page queries showed, in the order
+   * shown: the paginated list's current slice when the page has one, else
+   * every query list's entries (each page once). What an overview's
+   * `ItemList` may name, so structured data matches the visible list.
+   */
+  listedPages(): readonly string[];
+  /**
    * A section name no module field declares, read as a plugin list
    * source (`{{#language_links}}` written before the field kind existed).
    * Null when no installed plugin declares the name.
@@ -677,6 +684,9 @@ function createPageContext(
   let pagerShown = false;
   let pagerEarly = false;
   const truncated = new Map<string, TruncatedList>();
+  // #1759 — the pages query lists showed, and the paginated slice.
+  const listed: string[] = [];
+  let pagedListed: readonly string[] | null = null;
   /** Entries of a page-shaped system source: their pages become deps. */
   const readPages = (pages: ListPageRecord[]): ListPageRecord[] => {
     for (const pg of pages) depPages.add(pg.id);
@@ -1192,6 +1202,7 @@ function createPageContext(
       if (!truncated.has(key))
         truncated.set(key, { field, shown: limit, total: hits.length, limit });
     }
+    for (const h of hits.slice(0, limit)) if (!listed.includes(h.id)) listed.push(h.id);
     return listValue(pageEntries(hits.slice(0, limit)));
   };
 
@@ -1221,6 +1232,7 @@ function createPageContext(
       followUps: eff.followUps,
     };
     const from = (requestedPage - 1) * eff.perPage;
+    pagedListed = hits.slice(from, from + eff.perPage).map((h) => h.id);
     return listValue(pageEntries(hits.slice(from, from + eff.perPage)));
   };
 
@@ -1734,6 +1746,7 @@ function createPageContext(
       return linkValue(link, data, plugin);
     },
     breadcrumbTrail: () => trail,
+    listedPages: () => pagedListed ?? listed,
     pagePropertyType: (name) => (current === null ? null : propertyTypeOf(current, name)),
     pageScope: () => {
       if (pageScopeMemo === undefined) {

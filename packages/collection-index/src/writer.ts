@@ -19,13 +19,28 @@
  * word against that vocabulary; a compound's postings are also added to its
  * parts' compound terms (`\u007f` prefix, after every ASCII term, so the
  * merge emits them in order once the last ASCII term has passed).
+ *
+ * Format 3 (segment.ts): store blocks of about `STORE_BLOCK_BYTES` with a
+ * table per document; keyword `columns` in the docs file; vectors kept
+ * until `finish`, which writes them flat (codes and int8 blocks) or, from
+ * `PARTITION_MIN_VECTORS` on, partitioned (partitions.ts); and a segment
+ * whose files stay within `packMaxBytes` becomes one packed file, read in
+ * one request (#1781). Until a segment passes that bound its files are held
+ * here instead of handed to the sink; once it passes, they go out and the
+ * rest streams.
  */
 
 import { createHash } from "node:crypto";
-import { deflateRawSync } from "node:zlib";
 import { type AnalyzerOptions, analyze, STEM_PREFIX } from "./analyze.js";
 import { ByteReader, ByteWriter } from "./bytes.js";
 import { splitCompound } from "./compound.js";
+import {
+  encodeCentroids,
+  encodeList,
+  PARTITION_MIN_VECTORS,
+  partition,
+  VectorBuffer,
+} from "./partitions.js";
 import {
   type CollectionSchema,
   idTerm,
@@ -41,9 +56,14 @@ import {
 import {
   codeRecordBytes,
   compareBytes,
+  encodeStoreBlock,
+  type PackRef,
   RESTART_INTERVAL,
+  SEGMENT_FORMAT,
   type SegmentManifest,
   type ShardRef,
+  STORE_BLOCK_BYTES,
+  type StoreEntry,
   type StoreRef,
   VECTORS_PER_BLOCK,
   VECTORS_PER_CODE_FILE,
@@ -55,6 +75,14 @@ import { encodeVocabulary, vocabularyBucket } from "./vocabulary.js";
 /** Dictionary prefix of compound-part terms. Sorts after every ASCII term. */
 export const COMPOUND_PREFIX = "\u007f";
 
+/**
+ * Segments whose files together stay within this are one packed file
+ * (#1781). searchVIU's whole index (322 pages, link texts, vectors) is
+ * 7.6 MB; a pack is read whole and held as one cache entry, so it stays
+ * small next to the cache's 256 MB.
+ */
+export const PACK_MAX_BYTES = 8 * 1024 * 1024;
+
 /** Where finished files go: object storage, a directory, a map in tests. */
 export type FileSink = (name: string, data: Uint8Array) => void;
 
@@ -64,8 +92,14 @@ export interface WriterOptions extends AnalyzerOptions {
   readonly sink: FileSink;
   /** Target bytes per term shard; one large posting list may exceed it. */
   readonly shardBytes?: number;
-  /** Documents per store file. */
+  /** Most documents per store block (blocks also end at `STORE_BLOCK_BYTES` of documents). */
   readonly docsPerStore?: number;
+  /** Keyword fields stored per document in the docs file, for operations that read a value per hit. */
+  readonly columns?: readonly string[];
+  /** A segment whose files stay within this many bytes is one packed file (default {@link PACK_MAX_BYTES}). */
+  readonly packMaxBytes?: number;
+  /** Vectors from which a segment is partitioned (default `PARTITION_MIN_VECTORS`). */
+  readonly partitionMinVectors?: number;
   /** Documents analysed before a chunk is encoded into a run. */
   readonly chunkDocs?: number;
   /** Words outside this segment that count as vocabulary, with their document frequency (a delta's base). */
@@ -75,6 +109,12 @@ export interface WriterOptions extends AnalyzerOptions {
   /** Vector dimensions; without them the vector field carries no vectors (semantic search off). */
   readonly dims?: number;
 }
+
+/** How segments are cut into files: defaults for production, smaller for tests and benchmarks. */
+export type SegmentTuning = Pick<
+  WriterOptions,
+  "shardBytes" | "docsPerStore" | "packMaxBytes" | "partitionMinVectors"
+>;
 
 /** What `finish` returns besides the files already handed to the sink. */
 export interface WrittenSegment {
@@ -118,29 +158,46 @@ export class SegmentWriter {
   private readonly langs: number[] = [];
   private readonly numbers: number[][];
   private readonly facetValues: string[][][];
-  private storeBatch: KeyedDoc[] = [];
+  private readonly columnValues: string[][][];
+  private storeBatch: StoreEntry[] = [];
+  private storeBatchBytes = 0;
   private readonly stores: StoreRef[] = [];
-  private readonly codeFiles: string[] = [];
-  private readonly blockFiles: string[] = [];
-  private codeBuf: ByteWriter | null = null;
-  private codeCount = 0;
-  private blockBuf: ByteWriter | null = null;
-  private blockCount = 0;
-  private vectorCount = 0;
+  private vectors: VectorBuffer | null = null;
+  /** Files held for a pack while the segment stays within its bound; null once they went out. */
+  private held: [string, Uint8Array][] | null = [];
+  private heldBytes = 0;
 
   constructor(private readonly o: WriterOptions) {
     this.layout = layoutOf(o.schema);
     this.slotSums = new Array<number>(this.layout.slots.length).fill(0);
     this.numbers = this.layout.numbers.map(() => []);
     this.facetValues = this.layout.facets.map(() => []);
+    for (const c of o.columns ?? [])
+      if (!this.layout.keywords.includes(c))
+        throw new RangeError(`SegmentWriter: column "${c}" is not a keyword field of the schema`);
+    this.columnValues = (o.columns ?? []).map(() => []);
     if (o.dims !== undefined && (o.dims <= 0 || o.dims % 8 !== 0))
       throw new RangeError("SegmentWriter: `dims` must be a positive multiple of 8");
   }
 
   private emit(name: string, data: Uint8Array): string {
+    if (this.held) {
+      this.held.push([name, data]);
+      this.heldBytes += data.length;
+      if (this.heldBytes > (this.o.packMaxBytes ?? PACK_MAX_BYTES)) {
+        // Past the bound: no pack; what was held goes out, the rest streams.
+        for (const [n, d] of this.held) this.send(n, d);
+        this.held = null;
+      }
+      return name;
+    }
+    this.send(name, data);
+    return name;
+  }
+
+  private send(name: string, data: Uint8Array): void {
     this.o.sink(name, data);
     this.bytes += data.length;
-    return name;
   }
 
   /**
@@ -211,9 +268,20 @@ export class SegmentWriter {
     this.layout.facets.forEach((field, i) => {
       this.facetValues[i]?.push(keywordValues(doc, field));
     });
+    (this.o.columns ?? []).forEach((field, i) => {
+      this.columnValues[i]?.push(keywordValues(doc, field));
+    });
 
-    this.storeBatch.push({ id: doc.id, key: doc.key, lang, values: doc.values });
-    if (this.storeBatch.length >= (this.o.docsPerStore ?? 32)) this.flushStore();
+    const stored: KeyedDoc = { id: doc.id, key: doc.key, lang, values: doc.values };
+    // Serialised once: the block's size is measured on the bytes it stores.
+    const json = utf8.encode(JSON.stringify(stored));
+    this.storeBatch.push({ key: stored.key, json });
+    this.storeBatchBytes += json.length;
+    if (
+      this.storeBatchBytes >= STORE_BLOCK_BYTES ||
+      this.storeBatch.length >= (this.o.docsPerStore ?? 1024)
+    )
+      this.flushStore();
 
     const vectorField = this.layout.vectorFields[0];
     if (vectorField && vectors) {
@@ -246,49 +314,78 @@ export class SegmentWriter {
       throw new RangeError(`SegmentWriter: vector of ${length} dimensions, expected ${dims}`);
     if (passage > 0xffff)
       throw new RangeError("SegmentWriter: at most 65,536 passages per document carry vectors");
-    const { code, int8, scale } = v instanceof Float32Array ? encodeVector(v) : v;
-    this.codeBuf ??= new ByteWriter(Math.min(VECTORS_PER_CODE_FILE, 4096) * codeRecordBytes(dims));
-    const rec = new Uint8Array(6);
-    new DataView(rec.buffer).setUint32(0, key, true);
-    new DataView(rec.buffer).setUint16(4, passage, true);
-    this.codeBuf.bytes(rec);
-    this.codeBuf.bytes(code);
-    this.blockBuf ??= new ByteWriter(VECTORS_PER_BLOCK * (dims + 4));
-    const s = new Uint8Array(4);
-    new DataView(s.buffer).setFloat32(0, scale, true);
-    this.blockBuf.bytes(s);
-    this.blockBuf.bytes(new Uint8Array(int8.buffer, int8.byteOffset, int8.length));
-    this.vectorCount++;
-    if (++this.codeCount >= VECTORS_PER_CODE_FILE) this.flushCodes();
-    if (++this.blockCount >= VECTORS_PER_BLOCK) this.flushBlock();
-  }
-
-  private flushCodes(): void {
-    if (!this.codeBuf || this.codeCount === 0) return;
-    const data = this.codeBuf.finish();
-    this.codeFiles.push(this.emit(contentName("c", data, "bin"), data));
-    this.codeBuf = null;
-    this.codeCount = 0;
-  }
-
-  private flushBlock(): void {
-    if (!this.blockBuf || this.blockCount === 0) return;
-    const data = this.blockBuf.finish();
-    this.blockFiles.push(this.emit(contentName("q", data, "bin"), data));
-    this.blockBuf = null;
-    this.blockCount = 0;
+    this.vectors ??= new VectorBuffer(dims);
+    this.vectors.push(key, passage, v instanceof Float32Array ? encodeVector(v) : v);
   }
 
   private flushStore(): void {
     if (this.storeBatch.length === 0) return;
-    const data = deflateRawSync(utf8.encode(JSON.stringify(this.storeBatch)), { level: 6 });
+    const data = encodeStoreBlock(this.storeBatch);
     const file = this.emit(contentName("s", data, "bin"), data);
     this.stores.push({
       file,
-      firstKey: (this.storeBatch[0] as KeyedDoc).key,
-      lastKey: (this.storeBatch[this.storeBatch.length - 1] as KeyedDoc).key,
+      firstKey: (this.storeBatch[0] as StoreEntry).key,
+      lastKey: (this.storeBatch[this.storeBatch.length - 1] as StoreEntry).key,
     });
     this.storeBatch = [];
+    this.storeBatchBytes = 0;
+  }
+
+  /** Writes the buffered vectors: flat (codes and int8 blocks) or partitioned. */
+  private writeVectors(field: string): VectorRef | null {
+    const buffer = this.vectors;
+    if (!buffer || buffer.count === 0) return null;
+    const dims = buffer.dims;
+    if (buffer.count >= (this.o.partitionMinVectors ?? PARTITION_MIN_VECTORS)) {
+      const p = partition(buffer);
+      const members: number[][] = Array.from({ length: p.lists }, () => []);
+      for (let i = 0; i < buffer.count; i++) members[p.assignment[i] as number]?.push(i);
+      const centroids = encodeCentroids(p.centroids, p.lists, dims);
+      const lists = members.map((indices) => {
+        const data = encodeList(buffer, indices);
+        return { file: this.emit(contentName("l", data, "bin"), data), count: indices.length };
+      });
+      return {
+        field,
+        dims,
+        count: buffer.count,
+        codes: [],
+        blocks: [],
+        partitions: { centroids: this.emit(contentName("g", centroids, "bin"), centroids), lists },
+      };
+    }
+    const codes: string[] = [];
+    const blocks: string[] = [];
+    const record = codeRecordBytes(dims);
+    for (let start = 0; start < buffer.count; start += VECTORS_PER_CODE_FILE) {
+      const end = Math.min(buffer.count, start + VECTORS_PER_CODE_FILE);
+      const w = new ByteWriter((end - start) * record);
+      const rec = new Uint8Array(6);
+      const view = new DataView(rec.buffer);
+      for (let i = start; i < end; i++) {
+        view.setUint32(0, buffer.key(i), true);
+        view.setUint16(4, buffer.passage(i), true);
+        w.bytes(rec);
+        w.bytes(buffer.encoded(i).code);
+      }
+      const data = w.finish();
+      codes.push(this.emit(contentName("c", data, "bin"), data));
+    }
+    for (let start = 0; start < buffer.count; start += VECTORS_PER_BLOCK) {
+      const end = Math.min(buffer.count, start + VECTORS_PER_BLOCK);
+      const w = new ByteWriter((end - start) * (dims + 4));
+      const scale = new Uint8Array(4);
+      const view = new DataView(scale.buffer);
+      for (let i = start; i < end; i++) {
+        const e = buffer.encoded(i);
+        view.setFloat32(0, e.scale, true);
+        w.bytes(scale);
+        w.bytes(new Uint8Array(e.int8.buffer, e.int8.byteOffset, dims));
+      }
+      const data = w.finish();
+      blocks.push(this.emit(contentName("q", data, "bin"), data));
+    }
+    return { field, dims, count: buffer.count, codes, blocks };
   }
 
   /** Encodes the chunk into a run: per term in byte order, its bytes, df, last key, slot mask, German flag and postings. */
@@ -330,8 +427,6 @@ export class SegmentWriter {
   finish(): WrittenSegment {
     this.flushChunk();
     this.flushStore();
-    this.flushCodes();
-    this.flushBlock();
     const nSlots = this.layout.slots.length;
 
     // Pass 1: the vocabulary.
@@ -385,18 +480,26 @@ export class SegmentWriter {
     }
 
     const vectorField = this.layout.vectorFields[0];
-    const vectors: VectorRef | null =
-      vectorField && this.vectorCount > 0
-        ? {
-            field: vectorField,
-            dims: this.o.dims as number,
-            count: this.vectorCount,
-            codes: this.codeFiles,
-            blocks: this.blockFiles,
-          }
-        : null;
+    const vectors: VectorRef | null = vectorField ? this.writeVectors(vectorField) : null;
+    this.vectors = null;
+    // Within the bound: the files become one pack, named after its bytes.
+    let pack: PackRef | null = null;
+    if (this.held) {
+      const parts: Record<string, [number, number]> = {};
+      let at = 0;
+      for (const [name, data] of this.held) {
+        parts[name] = [at, data.length];
+        at += data.length;
+      }
+      const joined = new Uint8Array(at);
+      for (const [name, data] of this.held) joined.set(data, (parts[name] as [number, number])[0]);
+      const file = contentName("k", joined, "bin");
+      this.held = null;
+      this.send(file, joined);
+      pack = { file, parts };
+    }
     const manifest: SegmentManifest = {
-      format: 2,
+      format: SEGMENT_FORMAT as 3,
       slots: this.layout.slots.map((s) => s.name),
       prefixSlots: this.layout.slots.filter((s) => s.prefix).map((s) => s.name),
       numbers: [...this.layout.numbers],
@@ -411,9 +514,12 @@ export class SegmentWriter {
       stores: this.stores,
       vectors,
       vocabulary: vocabFiles,
+      columns: [...(this.o.columns ?? [])],
+      pack,
     };
     const manifestData = utf8.encode(JSON.stringify(manifest));
-    const manifestFile = this.emit(contentName("m", manifestData, "json"), manifestData);
+    const manifestFile = contentName("m", manifestData, "json");
+    this.send(manifestFile, manifestData);
     return { manifest, manifestFile, vocabulary: vocabFiles, bytesWritten: this.bytes };
   }
 
@@ -439,7 +545,7 @@ export class SegmentWriter {
       });
       w.bytes(buf);
     }
-    for (const column of this.facetValues) {
+    for (const column of [...this.facetValues, ...this.columnValues]) {
       const table = [...new Set(column.flat())].sort();
       const ordinal = new Map(table.map((v, i) => [v, i] as const));
       w.uint(table.length);

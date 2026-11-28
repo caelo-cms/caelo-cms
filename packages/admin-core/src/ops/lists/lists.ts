@@ -40,6 +40,7 @@ import { isBound, loadListUsage } from "../../lists/usage.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import { emitSnapshot } from "../../snapshots/index.js";
 import type { ListState } from "../../snapshots/state.js";
+import { listWriteValueProblems } from "../content/value-structure.js";
 import {
   branchOf,
   canonicaliseItemsForWrite,
@@ -323,6 +324,24 @@ async function writeList(
       message: `${args.at}: ${describeIssues(refIssues)}.`,
       details: listIssuesToDetails([], refIssues),
     };
+  }
+  // #1748 — an entry a module that renders this list would place where it
+  // breaks the markup around it. Entries the list already holds pass.
+  if (args.found !== null) {
+    const breaking = await listWriteValueProblems(tx, branchId, {
+      id,
+      slug: args.slug,
+      items: validated.items,
+      ...(live ? { previous: live.state.items } : {}),
+    });
+    if (breaking.length > 0) {
+      return {
+        ok: false,
+        message: `${args.at}: ${breaking.map((d) => d.message).join(" ")}`,
+        refusal: true,
+        details: breaking,
+      };
+    }
   }
   const state: ListState = {
     schemaVersion: 1,

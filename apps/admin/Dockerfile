@@ -23,17 +23,20 @@ FROM node:26.13.1-bookworm-slim AS node
 # fixed time, so the same models are the same layer digest in every build
 # (#1559). The script needs nothing installed but the catalog file, which
 # the symlink resolves as `@caelo-cms/shared/embedding-models`. Each model
-# gets its NOTICE.txt (source, revision, licence text from licenses/).
+# gets its NOTICE.txt (source, revision, licence text from licenses/). #1782:
+# the stage then derives the files a process loads (the graph without its
+# token table, the table, the compact tokenizer), checks them against the
+# catalog's pins, and `--runtime-only` drops the publisher's files.
 FROM oven/bun:1.4.5 AS models
 WORKDIR /repo
 COPY packages/shared/package.json packages/shared/
 COPY packages/shared/src/embedding-models.ts packages/shared/src/
-COPY packages/models/src/fetch.ts packages/models/src/files.ts packages/models/src/
+COPY packages/models/src/fetch.ts packages/models/src/files.ts packages/models/src/derive.ts packages/models/src/bpe.ts packages/models/src/token-table.ts packages/models/src/
 COPY packages/models/scripts/fetch-models.ts packages/models/scripts/
 COPY licenses/Apache-2.0.txt licenses/MIT.txt licenses/
 RUN mkdir -p node_modules/@caelo-cms && \
     ln -s ../../packages/shared node_modules/@caelo-cms/shared && \
-    bun packages/models/scripts/fetch-models.ts --dir /models --licenses licenses --epoch
+    bun packages/models/scripts/fetch-models.ts --dir /models --licenses licenses --runtime-only --epoch
 
 FROM oven/bun:1.4.5 AS builder
 
@@ -96,6 +99,7 @@ COPY packages/plugins/international-site/package.json packages/plugins/internati
 COPY packages/plugins/consent-manager/package.json packages/plugins/consent-manager/
 COPY packages/plugins/site-search/package.json packages/plugins/site-search/
 COPY packages/plugins/site-assistant/package.json packages/plugins/site-assistant/
+COPY packages/plugins/seo/package.json packages/plugins/seo/
 
 RUN bun install
 

@@ -11,12 +11,24 @@
  * a file lands under its final name only then (written beside it, renamed
  * once verified), so an interrupted or tampered download never looks like a
  * model.
+ *
+ * Then the files a process loads are derived from them (#1782, derive.ts)
+ * and checked against the catalog's pins the same way. `runtimeOnly`
+ * removes the publisher's files afterwards: an image carries only what it
+ * loads.
  */
 
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { EmbeddingModel, EmbeddingModelFile } from "@caelo-cms/shared";
-import { ModelFileError, modelDir, modelFilePath, readVerifiedModelFile } from "./files.js";
+import { deriveModelFiles } from "./derive.js";
+import {
+  ModelFileError,
+  modelDir,
+  modelFilePath,
+  readVerifiedModelFile,
+  verifyModelFileInPlace,
+} from "./files.js";
 
 /** Where a file of the catalog is downloaded from. */
 export function sourceUrl(model: EmbeddingModel, file: EmbeddingModelFile): string {
@@ -27,17 +39,78 @@ export function sourceUrl(model: EmbeddingModel, file: EmbeddingModelFile): stri
 /** What {@link fetchModel} did with each file. */
 export interface FetchedFile {
   readonly file: string;
-  readonly action: "present" | "downloaded";
+  readonly action: "present" | "downloaded" | "derived" | "removed";
   readonly bytes: number;
 }
 
-/** Downloads every file of `model` into `dir` that is not already there and verified. */
+/** Whether a file is there and verified. */
+async function verified(
+  dir: string,
+  model: EmbeddingModel,
+  file: EmbeddingModel["files"]["model"] | EmbeddingModel["derived"]["graph"],
+): Promise<boolean> {
+  return verifyModelFileInPlace(dir, model, file).then(
+    () => true,
+    () => false,
+  );
+}
+
+/** Writes `data` under `path`, beside it first and renamed into place. */
+async function place(path: string, data: Uint8Array): Promise<void> {
+  const partial = `${path}.part-${crypto.randomUUID()}`;
+  try {
+    await writeFile(partial, data);
+    await rename(partial, path);
+  } finally {
+    await rm(partial, { force: true });
+  }
+}
+
+/**
+ * Downloads every file of `model` into `dir` that is not already there and
+ * verified, then derives the files a process loads. With `runtimeOnly` the
+ * publisher's files are removed once the derived ones are in place.
+ */
 export async function fetchModel(
   dir: string,
   model: EmbeddingModel,
-  deps: { readonly fetch?: typeof fetch } = {},
+  deps: { readonly fetch?: typeof fetch; readonly runtimeOnly?: boolean } = {},
 ): Promise<FetchedFile[]> {
-  const doFetch = deps.fetch ?? fetch;
+  const d = model.derived;
+  const derivedFiles = [d.graph, d.table, d.tokenizer];
+  const present = (await Promise.all(derivedFiles.map((f) => verified(dir, model, f)))).every(
+    Boolean,
+  );
+  // An image's stage that already holds the derived files needs nothing of the publisher.
+  const out =
+    present && deps.runtimeOnly ? [] : await fetchPublisherFiles(dir, model, deps.fetch ?? fetch);
+  if (present) {
+    for (const f of derivedFiles) out.push({ file: f.name, action: "present", bytes: f.bytes });
+  } else {
+    const graph = await readVerifiedModelFile(dir, model, model.files.model);
+    const tokenizer = JSON.parse(
+      new TextDecoder().decode(await readVerifiedModelFile(dir, model, model.files.tokenizer)),
+    ) as unknown;
+    const derived = deriveModelFiles(model, graph, tokenizer);
+    await place(modelFilePath(dir, model, d.graph), derived.graph);
+    await place(modelFilePath(dir, model, d.table), derived.table);
+    await place(modelFilePath(dir, model, d.tokenizer), derived.tokenizer);
+    for (const f of derivedFiles) out.push({ file: f.name, action: "derived", bytes: f.bytes });
+  }
+  if (deps.runtimeOnly) {
+    for (const f of [model.files.model, model.files.tokenizer]) {
+      await rm(modelFilePath(dir, model, f), { force: true });
+      out.push({ file: f.name, action: "removed", bytes: f.bytes });
+    }
+  }
+  return out;
+}
+
+async function fetchPublisherFiles(
+  dir: string,
+  model: EmbeddingModel,
+  doFetch: typeof fetch,
+): Promise<FetchedFile[]> {
   const out: FetchedFile[] = [];
   for (const file of [model.files.model, model.files.tokenizer]) {
     const path = modelFilePath(dir, model, file);
@@ -108,8 +181,9 @@ export function modelNotice(model: EmbeddingModel, licenceText: string): string 
   return [
     `${model.label} (${model.id})`,
     `Source: https://${host}/${repo} at revision ${revision}`,
-    `Files: ${model.files.model.path} (SHA-256 ${model.files.model.sha256}), ${model.files.tokenizer.path} (SHA-256 ${model.files.tokenizer.sha256})`,
-    `${model.copyright.replace(/\.?$/, ".")} Licensed under the ${model.licence} licence (${model.licenceUrl}); redistributed unmodified.`,
+    `Derived from: ${model.files.model.path} (SHA-256 ${model.files.model.sha256}), ${model.files.tokenizer.path} (SHA-256 ${model.files.tokenizer.sha256})`,
+    `${model.copyright.replace(/\.?$/, ".")} Licensed under the ${model.licence} licence (${model.licenceUrl}).`,
+    `Modified by the Caelo CMS project: ${model.derived.graph.name} is the publisher's graph without its token table (the ${model.derived.gather} node and its initializer), whose gathered rows are its input ${model.derived.tableInput}; ${model.derived.table.name} is that table, byte for byte; ${model.derived.tokenizer.name} holds the vocabulary, merges, added tokens and template of tokenizer.json in a compact binary form. The weights and the computation are unchanged.`,
     "",
     licenceText.trimEnd(),
     "",

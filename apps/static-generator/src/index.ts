@@ -93,6 +93,7 @@ export {
 export { CspScanner } from "./security-headers-pass.js";
 export {
   buildRobotsTxtWithSitemap,
+  extraSitemapFiles,
   followUpHeadEntries,
   prepareSeoPass,
   readSeoSettings,

@@ -58,6 +58,8 @@ import {
   anyEndsOutsideContent,
   applyDocumentLanguage,
   buildMediaUrl,
+  buildPageGraph,
+  type ComposeDeferral,
   ComposeError,
   type ComposeFonts,
   collectListModuleRefs,
@@ -73,18 +75,22 @@ import {
   injectSeoIntoHead,
   isFieldPathMarker,
   isListFailureMarker,
+  isValueBreaksMarkupMarker,
   linkMarkersOf,
   listThemeCssVarNames,
   type NestedModuleResource,
   type NestedRenderResolver,
   ok,
   type PaginationRequest,
+  PLUGIN_STRUCTURED_DATA_POINT,
   pagedPath,
   pagedUrl,
   pageFrame,
   pageListOverlayScope,
   paginationMarkers,
+  parseNestedModuleWithheldMarker,
   parsePagedPath,
+  pluginValueRefusedMarker,
   type Result,
   renderModuleWithContent,
   renderSeoHead,
@@ -115,6 +121,7 @@ import {
 } from "../../lists/load.js";
 import { PAGE_SEO_COLUMN_DEFAULTS } from "../../seo/page-seo.js";
 import { resolvePageShareImages } from "../../seo/share-image.js";
+import { previewStructuredData } from "../../seo/structured-data-preview.js";
 import { loadSiteView, type SiteView } from "../../site-view.js";
 import { pendingUrlAnnotationPageIds } from "./branch-url-drift.js";
 import { previewBreadcrumbs } from "./preview-breadcrumbs.js";
@@ -133,6 +140,11 @@ import {
 } from "./preview-variants.js";
 
 const OP = "pages.render_preview";
+
+/** #1708 — a withheld module nested in another module's field (shared render-failure-markers.ts). */
+function isWithheldNestedMarker(marker: string): boolean {
+  return parseNestedModuleWithheldMarker(marker) !== null;
+}
 
 const inputSchema = z
   .object({
@@ -504,6 +516,19 @@ async function renderPreview(
     for (const family of resolvedFonts.unresolved) fontMarkers.push(fontUnresolvableMarker(family));
   }
 
+  // #1708 — the modules a plugin withholds among those the page shows
+  // nested in another module's field, once a render found one: the next
+  // render leaves them out the way the composer does (see below).
+  let withheldNested: Readonly<Record<string, ComposeDeferral>> | null = null;
+  // The values a nested module renders with, for the plugins' judgement:
+  // what the build judges it on too (its stored content, not a placement).
+  const nestedValuesByModule = new Map<string, unknown[]>();
+  for (const ci of instanceByIdResource.values()) {
+    const list = nestedValuesByModule.get(ci.moduleId) ?? [];
+    list.push(ci.values);
+    nestedValuesByModule.set(ci.moduleId, list);
+  }
+
   // #1257 — one render of the page body. A paginated overview may render
   // twice (the pager came before the list, or a follow-up page is asked
   // for): see `renderFirstPage` in shared `lists/paginated-render.ts`.
@@ -517,6 +542,7 @@ async function renderPreview(
     pageLinkMarkers: string[];
     pageListMarkers: string[];
     fieldPathMarkers: string[];
+    withheldNestedMarkers: string[];
   }> => {
     const lists = listContext.forPage(pageId, {
       linkResolver,
@@ -533,6 +559,8 @@ async function renderPreview(
     // or of the chrome: loud on the missing-content surface too.
     const pageListMarkers: string[] = [];
     const fieldPathMarkers: string[] = [];
+    // #1708 — a withheld module nested in a page module's field.
+    const withheldNestedMarkers: string[] = [];
     // #1729 — where the page's modules stand, for their plugins' values:
     // a slot outside plain content, or a part of the page that ends
     // outside it, refuses them (shared page-reading.ts). The templates the
@@ -544,6 +572,10 @@ async function renderPreview(
     });
     const open = refuseAll || frame.open;
     const pageTemplates: string[] = [];
+    const known = withheldNested;
+    const withheld = known ? (id: string) => known[id] : undefined;
+    // Modules this render showed nested in a page module's field.
+    const nestedShown = new Set<string>();
     for (const m of modRows) {
       const key = `${m.block_name}#${m.position}`;
       const binding = placementBindings.get(key);
@@ -560,10 +592,12 @@ async function renderPreview(
         lists,
         linkResolver,
         frame.refusalFor(m.block_name, false, open),
+        withheld,
       );
       for (const id of result.touchedModuleIds) {
         const used = resolver.getModule(id);
         if (used) pageTemplates.push(used.html);
+        if (id !== m.module_id) nestedShown.add(id);
       }
       const html = markers
         ? finalizeEditMarkers(
@@ -578,6 +612,9 @@ async function renderPreview(
       pageLinkMarkers.push(...linkMarkersOf(result.missingSlots));
       pageListMarkers.push(...result.missingSlots.filter(isListFailureMarker));
       fieldPathMarkers.push(...result.missingSlots.filter(isFieldPathMarker));
+      // #1748 — a value that breaks the markup around it renders as written.
+      fieldPathMarkers.push(...result.missingSlots.filter(isValueBreaksMarkupMarker));
+      withheldNestedMarkers.push(...result.missingSlots.filter(isWithheldNestedMarker));
       // Every module the recursion touched gets its CSS/JS staged (the
       // composer dedupes by moduleId, issue #158) through a virtual
       // "__nested__" block below; their HTML is already inline.
@@ -645,7 +682,10 @@ async function renderPreview(
     const pageAndLayoutModules: readonly (
       | (typeof blocks)[number]["modules"][number]
       | (typeof layoutBlocks)[number]["modules"][number]
-    )[] = [...blocks.flatMap((b) => b.modules), ...layoutBlocks.flatMap((b) => b.modules)];
+    )[] = [
+      ...blocks.filter((b) => b.blockName !== "__nested__").flatMap((b) => b.modules),
+      ...layoutBlocks.flatMap((b) => b.modules),
+    ];
     for (const m of pageAndLayoutModules) {
       if (candidates.has(m.moduleId)) continue;
       candidates.set(m.moduleId, {
@@ -657,9 +697,41 @@ async function renderPreview(
         contentValues: [],
       });
     }
+    // #1708 — and every module the page can show nested in a field, judged
+    // as the build judges it (its own markup and stored content): a
+    // withheld one has no gate in there and is left out. Asked in the same
+    // call, so a page without one costs no extra plugin call.
+    const nestedCandidates = new Set<string>();
+    for (const mod of moduleByIdResource.values()) {
+      if (candidates.has(mod.moduleId)) continue;
+      nestedCandidates.add(mod.moduleId);
+      candidates.set(mod.moduleId, {
+        moduleId: mod.moduleId,
+        html: mod.html,
+        css: mod.css,
+        js: mod.js,
+        fields: mod.fields,
+        contentValues: nestedValuesByModule.get(mod.moduleId) ?? [],
+      });
+    }
     const deferredModules = Object.fromEntries(
       await resolveModuleDeferrals([...candidates.values()], renderScope),
     );
+    // A page module showed a withheld module nested, and the parent was
+    // judged with the embed inside it: render the page modules again
+    // without it, so the parent is judged on what it shows (once — the
+    // verdicts do not change within one preview).
+    if (withheldNested === null && [...nestedShown].some((id) => deferredModules[id])) {
+      // A module the page also places is judged as placed: nested, its
+      // verdict holds as well.
+      withheldNested = Object.fromEntries(
+        [...new Set([...nestedCandidates, ...nestedShown])].flatMap((id) => {
+          const d = deferredModules[id];
+          return d ? [[id, d]] : [];
+        }),
+      );
+      return renderBody(pagination, refuseAll);
+    }
 
     const composed = composePageWithLayout({
       deferredModules,
@@ -683,7 +755,14 @@ async function renderPreview(
     // A layout module, or a page module, ends outside content: render the
     // page modules again, refusing their plugin values too.
     if (!open && composed.openMarkup) return renderBody(pagination, true);
-    return { lists, composed, pageLinkMarkers, pageListMarkers, fieldPathMarkers };
+    return {
+      lists,
+      composed,
+      pageLinkMarkers,
+      pageListMarkers,
+      fieldPathMarkers,
+      withheldNestedMarkers,
+    };
   };
   let body = await renderBody();
   const firstPagination = body.lists.pagination();
@@ -696,7 +775,14 @@ async function renderPreview(
   } else if (firstPagination?.pagerEarly && firstPagination.pageCount > 1) {
     body = await renderBody({ page: 1, pageCount: firstPagination.pageCount });
   }
-  const { lists, composed, pageLinkMarkers, pageListMarkers, fieldPathMarkers } = body;
+  const {
+    lists,
+    composed,
+    pageLinkMarkers,
+    pageListMarkers,
+    fieldPathMarkers,
+    withheldNestedMarkers,
+  } = body;
   const pagination = lists.pagination();
   // Epic #1107 — overlay entries this render refused are the plugin's
   // fault: the stored value rendered, and the plugin's error channel
@@ -797,27 +883,81 @@ async function renderPreview(
           modifiedTime: page.liveChangedAt,
         }
       : null;
+  const pageCanonical =
+    followUp !== null && canonical !== null
+      ? pagedUrl(canonical, followUp, pageUrlStyle)
+      : canonical;
+  const ogImageUrl = shareImages.get(pageId)?.url ?? null;
+  const pageLanguage = resolveDocumentLanguage({
+    contributed: contributions?.lang.get(pageId),
+    siteLanguage: settings.siteLanguage,
+  });
+  // #1753 — the plugins' structured data, asked as the build asks: page 1
+  // with a base URL (the nodes' ids are absolute URLs).
+  const structured =
+    siteBaseUrl && followUp === null
+      ? await previewStructuredData({
+          ctx: chatBranchId ? { ...ctx, chatBranchId } : ctx,
+          reads,
+          page: {
+            pageId,
+            lang: pageLanguage ?? "",
+            description: head.metaDescription.value,
+            shareImage: shareImages.get(pageId)?.assetId ?? null,
+            live: article !== null,
+            listed: lists.listedPages(),
+          },
+          pageTypeProperties: (slug) => {
+            const t = view.pageTypes.find((x) => x.state.slug === slug);
+            return t ? { properties: t.state.definition.properties } : null;
+          },
+          site: { organization: Boolean(organization.name), name: settings.siteName },
+          scope: { siteBaseUrl, pageUrlStyle, ...renderScope },
+        })
+      : null;
+  const graph = buildPageGraph(
+    {
+      siteBaseUrl: siteBaseUrl || null,
+      canonical: pageCanonical,
+      siteName: settings.siteName,
+      siteLanguage: settings.siteLanguage ?? null,
+      pageLanguage,
+      pageTitle: pageRow.title,
+      description: head.metaDescription.value,
+      imageUrl: ogImageUrl,
+      organization,
+      breadcrumbs: siteBaseUrl
+        ? await previewBreadcrumbs(view, lists.breadcrumbTrail(), {
+            siteBaseUrl,
+            pageUrlStyle,
+            renderScope,
+          })
+        : [],
+      // The dates the build gives the page when it records it (see `article`).
+      liveDates: article
+        ? { published: article.publishedTime, modified: article.modifiedTime }
+        : null,
+    },
+    structured?.collected.parts.get(pageId) ?? [],
+    structured?.mediaUrl ?? (() => null),
+  );
+  const structuredMarkers = [
+    ...(structured?.collected.refused.get(pageId) ?? []),
+    ...graph.refusals.map((r) =>
+      pluginValueRefusedMarker(r.plugin, PLUGIN_STRUCTURED_DATA_POINT, r.field, r.rule),
+    ),
+  ];
   const headBlock = renderSeoHead({
     head,
     pageTitle: pageRow.title,
     siteName: settings.siteName,
     article,
-    canonical:
-      followUp !== null && canonical !== null
-        ? pagedUrl(canonical, followUp, pageUrlStyle)
-        : canonical,
-    ogImageUrl: shareImages.get(pageId)?.url ?? null,
-    organization,
+    canonical: pageCanonical,
+    ogImageUrl,
     // The feed link every built page carries (docs/dev/search-engine-feed.md).
     // Without a base URL the build refuses, so there is nothing to show.
     feed: siteBaseUrl ? siteFeedLink(settings.feedEnabled, siteBaseUrl) : null,
-    breadcrumbs: siteBaseUrl
-      ? await previewBreadcrumbs(view, lists.breadcrumbTrail(), {
-          siteBaseUrl,
-          pageUrlStyle,
-          renderScope,
-        })
-      : null,
+    jsonLd: graph.graph,
   });
   const contributedHead = contributions?.head.get(pageId);
   html = injectSeoIntoHead(
@@ -873,6 +1013,8 @@ async function renderPreview(
       // #1729 — what core refused from a plugin's head entries, sitemap
       // adjustments or default share image: the page renders without it.
       ...(contributions?.refused.get(pageId) ?? []),
+      // #1753 — what core refused from a plugin's structured data.
+      ...structuredMarkers,
       ...(shareImages.get(pageId)?.refused ? [shareImages.get(pageId)?.refused as string] : []),
       // #1008 — an active plugin this server could not load renders
       // without its contribution; loud here (and Publish live refuses).
@@ -894,6 +1036,13 @@ async function renderPreview(
       ...new Set([
         ...fieldPathMarkers,
         ...composed.moduleFailures.map((f) => f.reason).filter(isFieldPathMarker),
+        ...composed.moduleFailures.map((f) => f.reason).filter(isValueBreaksMarkupMarker),
+      ]),
+      // #1708 — a withheld module nested in a field: left out here as in
+      // the build, which reports it; Publish live refuses it.
+      ...new Set([
+        ...withheldNestedMarkers,
+        ...composed.moduleFailures.map((f) => f.reason).filter(isWithheldNestedMarker),
       ]),
     ],
     pluginFailures: pluginFailureSink.failures().map((f) => ({ slug: f.slug, reason: f.reason })),

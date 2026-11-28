@@ -20,7 +20,8 @@
       "!packages/plugins/*/manifest.json",
       "!packages/mcp-server/power-catalogue.json",
       "!**/data/fonts",
-      "!**/__tests__/fixtures"
+      "!**/__tests__/fixtures",
+      "!packages/collection-index/src/__fixtures__/format2/*.json"
     ]
   },
   "formatter": {

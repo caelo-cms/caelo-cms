@@ -120,6 +120,8 @@ const MODULES = [
   `${SHARED}/preview-compose.ts`,
   // #1729 — where the page puts each module, for its plugins' values.
   `${SHARED}/page-reading.ts`,
+  // #1748 — the structure rule for core values, its texts and write walks.
+  `${SHARED}/core-value-*.ts`,
 ] as const;
 
 /**
@@ -232,6 +234,8 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       `${SHARED}/css-*.ts`,
       `${SHARED}/font*.ts`,
       `${SHARED}/seo{,-head}.ts`,
+      // #1753, #1761 — every built page's JSON-LD graph and the news and video sitemaps.
+      `${SHARED}/{json-ld,schema-org-types,sitemap-extras}.ts`,
       `${SHARED}/url.ts`,
       `${SHARED}/link-refs.ts`,
       `${SHARED}/edit-markers.ts`,

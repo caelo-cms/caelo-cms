@@ -413,15 +413,37 @@ export const ARTICLE_MODIFIED_TIME_PENDING = "caelo-article-modified-time-pendin
 
 const ARTICLE_MODIFIED_RE = /<meta property="article:modified_time" content="[^"<>]*" \/>/;
 
+/** How core's JSON-LD graph of a page starts (`renderJsonLdScript`); the first in the document. */
+const GRAPH_START = '<script type="application/ld+json">{"@context":"https://schema.org","@graph":';
+
+/** The WebPage's `dateModified`: the first in the graph (Organization and WebSite carry none). */
+const GRAPH_MODIFIED_RE = /"dateModified":"([^"\\]*)"/;
+
 /**
- * Set the `article:modified_time` of a rendered page (the tag
- * `renderSeoHead` wrote): the build once the live comparison dated the
- * page, the plugin-data build when baked data moved its date. A page
- * without the tag (no article) comes back unchanged.
+ * Set the date a rendered page last changed live: its
+ * `article:modified_time` (the tag `renderSeoHead` wrote) and, #1753, every
+ * `dateModified` of its JSON-LD graph that carries that date — the
+ * WebPage's and the plugin nodes' that asked for it (`{live: "modified"}`,
+ * which the host accepts only as `dateModified`). The build calls it once
+ * the live comparison dated the page, the plugin-data build when baked
+ * data moved its date. A page without either comes back unchanged.
  */
 export function setArticleModifiedTime(html: string, iso: string): string {
-  return html.replace(
+  const date = iso.replace(/[&"<>\\]/g, "");
+  const out = html.replace(
     ARTICLE_MODIFIED_RE,
-    `<meta property="article:modified_time" content="${iso.replace(/[&"<>]/g, "")}" />`,
+    `<meta property="article:modified_time" content="${date}" />`,
   );
+  // Plain string search, linear in the page: no value inside the graph can
+  // hold `</script>` (the serializer writes every `<` as `\u003c`).
+  const start = out.indexOf(GRAPH_START);
+  const end = start === -1 ? -1 : out.indexOf("</script>", start);
+  if (end === -1) return out;
+  const graph = out.slice(start, end);
+  const old = GRAPH_MODIFIED_RE.exec(graph)?.[1];
+  if (old === undefined || old === date) return out;
+  // Only modified dates: right after the first publish `datePublished`
+  // holds the same instant and must keep it.
+  const next = graph.split(`"dateModified":"${old}"`).join(`"dateModified":"${date}"`);
+  return out.slice(0, start) + next + out.slice(end);
 }

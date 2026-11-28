@@ -177,7 +177,10 @@ afterAll(async () => {
 function headOf(html: string): string {
   const open = /<html\b[^>]*>/i.exec(html)?.[0] ?? "(no <html>)";
   const head = /<head\b[^>]*>[\s\S]*?<\/head>/i.exec(html)?.[0] ?? "(no <head>)";
-  return `${open}\n${head.replace(/<style data-source="theme">[\s\S]*?<\/style>/, '<style data-source="theme">…</style>')}`;
+  // #1753 — the graph's live dates follow the clock, like the sitemap's.
+  return `${open}\n${head
+    .replace(/<style data-source="theme">[\s\S]*?<\/style>/, '<style data-source="theme">…</style>')
+    .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, "<date>")}`;
 }
 
 /** What the preview and a build emit for the fixture, as one text. */
@@ -235,7 +238,7 @@ const EXPECTED = `--- preview en
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://example.com/t1729h-pricing/" />
 <meta name="twitter:card" content="summary" />
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Pricing","url":"https://example.com/t1729h-pricing/"}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://example.com/#website","url":"https://example.com/","inLanguage":"en"},{"@type":"WebPage","@id":"https://example.com/t1729h-pricing/","url":"https://example.com/t1729h-pricing/","name":"Pricing","inLanguage":"en","isPartOf":{"@id":"https://example.com/#website"}}]}</script>
 <link rel="alternate" hreflang="de" href="https://example.com/de/t1729h-preise/" />
 <link rel="alternate" hreflang="en" href="https://example.com/t1729h-pricing/" />
 <link rel="alternate" hreflang="es" href="https://es.example.com/t1729h-precios/" />
@@ -252,7 +255,7 @@ const EXPECTED = `--- preview en
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://example.com/de/t1729h-preise/" />
 <meta name="twitter:card" content="summary" />
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Pricing","url":"https://example.com/de/t1729h-preise/"}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://example.com/#website","url":"https://example.com/","inLanguage":"en"},{"@type":"WebPage","@id":"https://example.com/de/t1729h-preise/","url":"https://example.com/de/t1729h-preise/","name":"Pricing","inLanguage":"de","isPartOf":{"@id":"https://example.com/#website"}}]}</script>
 <link rel="alternate" hreflang="de" href="https://example.com/de/t1729h-preise/" />
 <link rel="alternate" hreflang="en" href="https://example.com/t1729h-pricing/" />
 <link rel="alternate" hreflang="es" href="https://es.example.com/t1729h-precios/" />
@@ -269,7 +272,7 @@ const EXPECTED = `--- preview en
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://example.com/fr/t1729h-prix/" />
 <meta name="twitter:card" content="summary" />
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Pricing","url":"https://example.com/fr/t1729h-prix/"}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://example.com/#website","url":"https://example.com/","inLanguage":"en"},{"@type":"WebPage","@id":"https://example.com/fr/t1729h-prix/","url":"https://example.com/fr/t1729h-prix/","name":"Pricing","inLanguage":"fr","isPartOf":{"@id":"https://example.com/#website"}}]}</script>
 <link rel="alternate" hreflang="de" href="https://example.com/de/t1729h-preise/" />
 <link rel="alternate" hreflang="en" href="https://example.com/t1729h-pricing/" />
 <link rel="alternate" hreflang="es" href="https://es.example.com/t1729h-precios/" />
@@ -286,7 +289,7 @@ const EXPECTED = `--- preview en
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://es.example.com/t1729h-precios/" />
 <meta name="twitter:card" content="summary" />
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Pricing","url":"https://es.example.com/t1729h-precios/"}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://example.com/#website","url":"https://example.com/","inLanguage":"en"},{"@type":"WebPage","@id":"https://es.example.com/t1729h-precios/","url":"https://es.example.com/t1729h-precios/","name":"Pricing","inLanguage":"es","isPartOf":{"@id":"https://example.com/#website"}}]}</script>
 <link rel="alternate" hreflang="de" href="https://example.com/de/t1729h-preise/" />
 <link rel="alternate" hreflang="en" href="https://example.com/t1729h-pricing/" />
 <link rel="alternate" hreflang="es" href="https://es.example.com/t1729h-precios/" />
@@ -303,7 +306,7 @@ const EXPECTED = `--- preview en
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://example.com/t1729h-solo/" />
 <meta name="twitter:card" content="summary" />
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Solo","url":"https://example.com/t1729h-solo/"}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://example.com/#website","url":"https://example.com/","inLanguage":"en"},{"@type":"WebPage","@id":"https://example.com/t1729h-solo/","url":"https://example.com/t1729h-solo/","name":"Solo","inLanguage":"en","isPartOf":{"@id":"https://example.com/#website"}}]}</script>
 <style data-source="theme">…</style><style data-source="base">*,*::before,*::after{box-sizing:border-box}body{margin:0}img,picture,video,canvas,svg{display:block;max-width:100%}input,button,textarea,select{font:inherit}body{font-family:var(--font-body,system-ui,sans-serif)}</style></head>
 --- build en
 <html lang="en">
@@ -315,7 +318,7 @@ const EXPECTED = `--- preview en
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://example.com/t1729h-pricing/" />
 <meta name="twitter:card" content="summary" />
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Pricing","url":"https://example.com/t1729h-pricing/"}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://example.com/#website","url":"https://example.com/","inLanguage":"en"},{"@type":"WebPage","@id":"https://example.com/t1729h-pricing/","url":"https://example.com/t1729h-pricing/","name":"Pricing","inLanguage":"en","isPartOf":{"@id":"https://example.com/#website"},"datePublished":"<date>","dateModified":"<date>"}]}</script>
 <link rel="alternate" hreflang="de" href="https://example.com/de/t1729h-preise/" />
 <link rel="alternate" hreflang="en" href="https://example.com/t1729h-pricing/" />
 <link rel="alternate" hreflang="es" href="https://es.example.com/t1729h-precios/" />
@@ -331,7 +334,7 @@ const EXPECTED = `--- preview en
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://example.com/de/t1729h-preise/" />
 <meta name="twitter:card" content="summary" />
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Pricing","url":"https://example.com/de/t1729h-preise/"}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://example.com/#website","url":"https://example.com/","inLanguage":"en"},{"@type":"WebPage","@id":"https://example.com/de/t1729h-preise/","url":"https://example.com/de/t1729h-preise/","name":"Pricing","inLanguage":"de","isPartOf":{"@id":"https://example.com/#website"},"datePublished":"<date>","dateModified":"<date>"}]}</script>
 <link rel="alternate" hreflang="de" href="https://example.com/de/t1729h-preise/" />
 <link rel="alternate" hreflang="en" href="https://example.com/t1729h-pricing/" />
 <link rel="alternate" hreflang="es" href="https://es.example.com/t1729h-precios/" />
@@ -347,7 +350,7 @@ const EXPECTED = `--- preview en
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://example.com/fr/t1729h-prix/" />
 <meta name="twitter:card" content="summary" />
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Pricing","url":"https://example.com/fr/t1729h-prix/"}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://example.com/#website","url":"https://example.com/","inLanguage":"en"},{"@type":"WebPage","@id":"https://example.com/fr/t1729h-prix/","url":"https://example.com/fr/t1729h-prix/","name":"Pricing","inLanguage":"fr","isPartOf":{"@id":"https://example.com/#website"},"datePublished":"<date>","dateModified":"<date>"}]}</script>
 <link rel="alternate" hreflang="de" href="https://example.com/de/t1729h-preise/" />
 <link rel="alternate" hreflang="en" href="https://example.com/t1729h-pricing/" />
 <link rel="alternate" hreflang="es" href="https://es.example.com/t1729h-precios/" />
@@ -363,7 +366,7 @@ const EXPECTED = `--- preview en
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://es.example.com/t1729h-precios/" />
 <meta name="twitter:card" content="summary" />
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Pricing","url":"https://es.example.com/t1729h-precios/"}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://example.com/#website","url":"https://example.com/","inLanguage":"en"},{"@type":"WebPage","@id":"https://es.example.com/t1729h-precios/","url":"https://es.example.com/t1729h-precios/","name":"Pricing","inLanguage":"es","isPartOf":{"@id":"https://example.com/#website"},"datePublished":"<date>","dateModified":"<date>"}]}</script>
 <link rel="alternate" hreflang="de" href="https://example.com/de/t1729h-preise/" />
 <link rel="alternate" hreflang="en" href="https://example.com/t1729h-pricing/" />
 <link rel="alternate" hreflang="es" href="https://es.example.com/t1729h-precios/" />
@@ -379,7 +382,7 @@ const EXPECTED = `--- preview en
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://example.com/t1729h-solo/" />
 <meta name="twitter:card" content="summary" />
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","name":"Solo","url":"https://example.com/t1729h-solo/"}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://example.com/#website","url":"https://example.com/","inLanguage":"en"},{"@type":"WebPage","@id":"https://example.com/t1729h-solo/","url":"https://example.com/t1729h-solo/","name":"Solo","inLanguage":"en","isPartOf":{"@id":"https://example.com/#website"},"datePublished":"<date>","dateModified":"<date>"}]}</script>
 </head>
 --- sitemap
 <?xml version="1.0" encoding="UTF-8"?>

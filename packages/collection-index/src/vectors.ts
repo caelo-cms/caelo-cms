@@ -5,10 +5,13 @@
  *
  * Each vector is stored twice: as a binary code (one bit per dimension, the
  * sign) and as int8 with one float32 scale. A query first ranks every live
- * passage by Hamming distance on the binary codes, which for 400,000
- * passages of 384 dimensions is 19 MB scanned with 32-bit popcounts, then
- * rescores the best `rescore` candidates with the float query against their
- * int8 vectors. The result is deterministic: it does not depend on what an
+ * passage of a flat segment by Hamming distance on the binary codes, then
+ * rescores the best candidates with the float query against their int8
+ * vectors: {@link defaultRescore} of them, a share of the segment, because
+ * the codes are coarse. Measured on real model vectors (#1783,
+ * bench/partitions.ts): 200 candidates of 6,633 passages found 95 % of the
+ * exhaustive top 10, 1,000 found 99.9 %. Segments large enough that the
+ * share stops paying are partitioned instead (partitions.ts). The result is deterministic: it does not depend on what an
  * instance happens to have cached, so a CDN-cached answer and a fresh one
  * agree.
  *
@@ -59,6 +62,14 @@ function popcount32(x: number): number {
   let v = x - ((x >>> 1) & 0x55555555);
   v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
   return (((v + (v >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+}
+
+/** The share of a flat segment's passages its binary candidates rescore. */
+export const RESCORE_SHARE = 0.15;
+
+/** Candidates a flat segment of `count` passages rescores: {@link RESCORE_SHARE} of them, 200 to 5,000. */
+export function defaultRescore(count: number): number {
+  return Math.min(5000, Math.max(200, Math.ceil(count * RESCORE_SHARE)));
 }
 
 /** Keeps the `k` smallest values seen, with their payloads, in a bounded max-heap. */

@@ -18,6 +18,7 @@ import {
   FileCache,
   openRelease,
   parseRelease,
+  readQueryVectors,
   scopedStore,
   searchVectors,
 } from "@caelo-cms/collection-index";
@@ -32,6 +33,7 @@ import {
   type IndexOptions,
   indexCollection,
   indexTasks,
+  knownQueriesOf,
   type ShardClaims,
 } from "./index-job.js";
 import type { IndexTask } from "./ops.js";
@@ -52,6 +54,7 @@ const profile = (semantic: SearchProfile["semantic"]): SearchProfile => ({
   prefix: true,
   crossLanguage: false,
   semantic,
+  knownQueries: {},
   suggestions: {},
 });
 
@@ -101,6 +104,7 @@ function task(over: Partial<IndexTask>): IndexTask {
     previousReleaseKey: null,
     previousSchemaDigest: null,
     vectorModel: DEFAULT_EMBEDDING_MODEL_ID,
+    columns: [],
     changeKeys: [],
     ...over,
   };
@@ -127,6 +131,60 @@ async function open(key: string) {
     new FileCache({ read: (f) => scoped.read(f) }, Number.POSITIVE_INFINITY),
   );
 }
+
+describe("the index job's known queries (#1785)", () => {
+  it("names each query of the profile once: known queries, suggestions, pinned results", () => {
+    const p: SearchProfile = {
+      ...profile({ weight: 1, minSimilarity: 0.2 }),
+      knownQueries: { de: ["was kostet das", " Preise "], en: ["pricing"] },
+      suggestions: { de: [{ text: "Preise", source: "curated" }] },
+      bestBets: { de: [{ query: "Kontakt", ids: ["p1"] }] },
+    };
+    expect(knownQueriesOf(p)).toEqual(["Kontakt", "Preise", "pricing", "was kostet das"]);
+    expect(knownQueriesOf(null)).toEqual([]);
+  });
+
+  it("embeds them as queries into the release, and keeps their vectors in the next one", async () => {
+    const e = fakeEmbedders("granite@aaaaaaaaaaaa");
+    const withQueries = {
+      ...profile({ weight: 1, minSimilarity: 0.2 }),
+      knownQueries: { de: ["was kostet das"] },
+    };
+    const first = await build(
+      task({
+        changeKeys: [
+          await change({
+            upserts: [doc("p1", "Preise")],
+            deletes: [],
+            replaceAll: false,
+            profile: withQueries,
+          }),
+        ],
+      }),
+      e.source,
+    );
+    expect(e.embedded).toContain("was kostet das");
+    const scoped = scopedStore(store, "t1650/pages");
+    const cache = new FileCache({ read: (f) => scoped.read(f) }, Number.POSITIVE_INFINITY);
+    const vectors = await readQueryVectors(first.applied.manifest, cache);
+    expect([...vectors.keys()]).toEqual(["was kostet das"]);
+    e.embedded.length = 0;
+    const second = await build(
+      task({
+        previousReleaseKey: first.applied.file,
+        previousSchemaDigest: "digest-1",
+        changeKeys: [
+          await change({ upserts: [doc("p2", "Versand")], deletes: [], replaceAll: false }),
+        ],
+      }),
+      e.source,
+    );
+    expect(e.embedded).not.toContain("was kostet das");
+    expect([...(await readQueryVectors(second.applied.manifest, cache)).keys()]).toEqual([
+      "was kostet das",
+    ]);
+  });
+});
 
 describe("the index job's vectors (#1650)", () => {
   it("embeds every passage when the Stage named a model and the profile wants it", async () => {

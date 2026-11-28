@@ -36,6 +36,47 @@ export interface EmbeddingModelFile {
   readonly bytes: number;
 }
 
+/** A file Caelo derives from a model's pinned files when it fetches them (#1782), pinned the same way. */
+export interface EmbeddingDerivedFile {
+  /** File name in the model's directory. */
+  readonly name: string;
+  /** SHA-256 of the file, lowercase hex. */
+  readonly sha256: string;
+  readonly bytes: number;
+}
+
+/**
+ * The files a process loads (#1782), derived at fetch time from the
+ * publisher's graph and tokenizer (`packages/models/src/derive.ts`). They
+ * compute exactly what the publisher's files compute, so the model keeps
+ * its fingerprint; images carry only these.
+ *
+ * - `graph`: the publisher's graph without its token table and the
+ *   `Gather` that reads it; the gathered rows are its input `tableInput`.
+ * - `table`: that table, `rows × width` bytes, read row by row.
+ * - `tokenizer`: the tokenizer as typed arrays (about 20 MB in memory
+ *   instead of 138 MB), cutting text exactly as `@huggingface/tokenizers`
+ *   cuts it with `tokenizer.json`.
+ */
+export interface EmbeddingDerivedFiles {
+  /** The `Gather` node of the publisher's graph that looks token rows up. */
+  readonly gather: string;
+  /** The derived graph's input taking the gathered rows (`[batch, tokens, width]`). */
+  readonly tableInput: string;
+  readonly rows: number;
+  readonly width: number;
+  readonly elementType: "uint8" | "int8";
+  readonly graph: EmbeddingDerivedFile;
+  readonly table: EmbeddingDerivedFile;
+  readonly tokenizer: EmbeddingDerivedFile;
+  /**
+   * The pre-tokenizer's split pattern in the JavaScript form
+   * `@huggingface/tokenizers` translates `tokenizer.json`'s regex into
+   * (`bpe.test.ts` checks the library still produces it).
+   */
+  readonly splitPattern: { readonly source: string; readonly flags: string };
+}
+
 /** One approved embedding model. */
 export interface EmbeddingModel {
   /** Stable id plugins name in their configuration. */
@@ -60,6 +101,8 @@ export interface EmbeddingModel {
     /** The tokenizer (`tokenizer.json`, Hugging Face tokenizers format). */
     readonly tokenizer: EmbeddingModelFile;
   };
+  /** What a process loads, derived from {@link EmbeddingModel.files} (#1782). */
+  readonly derived: EmbeddingDerivedFiles;
   /** Vector dimensions. */
   readonly dims: number;
   /** Tokens embedded per text, special tokens included; a longer text is cut. */
@@ -109,6 +152,33 @@ const GRANITE_97M_R2: EmbeddingModel = {
       path: "tokenizer.json",
       sha256: "4f2842d568e2724370aec203652a42ac783c7937f8347a1a2cc7506d71f1582f",
       bytes: 25_301_672,
+    },
+  },
+  derived: {
+    gather: "/embeddings/tok_embeddings/Gather",
+    tableInput: "/embeddings/tok_embeddings/Gather_output_0_quantized",
+    rows: 180_000,
+    width: 384,
+    elementType: "uint8",
+    graph: {
+      name: "graph.onnx",
+      sha256: "08ab16deaea2daa89309a43ff5d8d1aaafea6aea63902b8f15930829361950d9",
+      bytes: 29_127_762,
+    },
+    table: {
+      name: "tokens.bin",
+      sha256: "dfa0d1fe4626efce6187ae9dfc7f39336af75fda0e07b2290cca4a3157d7da3b",
+      bytes: 69_120_000,
+    },
+    tokenizer: {
+      name: "tokenizer.bin",
+      sha256: "f91682d3b56ce49d18682b60c80dd57f9a360c3a3b202eeb8b5188e37f7c30ed",
+      bytes: 6_888_959,
+    },
+    splitPattern: {
+      source:
+        "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?|\\p{N}{1,3}| ?[^\\p{White_Space}\\p{L}\\p{N}]+[\\r\\n/]*|\\p{White_Space}*[\\r\\n]+|\\p{White_Space}+(?!\\P{White_Space})|\\p{White_Space}+",
+      flags: "gu",
     },
   },
   dims: 384,
