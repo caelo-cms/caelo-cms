@@ -32,7 +32,8 @@
 -- job_pieces: the pieces of elastic work (a search index's vector shards, a
 -- plugin job's pieces). A task claims the next open one for a lease, marks
 -- it done, and a claim that ran out is open again, so a task that died
--- costs its piece and nothing more.
+-- costs its piece and nothing more. A new attempt opens every claim of the
+-- attempts before it (reporting_jobs.begin_attempt).
 --
 -- reporting_jobs.tasks (0862) is no longer written or read: an attempt runs
 -- one lead task, and its width comes from helpers. A previous release still
@@ -118,13 +119,14 @@ CREATE TABLE IF NOT EXISTS job_pieces (
   state        text NOT NULL CHECK (state IN ('open', 'claimed', 'done')),
   claimed_by   text NULL CHECK (char_length(claimed_by) <= 80),
   claim_until  timestamptz NULL,
-  -- The attempt whose lead registered the scope last: a new attempt's
-  -- registration opens the claims of the tasks before it, a registration
-  -- sent again in the same attempt leaves its helpers' claims alone.
-  attempt      integer NOT NULL DEFAULT 1 CHECK (attempt BETWEEN 1 AND 20),
   PRIMARY KEY (kind, subject_id, scope, piece),
   CONSTRAINT job_pieces_claim CHECK ((state = 'claimed') = (claim_until IS NOT NULL))
 );
+
+-- A plugin piece is its key: a plan that names other pieces on a retry
+-- keeps the done ones and adds the new ones (ops/job_pieces.ts).
+CREATE UNIQUE INDEX IF NOT EXISTS job_pieces_key_uidx
+  ON job_pieces (kind, subject_id, scope, piece_key) WHERE piece_key IS NOT NULL;
 
 ALTER TABLE job_capacity_bookings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE job_capacity_bookings FORCE ROW LEVEL SECURITY;

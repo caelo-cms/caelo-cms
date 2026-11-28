@@ -49,10 +49,10 @@ On a new project's 20 vCPU (14 for the jobs) a Stage runs the check (1 + 10 vCPU
 
 A helper is another execution of the same Cloud Run job, for the attempt that runs (`job_capacity.admit` adds it only while the work's attempt is launched and its lease alive). Its order carries `helper` (its booking) and a token of its own, which `reporting_jobs.authorize` admits for that attempt while its booking holds it. Its reports and heartbeats keep its booking's lease, a `defer` gives back only its own task, and it never reports a result.
 
-Every task claims pieces from the admin (`job_pieces.claim`): the next open piece, `wait` while others hold the rest, `none` when all are done, and for a helper `stop` when its work holds more tasks than the ledger grants it. A claim runs out after its lease, and the piece is open again, so a task that dies costs its piece and nothing more. A new attempt's lead registers the pieces again, which opens the claims of the attempts before; the same registration sent again within an attempt (its answer lost) leaves that attempt's claims alone.
+Every task claims pieces from the admin (`job_pieces.claim`): the next open piece, `wait` while others hold the rest, `none` when all are done, and for a helper `stop` when its work holds more tasks than the ledger grants it. A claim runs out after its lease, and the piece is open again, so a task that dies costs its piece and nothing more. A new attempt opens every claim of the attempts before it, in the transaction that begins it, before any of its tasks claims; registering never opens a claim, so a registration sent again (its answer lost) keeps the pieces its attempt's tasks run, and a late claim of a replaced attempt hears `stop`.
 
 - **Search index:** a piece is a vector shard (`docs/plugin-collections.md`). The lead registers the build's shards and which exist already, claims too, and builds the release once every shard is done.
-- **Plugin batch in pieces:** a piece is a key the batch's plan named (`docs/plugin-batches.md`).
+- **Plugin batch in pieces:** a piece is a key the batch's plan named (`docs/plugin-batches.md`). A plan that names other keys on a retry keeps the done pieces, adds the new keys and drops the open pieces it no longer names.
 
 ## Admission
 

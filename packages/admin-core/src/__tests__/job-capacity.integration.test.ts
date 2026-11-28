@@ -245,7 +245,6 @@ describe("job_capacity.admit", () => {
       count: 40,
       done: [],
       wantedTasks: 32,
-      attempt: 1,
     });
     const r = await op<{
       helpers: { bookingId: string; tasks: number; token: string; attempt: number }[];
@@ -288,7 +287,6 @@ describe("a work's attempts and end", () => {
       count: 10,
       done: [3],
       wantedTasks: 4,
-      attempt: 1,
     });
     await op("job_capacity.admit", {});
     expect((await bookings())[0]?.tasks).toBe(4);
@@ -330,7 +328,6 @@ describe("a work's attempts and end", () => {
       count: 4,
       done: [],
       wantedTasks: 4,
-      attempt: 1,
     });
     await asSystem(
       (tx) =>
@@ -422,7 +419,7 @@ describe("job_capacity.reserve_lighthouse", () => {
 
 describe("job_pieces", () => {
   const scope = "p/pages";
-  const claim = (s: string, worker: string, helperId: string | null = null) =>
+  const claim = (s: string, worker: string, helperId: string | null = null, attempt = 1) =>
     op<Record<string, unknown>>("job_pieces.claim", {
       kind: "collection_index",
       subjectId: s,
@@ -431,21 +428,30 @@ describe("job_pieces", () => {
       helperId,
       claimSeconds: 60,
       leaseSeconds: 600,
+      attempt,
     });
-
-  it("hands every piece out once, says wait while others hold the rest, none when all are done", async () => {
-    await budget(20);
-    const s = crypto.randomUUID();
-    await index(s);
-    await op("job_pieces.register", {
+  const register = (s: string, count: number, done: number[] = [], keys?: string[]) =>
+    op<{ unfinished: number }>("job_pieces.register", {
       kind: "collection_index",
       subjectId: s,
       scope,
-      count: 3,
-      done: [1],
+      count,
+      done,
       wantedTasks: 2,
-      attempt: 1,
+      ...(keys ? { keys } : {}),
     });
+  /** A work whose attempt 1 runs, booked. */
+  async function running(): Promise<string> {
+    await budget(20);
+    const s = crypto.randomUUID();
+    await index(s);
+    await runningAttempt("collection_index", s);
+    return s;
+  }
+
+  it("hands every piece out once, says wait while others hold the rest, none when all are done", async () => {
+    const s = await running();
+    await register(s, 3, [1]);
     const got = await Promise.all([claim(s, "lead"), claim(s, "lead")]);
     expect(got.map((g) => g.piece).sort()).toEqual([0, 2]);
     expect(await claim(s, "lead")).toEqual({ wait: true });
@@ -463,37 +469,56 @@ describe("job_pieces", () => {
     });
   });
 
-  it("a new attempt's registration opens the claims before it; the same one sent again does not", async () => {
-    await budget(20);
-    const s = crypto.randomUUID();
-    await index(s);
-    const register = (attempt: number) =>
-      op("job_pieces.register", {
-        kind: "collection_index",
-        subjectId: s,
-        scope,
-        count: 2,
-        done: [],
-        wantedTasks: 1,
-        attempt,
-      });
-    await register(1);
+  it("a registration sent again keeps the claimed pieces; only a new attempt opens them", async () => {
+    const s = await running();
+    await register(s, 2);
     await claim(s, "lead");
     await claim(s, "lead");
+    // The lead's report sent again after its answer was lost: the pieces stay with their tasks.
+    await register(s, 2);
     expect(await claim(s, "lead")).toEqual({ wait: true });
-    // The lead's report sent again after its answer was lost: helpers keep their pieces.
-    await register(1);
+    // The next attempt begins: every claim of the tasks before it is open.
+    await asSystem(
+      (tx) =>
+        tx`UPDATE reporting_jobs SET lease_until = now() - interval '1 second' WHERE subject_id = ${s}::uuid`,
+    );
+    await op("reporting_jobs.begin_attempt", {
+      kind: "collection_index",
+      subjectId: s,
+      tokenHash: hashJobToken(mintJobToken()),
+      leaseSeconds: 600,
+      maxAttempts: 8,
+    });
+    // A claim of the replaced attempt that arrives late stops instead of taking a piece.
+    expect(await claim(s, "lead", null, 1)).toEqual({ stop: true });
+    expect(await claim(s, "lead", null, 2)).toMatchObject({ piece: 0 });
+    // Work that no longer runs gives nothing out.
+    await op("reporting_jobs.finish", {
+      kind: "collection_index",
+      subjectId: s,
+      attempt: 2,
+      outcome: "completed",
+      note: null,
+    });
+    expect(await claim(s, "lead", null, 2)).toEqual({ stop: true });
+  });
+
+  it("a plugin piece is its key: a plan with other keys keeps the done ones and adds the new ones", async () => {
+    const s = await running();
+    await register(s, 3, [], ["a", "b", "c"]);
+    const first = await claim(s, "lead");
+    expect(first).toEqual({ piece: 0, key: "a" });
+    await op("job_pieces.done", { kind: "collection_index", subjectId: s, scope, piece: 0 });
+    // The next plan skips what it did and names a new piece: c (open) goes, d joins.
+    expect(await register(s, 3, [], ["a", "b", "d"])).toEqual({ unfinished: 2 });
+    const keys = [await claim(s, "lead"), await claim(s, "lead")].map((c) => c.key).sort();
+    expect(keys).toEqual(["b", "d"]);
     expect(await claim(s, "lead")).toEqual({ wait: true });
-    // The next attempt's lead: the claims of the tasks before are open again.
-    await register(2);
-    expect(await claim(s, "lead")).toMatchObject({ piece: 0 });
+    await expect(register(s, 2, [], ["x", "x"])).rejects.toThrow(/named twice/);
   });
 
   it("a helper over its work's grant hears stop after its piece, and its task comes back", async () => {
-    await budget(20);
-    const s = crypto.randomUUID();
-    await index(s);
-    await runningAttempt("collection_index", s);
+    const s = await running();
     await op("job_pieces.register", {
       kind: "collection_index",
       subjectId: s,
@@ -501,7 +526,6 @@ describe("job_pieces", () => {
       count: 40,
       done: [],
       wantedTasks: 32,
-      attempt: 1,
     });
     const { helpers } = await op<{ helpers: { bookingId: string }[] }>("job_capacity.admit", {});
     const helperId = (helpers[0] as { bookingId: string }).bookingId;

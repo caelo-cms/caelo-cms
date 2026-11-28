@@ -202,7 +202,6 @@ export const collectionIndexJobKind: ReportingJobKindDef = {
           count: input.count,
           done: input.done,
           wantedTasks: input.wantedTasks,
-          attempt: request.attempt,
         });
         return { value, readmit: true };
       },
@@ -222,6 +221,7 @@ export const collectionIndexJobKind: ReportingJobKindDef = {
           scope: shardScope(input),
           worker: input.worker,
           helperId: request.helperId,
+          attempt: request.attempt,
           claimSeconds: input.claimSeconds,
           leaseSeconds: JOB_LEASE_SECONDS,
         });

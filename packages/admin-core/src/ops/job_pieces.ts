@@ -4,7 +4,8 @@
  * Issue #1776 — the pieces of elastic work (migration 0920): a search
  * index's vector shards, a plugin job's pieces.
  *
- *   job_pieces.register     the lead names a scope's pieces (and which are done already)
+ *   job_pieces.register     the lead names a scope's pieces (and which are done already);
+ *                           a plugin piece is its key, an index shard its number
  *   job_pieces.claim        a task takes the next open piece, or hears to wait, stop or move on
  *   job_pieces.done         a task finished its piece
  *   job_pieces.open_scopes  the scopes a new helper may work on
@@ -15,6 +16,12 @@
  * claim runs out and the piece is open again. A helper's claim is also
  * where it hears that a job of a higher class needs its CPU (`stop`): it
  * ends after the piece it finished, never in the middle of one.
+ *
+ * A new attempt opens every claim of the attempts before it, in the
+ * transaction that begins it (reporting_jobs.begin_attempt), before any of
+ * its tasks claims; so registering never opens a claim, and a registration
+ * sent again keeps the pieces this attempt's tasks run. A claim of an
+ * attempt that was replaced meanwhile hears `stop`.
  *
  * System-only and unaudited: the job reports through the admin's report
  * endpoint, and a claim per piece would write hundreds of audit rows per
@@ -71,47 +78,60 @@ export const registerJobPiecesOp = defineOperation({
             .max(MAX_PIECES - 1),
         )
         .max(MAX_PIECES),
-      /** A plugin's piece keys, one per piece; absent for index shards. */
+      /**
+       * A plugin's piece keys, one per piece, each once; absent for index
+       * shards. A piece is its key: a plan that names other keys on a
+       * retry keeps the done ones, adds the new ones and drops the open
+       * ones it no longer names.
+       */
       keys: z.array(z.string().min(1).max(200)).max(MAX_PIECES).optional(),
       /** Tasks the work would run for this scope, the lead included. */
       wantedTasks: z.number().int().min(1).max(MAX_JOB_TASKS),
-      /**
-       * The attempt whose lead registers. Its first registration opens the
-       * claims of the attempts before (their tasks are gone); the same
-       * report sent again after its answer was lost leaves the claims of
-       * this attempt's helpers alone.
-       */
-      attempt: z.number().int().min(1).max(20),
     })
     .strict()
     .refine((v) => v.keys === undefined || v.keys.length === v.count, {
       message: "one key per piece",
+    })
+    .refine((v) => v.keys === undefined || new Set(v.keys).size === v.keys.length, {
+      message: "a piece key is named twice",
     }),
   output: z.object({ unfinished: z.number().int() }),
   handler: async (_ctx, input, tx) => {
     const done = jsonbParam(input.done);
-    // A plugin piece's key from its plan; an index shard has none.
-    const key = input.keys ? sql`${jsonbParam(input.keys)} ->> g` : sql`NULL::text`;
-    // Claims of an earlier attempt's tasks: open again, then the scope is this attempt's.
-    await tx.execute(sql`
-      UPDATE job_pieces SET state = 'open', claimed_by = NULL, claim_until = NULL
-       WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid AND scope = ${input.scope}
-         AND state = 'claimed' AND attempt < ${input.attempt}
-    `);
-    await tx.execute(sql`
-      UPDATE job_pieces SET attempt = ${input.attempt}
-       WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid AND scope = ${input.scope}
-         AND attempt < ${input.attempt}
-    `);
-    await tx.execute(sql`
-      INSERT INTO job_pieces (kind, subject_id, scope, piece, piece_key, state, attempt)
-      SELECT ${input.kind}, ${input.subjectId}::uuid, ${input.scope}, g,
-             ${key},
-             CASE WHEN g IN (SELECT jsonb_array_elements_text(${done})::int) THEN 'done' ELSE 'open' END,
-             ${input.attempt}
-      FROM generate_series(0, ${input.count - 1}) AS g
-      ON CONFLICT (kind, subject_id, scope, piece) DO NOTHING
-    `);
+    if (input.keys) {
+      // A plugin piece is its key. The open pieces the plan no longer
+      // names go; the keys it names anew join after the existing pieces.
+      const keys = jsonbParam(input.keys);
+      await tx.execute(sql`
+        DELETE FROM job_pieces
+         WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid AND scope = ${input.scope}
+           AND state = 'open'
+           AND piece_key NOT IN (SELECT jsonb_array_elements_text(${keys}))
+      `);
+      await tx.execute(sql`
+        INSERT INTO job_pieces (kind, subject_id, scope, piece, piece_key, state)
+        SELECT ${input.kind}, ${input.subjectId}::uuid, ${input.scope},
+               (SELECT COALESCE(max(piece) + 1, 0) FROM job_pieces
+                 WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid
+                   AND scope = ${input.scope}) + k.n - 1,
+               k.key, 'open'
+        FROM jsonb_array_elements_text(${keys}) WITH ORDINALITY AS k(key, n)
+        WHERE NOT EXISTS (
+          SELECT 1 FROM job_pieces p
+           WHERE p.kind = ${input.kind} AND p.subject_id = ${input.subjectId}::uuid
+             AND p.scope = ${input.scope} AND p.piece_key = k.key
+        )
+      `);
+    } else {
+      // An index shard is its number in a plan every attempt makes alike.
+      await tx.execute(sql`
+        INSERT INTO job_pieces (kind, subject_id, scope, piece, piece_key, state)
+        SELECT ${input.kind}, ${input.subjectId}::uuid, ${input.scope}, g, NULL,
+               CASE WHEN g IN (SELECT jsonb_array_elements_text(${done})::int) THEN 'done' ELSE 'open' END
+        FROM generate_series(0, ${input.count - 1}) AS g
+        ON CONFLICT (kind, subject_id, scope, piece) DO NOTHING
+      `);
+    }
     if (input.done.length > 0) {
       // A retry finds pieces an earlier attempt wrote: done, whatever their row says.
       await tx.execute(sql`
@@ -168,10 +188,22 @@ export const claimJobPieceOp = defineOperation({
       claimSeconds: z.number().int().min(60).max(MAX_CLAIM_SECONDS),
       /** How far ahead a helper's booking is kept. */
       leaseSeconds: z.number().int().min(60).max(3600),
+      /** The attempt the report was admitted for. */
+      attempt: z.number().int().min(1).max(20),
     })
     .strict(),
   output: pieceClaimSchema,
   handler: async (_ctx, input, tx) => {
+    // A claim admitted just before a new attempt began, and run after it:
+    // its task is the replaced attempt's, which stops (its piece is the new
+    // attempt's to claim). The row's lock orders it against begin_attempt.
+    const current = (await tx.execute(sql`
+      SELECT attempt FROM reporting_jobs
+       WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid AND state = 'running'
+       FOR SHARE
+    `)) as unknown as { attempt: number }[];
+    const at = current[0]?.attempt;
+    if (at === undefined || input.attempt < at) return ok({ stop: true as const });
     if (input.helperId !== null) {
       await tx.execute(LEDGER_LOCK);
       // A claim sent again after its `stop` was lost: the same answer, and

@@ -168,6 +168,13 @@ export const beginReportingJobAttemptOp = defineOperation({
        WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid
          AND role IN ('helper', 'lighthouse') AND attempt < ${started}
     `);
+    // Every claimed piece belongs to a task of an earlier attempt, which is
+    // gone: open again before any task of this one claims. (A late claim of
+    // the old attempt hears `stop`, job_pieces.claim.)
+    await tx.execute(sql`
+      UPDATE job_pieces SET state = 'open', claimed_by = NULL, claim_until = NULL
+       WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid AND state = 'claimed'
+    `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
