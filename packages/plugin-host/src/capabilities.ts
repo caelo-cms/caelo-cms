@@ -22,6 +22,7 @@ import type {
   PluginCms,
   PluginContext,
   PluginContextTier1,
+  PluginImports,
   PluginInvocation,
   PluginQuery,
   PluginQueryFilter,
@@ -51,6 +52,7 @@ import {
 import { operatorCanAuthor } from "./external-authorization.js";
 import { makePluginFonts } from "./fonts.js";
 import { makePluginImages } from "./images.js";
+import { type ImportView, importViewOf, makePluginImports } from "./import-rows.js";
 import { makePluginEmail } from "./mail-queue.js";
 import { makePluginAi } from "./plugin-ai.js";
 import { timedPluginOpCall } from "./plugin-runtime-stats.js";
@@ -139,6 +141,7 @@ export async function makePluginContext(
       visitor: makePluginVisitor(undefined),
       captcha: makePluginCaptcha(undefined),
       invocation: Object.freeze({ ...invocation }),
+      ...importsHandle(plugin, infra, "staging"),
     };
   }
 
@@ -207,6 +210,9 @@ export async function makePluginContext(
     ...collectionsHandle,
     ...chatToolsHandle,
     ...changesHandle,
+    ...(!isPublicSideHost(infra) && invocation.origin !== "visitor"
+      ? importsHandle(plugin, infra, importViewOf(invocation, opts.publicTarget))
+      : {}),
   };
 
   // Runtime-installed plugins run in the sandbox and get only what an
@@ -1028,6 +1034,31 @@ function makePluginTheme(): PluginTheme {
  * #1729 — `ctx.changes`: the plugin's own change consumer, asked as the
  * plugin actor (the op answers only about the caller's consumer).
  */
+/**
+ * `ctx.imports` (docs/data-imports.md): a shipped plugin that declares
+ * import kinds reads their rows. Its own rows, nothing to grant.
+ */
+function importsHandle(
+  plugin: LoadedPlugin,
+  infra: PluginHostInfra,
+  view: ImportView,
+): { imports?: PluginImports } {
+  if (plugin.provenance === "runtime-authored") return {};
+  if ((plugin.definition.imports ?? []).length === 0) return {};
+  return {
+    imports: makePluginImports(
+      {
+        registry: infra.registry,
+        adapter: infra.adapter,
+        pluginActorId: plugin.pluginActorId,
+        pluginId: plugin.pluginId,
+        slug: plugin.slug,
+      },
+      view,
+    ),
+  };
+}
+
 function makePluginChanges(plugin: LoadedPlugin, infra: PluginHostInfra): PluginChanges {
   return Object.freeze({
     cursorState: async () => {
@@ -1160,6 +1191,9 @@ function makePluginCms(
             ...branch,
             ...(invocation.origin === "render" && invocation.siteBaseUrl
               ? { renderSiteBaseUrl: invocation.siteBaseUrl }
+              : {}),
+            ...(invocation.origin === "render" && invocation.importView
+              ? { renderImportView: invocation.importView }
               : {}),
             ...(liveUrls ? { renderLiveUrls: liveUrls } : {}),
           },

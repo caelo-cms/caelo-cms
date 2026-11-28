@@ -185,6 +185,7 @@ export {
 } from "./gateway-attach.js";
 export {
   commentArchiveListForPageOp,
+  importedCommentsClause,
   registerGatewayOperations,
 } from "./gateway-ops.js";
 export {
@@ -205,6 +206,13 @@ export {
   reserveImageRequest,
 } from "./image-ledger.js";
 export { checkPluginRuntime, type PluginRuntimeReport } from "./image-self-check.js";
+export {
+  type ImportView,
+  importShownSql,
+  importViewOf,
+  pluginImportRowsOp,
+  registerImportRowOps,
+} from "./import-rows.js";
 export {
   forgetIndexLeadColumns,
   indexLeadColumns,

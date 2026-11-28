@@ -26,7 +26,7 @@
  * module and ONLY this module — the validator enforces it.
  */
 
-import type { FontMetadata, FontRef, PageUrlStyle } from "@caelo-cms/shared";
+import type { FontMetadata, FontRef, PageUrlStyle, RenderImportView } from "@caelo-cms/shared";
 // The list model only (Zod underneath): the SDK is bundled into the
 // plugin sandbox with everything it imports at runtime.
 import {
@@ -78,6 +78,12 @@ import {
   type PluginEditorToolbarItem,
   pluginEditorToolbarItem,
 } from "./editor-toolbar.js";
+import {
+  MAX_IMPORT_KINDS,
+  type PluginImportKind,
+  type PluginImports,
+  pluginImportKind,
+} from "./imports.js";
 import { checkPluginIndexes, type PluginIndexes, pluginIndexes } from "./indexes.js";
 import {
   checkMailTemplates,
@@ -1665,6 +1671,8 @@ export const pluginManifest = z
     pageOutputObserver: pageOutputObserverManifest.optional(),
     /** See `PluginDefinition.batchOperations` (#1646). Needs the `batch_jobs` capability. */
     batchOperations: z.array(pluginBatchOperation).max(MAX_BATCH_OPERATIONS).optional(),
+    /** See `PluginDefinition.imports` (docs/data-imports.md). Needs the `chat_runner_tools` capability. */
+    imports: z.array(pluginImportKind).max(MAX_IMPORT_KINDS).optional(),
   })
   .strict()
   .superRefine((m, ctx) => {
@@ -1717,6 +1725,13 @@ export const pluginManifest = z
     const batchNames = (m.batchOperations ?? []).map((b) => b.operation);
     if (new Set(batchNames).size !== batchNames.length)
       issueAt(["batchOperations"], "a batch operation is declared twice");
+    for (const [i, k] of (m.imports ?? []).entries()) {
+      named(["imports", i, "apply"], k.apply, "the import's apply operation");
+      named(["imports", i, "remove"], k.remove, "the import's remove operation");
+    }
+    const importKinds = (m.imports ?? []).map((k) => k.kind);
+    if (new Set(importKinds).size !== importKinds.length)
+      issueAt(["imports"], "an import kind is declared twice");
     checkPluginIndexes(m, (path, message) =>
       ctx.addIssue({ code: "custom", path: ["indexes", ...path], message }),
     );
@@ -2480,6 +2495,15 @@ export interface PluginInvocation {
    */
   readonly siteBaseUrl?: string;
   /**
+   * Set for origin `render` by a build: which imported rows the render may
+   * show (docs/data-imports.md). `build`: what that run's build carries (a
+   * Stage, an Owner's production build), bound to the run so a later
+   * Stage's imports never reach an earlier build; `live`: what the live
+   * release shows (a plugin-data build). Core operations the plugin calls
+   * read it from the call; a plugin never chooses it.
+   */
+  readonly importView?: RenderImportView;
+  /**
    * #1647 / #1648 — set for origin `observer`: the Stage's deploy run whose
    * output the call reads. Collection writes of the call belong to that
    * run's index. (A batch's writes go to the next Stage's index; a `stage`
@@ -2562,6 +2586,12 @@ export interface PluginContext {
    * `changeConsumer`; it needs no `cms_admin` grant.
    */
   readonly changes?: PluginChanges;
+  /**
+   * The rows of the plugin's import kinds that keep their rows in core (no
+   * `apply`), as this call's environment shows them (docs/data-imports.md).
+   * Present on the admin side for a plugin that declares such a kind.
+   */
+  readonly imports?: PluginImports;
 }
 
 /** #1729 — what a plugin may ask about its own change consumer (`ctx.changes`). */
@@ -3554,6 +3584,12 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   readonly pageOutputObserver?: PageOutputObserverManifest;
   /** #1646 — operations that run in a job container, in the sandbox, with the plugin's grants. Needs the `batch_jobs` grant. */
   readonly batchOperations?: ReadonlyArray<z.input<typeof pluginBatchOperation>>;
+  /**
+   * Data the plugin can take over from another system, one entry per kind
+   * (docs/data-imports.md, `imports.ts`). Each kind becomes the AI tool
+   * `import_<kind>`. Needs the `chat_runner_tools` grant.
+   */
+  readonly imports?: ReadonlyArray<PluginImportKind>;
 }
 
 /**
@@ -3640,6 +3676,7 @@ export function manifestFromDefinition(def: {
   readonly aiChatOperations?: ReadonlyArray<AiChatOperationInput>;
   readonly pageOutputObserver?: PageOutputObserverManifest;
   readonly batchOperations?: ReadonlyArray<z.input<typeof pluginBatchOperation>>;
+  readonly imports?: ReadonlyArray<PluginImportKind>;
 }): PluginManifest {
   return pluginManifest.parse({
     slug: def.slug,
@@ -3775,6 +3812,7 @@ export function manifestFromDefinition(def: {
     ...(def.batchOperations && def.batchOperations.length > 0
       ? { batchOperations: [...def.batchOperations] }
       : {}),
+    ...(def.imports && def.imports.length > 0 ? { imports: [...def.imports] } : {}),
   });
 }
 
@@ -3804,4 +3842,5 @@ export * from "./batch.js";
 export * from "./collection-operations.js";
 export * from "./collections.js";
 export * from "./config.js";
+export * from "./imports.js";
 export * from "./page-output.js";

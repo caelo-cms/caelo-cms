@@ -201,8 +201,10 @@ export async function runPluginRenderPass(args: {
   siteBaseUrl: string;
   /** Where fresh bakes wait for the build-wide sorted upsert (#1271). */
   bakes: BakeStore;
+  /** The build's run: plugins render the imported rows it carries (docs/data-imports.md). */
+  runId: string;
 }): Promise<PluginPassResult> {
-  const { tx, plugins, pages, bakeTargets, pageUrlStyle, siteBaseUrl } = args;
+  const { tx, plugins, pages, bakeTargets, pageUrlStyle, siteBaseUrl, runId } = args;
 
   // #1155 — a bake marker in the page itself (module HTML anyone wrote)
   // must never open or close a region a plugin-data build rewrites.
@@ -241,7 +243,7 @@ export async function runPluginRenderPass(args: {
     // Empty for a plugin without the batch variant (per-page below).
     // A plugin that declares it and throws stops the build: a wrong
     // cache key would ship a stale bake as if it were current.
-    const m = await plugins.metaSignatureBatch(plugin.slug, allPageIds);
+    const m = await plugins.metaSignatureBatch(plugin.slug, allPageIds, runId);
     if (m.size > 0) batchedSigs.set(plugin.slug, m);
   }
 
@@ -284,7 +286,8 @@ export async function runPluginRenderPass(args: {
       // P13 perf-pass — prefer the pre-batched value when present.
       const batched = batchedSigs.get(plugin.slug);
       const metaSig =
-        batched?.get(target.pageId) ?? (await plugins.metaSignature(plugin.slug, target.pageId));
+        batched?.get(target.pageId) ??
+        (await plugins.metaSignature(plugin.slug, target.pageId, runId));
       // The URL style and the origin are part of the key: a plugin linking
       // to pages renders different hrefs per style (#590) and per host — a
       // staging bake must never be reused by a live build (#650). So is the
@@ -310,6 +313,7 @@ export async function runPluginRenderPass(args: {
         // otherwise ship an empty placeholder where the plugin belongs.
         try {
           html = await plugins.staticRender(plugin.slug, target.pageId, {
+            runId,
             siteBaseUrl,
             pageUrlStyle,
             lang,

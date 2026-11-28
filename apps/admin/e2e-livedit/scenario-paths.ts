@@ -536,6 +536,15 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/ops/role_pending.ts`,
   `${A}/ops/domains.ts`,
   `${A}/ops/domain_*.ts`,
+  // Data imports (docs/data-imports.md): a deterministic pipeline the AI
+  // calls with a file it converted; no real-AI scenario imports yet. The
+  // pipeline, release rule and kinds are integration tested against
+  // Postgres (data-imports.integration.test.ts).
+  `${A}/data-imports/**`,
+  `${A}/ops/data_imports.ts`,
+  `${A}/ops/data_uploads.ts`,
+  `${A}/ops/data-import-ops.ts`,
+  `${SHARED}/data-import/**`,
   // #1461 — an Owner-approved file store, no module or page reasoning.
   `${A}/ops/static_files*.ts`,
   `${A}/ai/tools/static-file-tools.ts`,

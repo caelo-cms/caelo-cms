@@ -1001,16 +1001,35 @@ const COMMENT_COLUMNS =
   "id, public_row_id, page_id, parent_id, author_name, content, submitted_at, archived_at";
 
 /**
+ * Whether the import of comment `ca` is shown in `env`: its pointer's run
+ * started at or after the run that stamped the import, and before the one
+ * that stamped its undo (docs/data-imports.md; the same rule as the plugin
+ * host's `importShownSql`). Comments not from an import are always shown.
+ */
+function commentShownIn(env: PublicTarget): SQL {
+  const start = sql`(SELECT r.started_at FROM projection_release_pointers p
+                     JOIN deploy_runs r ON r.id = p.run_id WHERE p.environment = ${env})`;
+  return sql`(ca.data_import_id IS NULL OR EXISTS (
+    SELECT 1 FROM data_imports di WHERE di.id = ca.data_import_id
+      AND di.staged_since <= ${start}
+      AND (di.undo_staged_since IS NULL OR di.undo_staged_since > ${start})))`;
+}
+
+/**
  * The timestamps travel as text: the rows are written through JSON, a driver
  * `Date` would cut them to milliseconds, and the thread's cursor (#1169) has
- * to find the same microsecond on both sides.
+ * to find the same microsecond on both sides. `shown_live` / `shown_staging`
+ * say which public databases get the row; the writer drops it from the
+ * others.
  */
 function commentQuery(where: SQL): SQL {
   return sql`
-    SELECT id::text AS id, public_row_id::text AS public_row_id, page_id::text AS page_id,
-           parent_id::text AS parent_id, author_name, content,
-           submitted_at::text AS submitted_at, archived_at::text AS archived_at
-    FROM comment_archive WHERE status = 'approved' AND ${where}
+    SELECT ca.id::text AS id, ca.public_row_id::text AS public_row_id,
+           ca.page_id::text AS page_id, ca.parent_id::text AS parent_id, ca.author_name,
+           ca.content, ca.submitted_at::text AS submitted_at,
+           ca.archived_at::text AS archived_at,
+           ${commentShownIn("live")} AS shown_live, ${commentShownIn("staging")} AS shown_staging
+    FROM comment_archive ca WHERE ca.status = 'approved' AND ${where}
   `;
 }
 
@@ -1274,7 +1293,7 @@ async function readSnapshot(
     snap.allComments = await rows(tx, commentQuery(sql`true`));
   } else if (commentIds.size > 0) {
     const ids = [...commentIds];
-    const found = await rows(tx, commentQuery(sql`id = ANY(${uuidArray(ids)})`));
+    const found = await rows(tx, commentQuery(sql`ca.id = ANY(${uuidArray(ids)})`));
     const byId = new Map(found.map((r) => [String(r.id), r]));
     for (const id of ids) snap.commentChanges.set(id, byId.get(id) ?? null);
   }
@@ -1391,6 +1410,7 @@ async function writeStagingSite(
  */
 async function writeComments(
   tx: ProjectionTx,
+  target: PublicTarget,
   snap: Snapshot,
   gen: Generation,
 ): Promise<number | null> {
@@ -1434,7 +1454,10 @@ async function writeComments(
   const ids = claimed.map((r) => r.id);
   if (ids.length > 0) {
     await tx.execute(sql`DELETE FROM published_comments WHERE id = ANY(${uuidArray(ids)})`);
-    const approved = ids.map((id) => carried.get(id) ?? null).filter((r): r is Row => r !== null);
+    const shown = target === "live" ? "shown_live" : "shown_staging";
+    const approved = ids
+      .map((id) => carried.get(id) ?? null)
+      .filter((r): r is Row => r !== null && r[shown] === true);
     await insertRows(tx, "published_comments", COMMENT_COLUMNS, COMMENT_RECORDSET, approved);
   }
   return snap.allComments ? 0 : snap.commentChanges.size;
@@ -1539,7 +1562,7 @@ async function writeSnapshot(
   }
   let comments = 0;
   if (snap.allComments !== undefined || snap.commentChanges.size > 0) {
-    const written = await writeComments(tx, snap, gen);
+    const written = await writeComments(tx, target, snap, gen);
     if (written === null) {
       skipped.push("comments");
     } else {

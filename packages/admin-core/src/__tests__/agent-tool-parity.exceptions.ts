@@ -420,6 +420,37 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     reason:
       "plugin-owned moderation path: reached through the comments plugin's own tool when that plugin is active",
   },
+  // Data imports (docs/data-imports.md): the pipeline's steps. The AI
+  // reaches them through import_<kind> and undo_data_import, which run the
+  // whole pipeline (data-imports/run.ts) in one call.
+  "data_imports.lookup": {
+    kind: "internal",
+    reason: "a step of the import pipeline behind every import_<kind> tool",
+  },
+  "data_imports.open": {
+    kind: "internal",
+    reason: "a step of the import pipeline behind every import_<kind> tool",
+  },
+  "data_imports.record": {
+    kind: "internal",
+    reason: "a step of the import pipeline behind every import_<kind> tool",
+  },
+  "data_imports.item_refs": {
+    kind: "internal",
+    reason: "a step of undo_data_import: what the kind stored per row",
+  },
+  "data_imports.mark_undone": {
+    kind: "internal",
+    reason: "the commit step of undo_data_import",
+  },
+  "data_imports.finish_removal": {
+    kind: "internal",
+    reason: "the last step of undo_data_import, after the kind removed its rows",
+  },
+  "data_uploads.get": {
+    kind: "internal",
+    reason: "the import pipeline reads the uploads import_<kind> names",
+  },
   "comment_archive.stats_many": {
     kind: "internal",
     reason: "the comments plugin's bake and signature read it during a build; no AI tool needs it",

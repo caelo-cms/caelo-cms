@@ -1383,6 +1383,7 @@ async function buildSite(
         pageUrlStyle,
         siteBaseUrl: seoSettings.siteBaseUrl,
         bakes,
+        runId,
       }),
     );
     // docs/dev/search-engine-feed.md — the live comparison reads the final

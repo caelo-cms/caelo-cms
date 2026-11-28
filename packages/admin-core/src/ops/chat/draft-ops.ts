@@ -27,6 +27,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { mergeChatImports } from "../../data-imports/release.js";
 import {
   type ChatBinding,
   chatPendingSql,
@@ -219,6 +220,9 @@ export const mergeDraftToMainOp = defineOperation({
     );
     if (!merged.ok) return err(merged.error);
     const { siteSnapshotId, entityCount, linkWarnings } = merged.value;
+    // Data imports: the selected chats' imports (and undos) ship with this
+    // Stage. Like the merge itself, not deferred: main holds them now.
+    await mergeChatImports(tx, input.chatSessionIds);
     if (!input.deferConsume) {
       await finalizeDraftSelection(
         tx,

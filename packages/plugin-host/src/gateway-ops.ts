@@ -22,9 +22,22 @@
  */
 
 import { defineOperation, type OperationRegistry } from "@caelo-cms/query-api";
-import { ok } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
+import { ok, type RenderImportView } from "@caelo-cms/shared";
+import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
+import { importShownSql, importViewOfRender } from "./import-rows.js";
+
+/**
+ * Which imported comments an admin read shows (docs/data-imports.md): a
+ * build's render shows what the build carries, a plugin-data build what
+ * the live release shows, any other read the editors' draft. Comments not
+ * from an import always count.
+ */
+export function importedCommentsClause(view: RenderImportView | undefined): SQL {
+  return sql`AND (comment_archive.data_import_id IS NULL OR EXISTS (
+    SELECT 1 FROM data_imports di
+    WHERE di.id = comment_archive.data_import_id AND ${importShownSql(importViewOfRender(view))}))`;
+}
 
 /**
  * Keyset position in a page's thread (#1169). `archivedAt` keeps Postgres'
@@ -113,7 +126,7 @@ export const commentArchiveListForPageOp = defineOperation({
   database: "cms_admin",
   input: listForPageInput,
   output: listForPageOutput,
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
     const status = input.status ?? "approved";
     const limit = input.limit ?? 200;
     const since = input.since ?? "1970-01-01T00:00:00Z";
@@ -134,6 +147,7 @@ export const commentArchiveListForPageOp = defineOperation({
         AND status = ${status}
         AND archived_at > ${since}::timestamptz
         ${beforeClause(input.before)}
+        ${importedCommentsClause(ctx.renderImportView)}
       ORDER BY archived_at DESC, comment_archive.id DESC
       LIMIT ${limit + 1}
     `)) as unknown as Array<{

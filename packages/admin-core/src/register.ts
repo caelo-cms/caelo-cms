@@ -8,7 +8,7 @@ import {
   resolveFontOp,
 } from "@caelo-cms/font-service";
 // The gateway runs these too, so they live in plugin-host (gateway-ops.ts, #634).
-import { commentArchiveListForPageOp } from "@caelo-cms/plugin-host";
+import { commentArchiveListForPageOp, registerImportRowOps } from "@caelo-cms/plugin-host";
 import type { OperationRegistry } from "@caelo-cms/query-api";
 import { COLLECTION_GC_OPS } from "./collections/gc.js";
 import { COLLECTION_INDEX_OPS } from "./collections/ops.js";
@@ -239,6 +239,7 @@ import {
   rejectUrlMigrationOp,
 } from "./ops/content/url_migrations.js";
 import { issueCredentialOp, listCredentialHandoffsOp } from "./ops/credential_handoffs.js";
+import { DATA_IMPORT_OPS } from "./ops/data-import-ops.js";
 import {
   getDeployRunOp,
   listDeployRunsOp,
@@ -482,8 +483,10 @@ import {
   proposeRevokePluginCapabilityOp,
 } from "./ops/plugins/capability_proposals.js";
 import {
+  commentArchiveImportManyOp,
   commentArchiveInsertOp,
   commentArchivePostTeamOp,
+  commentArchiveRemoveImportOp,
   commentArchiveStatsManyOp,
 } from "./ops/plugins/comment_archive.js";
 import { getDraftRowsOp, unseenDraftRowsOp } from "./ops/plugins/draft-rows.js";
@@ -1397,6 +1400,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(executeDomainProposalOp);
   registry.register(rejectDomainProposalOp);
   registry.register(listPendingDomainProposalsOp);
+  // Data imports (docs/data-imports.md): import runs and their uploads.
+  for (const op of DATA_IMPORT_OPS) registry.register(op as never);
+  registerImportRowOps(registry);
   // Issue #1461 — static files on the site's domain, gated (§11.A).
   registry.register(listStaticFilesOp);
   registry.register(getSecurityHeadersOp);
@@ -1706,4 +1712,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(commentArchivePostTeamOp);
   registry.register(commentArchiveListForPageOp);
   registry.register(commentArchiveStatsManyOp);
+  registry.register(commentArchiveImportManyOp);
+  registry.register(commentArchiveRemoveImportOp);
 }

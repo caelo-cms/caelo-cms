@@ -34,6 +34,14 @@ export interface LiveBuildUrls {
 /** Starts the message of a {@link LiveBuildUrls} refusal; the host marks those errors by it. */
 export const LIVE_BUILD_REFUSAL = "LiveBuildPageRefused:";
 
+/**
+ * Which imported rows a render shows (docs/data-imports.md): the ones the
+ * build of run `runId` carries, or the ones the live release shows.
+ */
+export type RenderImportView =
+  | { readonly kind: "build"; readonly runId: string }
+  | { readonly kind: "live" };
+
 export interface ExecutionContext {
   readonly actorId: string;
   readonly actorKind: ActorKind;
@@ -73,6 +81,13 @@ export interface ExecutionContext {
    * nothing a human did not. Set by the plugin host only.
    */
   readonly renderLiveUrls?: LiveBuildUrls;
+  /**
+   * Set on a build's render: which imported rows core operations show
+   * (docs/data-imports.md). A build shows what its own run carries; a
+   * plugin-data build what the live release shows. Unset: the editors'
+   * draft. Set by the plugin host only.
+   */
+  readonly renderImportView?: RenderImportView;
   /**
    * #1705 — whom a plugin's private-storage snapshot names when that is
    * not the caller (`actorId`, the plugin's own actor): the host system
