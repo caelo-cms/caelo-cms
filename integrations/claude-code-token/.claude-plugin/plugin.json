@@ -1,7 +1,7 @@
 {
   "name": "caelo-token",
   "displayName": "Caelo CMS (token)",
-  "version": "0.0.0",
+  "version": "0.12.18",
   "description": "Edit a Caelo CMS site from Claude Code with Caelo's local MCP server and a token: for self-hosted, AWS and Azure installs and for CI. Same skills as caelo. A Google Cloud install with remote MCP connects by URL with the caelo plugin instead.",
   "author": {
     "name": "searchVIU GmbH",

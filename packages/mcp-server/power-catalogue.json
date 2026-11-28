@@ -1,5 +1,5 @@
 {
-  "version": "0.0.0",
+  "version": "0.12.18",
   "tools": [
     {
       "name": "read_content",
@@ -277,7 +277,7 @@
               "properties": {
                 "type": "object",
                 "additionalProperties": true,
-                "description": "Page type property values (`list_page_types`, `*` = required), e.g. `{author:'Ada Lovelace', event_date:'2026-11-03'}`."
+                "description": "Page type property values (`list_page_types`, `*` = required), e.g. `{event_date:'2026-11-03', authors:['/team/ada']}` (a `page` property: page paths, in order)."
               },
               "terms": {
                 "type": "array",
@@ -441,7 +441,8 @@
                           "list",
                           "module",
                           "module-list"
-                        ]
+                        ],
+                        "description": "`link` value: `{href, target?}`, read as {{f}} or {{f.href}}, {{f.target}}, {{f.title}} (no label: that is a text field of its own). Other scalars have no dot paths."
                       },
                       "label": {
                         "type": "string",
@@ -524,11 +525,11 @@
                       "list": {
                         "type": "string",
                         "pattern": "^caelo:list/[0-9a-f-]{36}$",
-                        "description": "Required when `bind:\"shared\"`."
+                        "description": "Required when `bind:\"shared\"`. On a `page_terms` or `breadcrumbs` source: a vocabulary — breadcrumbs then lead through the page's term overview page (`landing_page`)."
                       },
                       "source": {
                         "type": "object",
-                        "description": "bind \"source\": {kind:\"query\", defaults:{page_type:\"<slug>\", order:\"published_desc\", limit:10}, editable?:[knobs a placement may set; default none]} — defaults need order and limit (no limit with paginate) | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages|pagination} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
+                        "description": "bind \"source\": {kind:\"query\", defaults:{page_type:\"<slug>\", order:\"published_desc\", limit:10}, editable?:[knobs a placement may set; default none]} — defaults need order and limit (no limit with paginate); `refers_to:{property, page:\"self\"|\"caelo:page/<id>\"}` = pages whose `page` property names that page (an author page's articles) | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages|pagination} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
                       },
                       "paginate": {
                         "type": "object",
@@ -1096,37 +1097,36 @@
     },
     {
       "name": "list_pages",
-      "description": "List pages (TOON rows): path, UUID, slug, parent UUID, depth (1 = top level), title, short title (breadcrumb/navigation label), page type (what the page IS, e.g. `news`; `list_page_types`), template UUID. URL = parent URL + '/' + slug. Inside a chat, paths show its pending moves. Use for any page UUID/path; never ask the operator to paste a UUID.",
+      "description": "List pages (TOON rows): path, UUID, slug, parent UUID, depth (1 = top level), title, short title (breadcrumb/navigation label), page type (what the page IS, e.g. `news`; `list_page_types`), template UUID. URL = parent URL + '/' + slug. Inside a chat, paths show its pending moves. To find a page, pass `search` with words of its title or path; without it, rows come one page of the site at a time (follow `next cursor` to browse a small site or a subtree, never to scan a large one). Use for any page UUID/path; never ask the operator to paste a UUID.",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "includeDeleted": {
-            "default": false,
-            "type": "boolean"
+          "search": {
+            "description": "Words that start words of the page's title or path, e.g. \"pricing\" or \"blog launch\" (the last word names the page itself). Searches the whole site.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
           },
           "underPageId": {
-            "description": "Only this page's subtree.",
+            "description": "Only this page's subtree (not with search).",
             "type": "string",
             "format": "uuid"
           },
-          "filter": {
-            "description": "Case-insensitive substring over all columns.",
-            "type": "string",
-            "maxLength": 200
+          "includeDeleted": {
+            "description": "Also deleted pages (not with search).",
+            "type": "boolean"
           },
           "limit": {
             "description": "Default 50.",
             "type": "integer",
             "minimum": 1,
-            "maximum": 500
+            "maximum": 200
           },
-          "offset": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "full": {
-            "description": "true = all rows, no truncation.",
-            "type": "boolean"
+          "cursor": {
+            "description": "`next cursor` of the previous call, with the same search / underPageId.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
           }
         },
         "additionalProperties": false
@@ -1159,7 +1159,7 @@
     },
     {
       "name": "list_modules",
-      "description": "List the module catalog (metadata, no HTML/CSS/JS): id, slug, type, kind, description, fields, placement usage.\nUSE FOR: a reuse candidate before placing/creating (prefer `add_module` with `moduleId` over a near-duplicate); the accepted child types before filling a `module`/`module-list` field.\nFields column: `blocks:module-list allowed=faq/cta` -> child `type` must be one of them (`allowed=any` = unrestricted). `nav:list(menu) shared=main-nav` = shared list (edit entries via `patch_list_items_many`) | `items:list(texts) local` = entries per placement | `latest:list(links) source=query(…)` | `… paginate(per_page=50 follow_ups=index)` = overview of every match over follow-up pages.",
+      "description": "List the module catalog (metadata, no HTML/CSS/JS): id, slug, type, kind, description, fields, placements as this chat sees the site (`unplaced` = no page, layout or parent module).\nUSE FOR: a reuse candidate before placing/creating (prefer `add_module` with `moduleId` over a near-duplicate); the accepted child types before filling a `module`/`module-list` field.\nFields column: `blocks:module-list allowed=faq/cta` -> child `type` must be one of them (`allowed=any` = unrestricted). `nav:list(menu) shared=main-nav` = shared list (edit entries via `patch_list_items_many`) | `items:list(texts) local` = entries per placement | `latest:list(links) source=query(…)` | `… paginate(per_page=50 follow_ups=index)` = overview of every match over follow-up pages.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2073,7 +2073,7 @@
         "type": "object",
         "properties": {
           "filter": {
-            "description": "Case-insensitive substring over all columns.",
+            "description": "Substring, this page's rows only.",
             "type": "string",
             "maxLength": 200
           },
@@ -2081,14 +2081,14 @@
             "description": "Default 50.",
             "type": "integer",
             "minimum": 1,
-            "maximum": 500
+            "maximum": 200
           },
           "offset": {
             "type": "integer",
             "minimum": 0
           },
           "full": {
-            "description": "true = all rows, no truncation.",
+            "description": "true = 200 rows, no size cap.",
             "type": "boolean"
           }
         },
@@ -2102,7 +2102,7 @@
         "type": "object",
         "properties": {
           "filter": {
-            "description": "Case-insensitive substring over all columns.",
+            "description": "Substring, this page's rows only.",
             "type": "string",
             "maxLength": 200
           },
@@ -2110,14 +2110,14 @@
             "description": "Default 50.",
             "type": "integer",
             "minimum": 1,
-            "maximum": 500
+            "maximum": 100
           },
           "offset": {
             "type": "integer",
             "minimum": 0
           },
           "full": {
-            "description": "true = all rows, no truncation.",
+            "description": "true = 100 rows, no size cap.",
             "type": "boolean"
           }
         },
@@ -2433,7 +2433,8 @@
                     "list",
                     "module",
                     "module-list"
-                  ]
+                  ],
+                  "description": "`link` value: `{href, target?}`, read as {{f}} or {{f.href}}, {{f.target}}, {{f.title}} (no label: that is a text field of its own). Other scalars have no dot paths."
                 },
                 "label": {
                   "type": "string",
@@ -2516,11 +2517,11 @@
                 "list": {
                   "type": "string",
                   "pattern": "^caelo:list/[0-9a-f-]{36}$",
-                  "description": "Required when `bind:\"shared\"`."
+                  "description": "Required when `bind:\"shared\"`. On a `page_terms` or `breadcrumbs` source: a vocabulary — breadcrumbs then lead through the page's term overview page (`landing_page`)."
                 },
                 "source": {
                   "type": "object",
-                  "description": "bind \"source\": {kind:\"query\", defaults:{page_type:\"<slug>\", order:\"published_desc\", limit:10}, editable?:[knobs a placement may set; default none]} — defaults need order and limit (no limit with paginate) | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages|pagination} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
+                  "description": "bind \"source\": {kind:\"query\", defaults:{page_type:\"<slug>\", order:\"published_desc\", limit:10}, editable?:[knobs a placement may set; default none]} — defaults need order and limit (no limit with paginate); `refers_to:{property, page:\"self\"|\"caelo:page/<id>\"}` = pages whose `page` property names that page (an author page's articles) | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages|pagination} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
                 },
                 "paginate": {
                   "type": "object",
@@ -2574,7 +2575,7 @@
     },
     {
       "name": "add_plugin_to_page",
-      "description": "Place an active plugin's output (comments, contact form, ratings, newsletter signup …) on ONE page at a block + position, e.g. 'add comments to /about'. Active slugs: `list_plugins`. Site-wide (every blog post) = one call per page.",
+      "description": "Place an active plugin's output (contact form, ratings, newsletter signup …) on ONE page at a block + position, e.g. 'add the contact form to /about'. Active slugs: `list_plugins`. Comments: follow the comments skill instead (this places only the list, without a form). Many pages (every page of a template, the whole site): write ONE module whose placeholder is <div data-caelo-plugin=\"<slug>\" data-page-id=\"{{page.id}}\"></div> and place it with add_module (target template: its existing pages; target layout: every page of that layout, later ones too) — not one call per page.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -2811,7 +2812,7 @@
     },
     {
       "name": "remove_module_from",
-      "description": "Remove a module reference from a page or layout; the module itself stays for reuse. `target:\"page\"` drops the page-level reference (any block); `target:\"layout\"` detaches site-wide chrome from every block of the layout ('remove the footer from every page'). To replace a module, PREFER `update_modules_many` (keeps the slot) over remove + add.",
+      "description": "Remove a module placement from a page or layout; the module itself stays for reuse. `target:\"page\"` = this page only; `target:\"layout\"` = site-wide chrome ('remove the footer from every page'). Module placed twice+ on the target -> name the one via `blockName` + `position`; the others keep their content. To replace a module, PREFER `update_modules_many` (keeps the slot) over remove + add.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -2837,6 +2838,22 @@
           "moduleId": {
             "type": "string",
             "format": "uuid"
+          },
+          "blockName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "With `position`: which placement, when the module is on the target twice+ (page: BEGIN markers / `inspect_page_render`; layout: `list_layouts` order)."
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000,
+            "description": "0-based index in `blockName`."
+          },
+          "allPlacements": {
+            "type": "boolean",
+            "description": "Remove every placement (in `blockName` when given). Only when the operator asks for all of them."
           }
         }
       }
@@ -3367,17 +3384,17 @@
             "maxLength": 200
           },
           "limit": {
-            "description": "Default 15, max 50.",
+            "description": "Default 15.",
             "type": "integer",
             "minimum": 1,
-            "maximum": 500
+            "maximum": 50
           },
           "offset": {
             "type": "integer",
             "minimum": 0
           },
           "full": {
-            "description": "true = all rows, no truncation.",
+            "description": "true = 50 rows, no size cap.",
             "type": "boolean"
           }
         },
@@ -3504,7 +3521,7 @@
     },
     {
       "name": "regenerate_media_variants",
-      "description": "Re-run the image pipeline for assets missing derived WebP variants; additive (existing variants untouched).\nUSE FOR: Stage/deploy fails with 'media references unresolved (asset/variant pairs missing)'. NOT for crops or layout resizes.\nResult per asset: 'regenerated' lists new variants; 'skipped' = variant can NEVER exist (source narrower than breakpoint, animated GIF, non-raster) -> point the module HTML at the result's `bestUrl` (modules via `list_media_usages`), don't retry.",
+      "description": "Re-run the image pipeline for assets missing derived WebP variants; additive (existing variants untouched).\nUSE FOR: a page names an image size the asset lacks: a Stage records it as a render failure (audit `render/media-variant-missing`), Publish live + production builds refuse it. NOT for crops or layout resizes.\nResult per asset: 'regenerated' lists new variants; 'skipped' = variant can NEVER exist (source narrower than breakpoint, animated GIF, non-raster) -> point the reference at the result's `bestUrl` (modules via `list_media_usages`), don't retry.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -3517,7 +3534,7 @@
             },
             "minItems": 1,
             "maxItems": 100,
-            "description": "From the deploy error."
+            "description": "Ids from `find_media`."
           },
           "allMissing": {
             "type": "boolean",
@@ -3665,7 +3682,7 @@
     },
     {
       "name": "set_page_seo_many",
-      "description": "Set pages' SEO fields to exact values, all-or-nothing. ONLY on explicit user instruction (e.g. 'set the home meta description to X').\nDO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; keyword re-optimization -> `bulk_optimize_seo`; side effect of content edits (never touch SEO then).\nWrites this chat's draft: live only after Stage + the operator's Publish live (undo drops it).",
+      "description": "Set pages' SEO fields to exact values, all-or-nothing. ONLY on explicit user instruction (e.g. 'set the home meta description to X', 'keep the pricing table out of Google snippets').\nDO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; keyword re-optimization -> `bulk_optimize_seo`; one title pattern for all pages of a type -> `set_page_type_seo_many`; side effect of content edits (never touch SEO then).\nRead first with `get_page_seo`: each value's origin (`human` = the operator's own text, keep it unless told otherwise).\nWrites this chat's draft: live only after Stage + the operator's Publish live (undo drops it).",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -3686,16 +3703,32 @@
                   "type": "string",
                   "format": "uuid"
                 },
+                "seoTitle": {
+                  "type": "string",
+                  "maxLength": 200,
+                  "description": "The page's own `<title>`. \"\" = none: its page type's or the site's title template renders."
+                },
                 "metaDescription": {
                   "type": "string",
                   "maxLength": 320
+                },
+                "ogTitle": {
+                  "type": "string",
+                  "maxLength": 200,
+                  "description": "Own og:title. \"\" = shares the SEO title, else the page title."
+                },
+                "ogDescription": {
+                  "type": "string",
+                  "maxLength": 320,
+                  "description": "Own og:description. \"\" = shares the meta description."
                 },
                 "ogImageAssetId": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "format": "uuid"
+                  "format": "uuid",
+                  "description": "This page's own share image; null = the default (language, then site `socialShare`)."
                 },
                 "canonicalUrl": {
                   "type": [
@@ -3705,7 +3738,73 @@
                   "maxLength": 2048
                 },
                 "noindex": {
+                  "type": "boolean",
+                  "description": "Also drops the page from the sitemap."
+                },
+                "nofollow": {
                   "type": "boolean"
+                },
+                "noarchive": {
+                  "type": "boolean",
+                  "description": "No cached copy (Bing Copilot reads it too)."
+                },
+                "nosnippet": {
+                  "type": "boolean",
+                  "description": "No text snippet; also keeps the page's text out of AI answers in search."
+                },
+                "noimageindex": {
+                  "type": "boolean"
+                },
+                "maxSnippet": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": -1,
+                  "maximum": 100000,
+                  "description": "Most snippet characters; -1 = no limit, 0 = none, null = no directive."
+                },
+                "maxImagePreview": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "standard",
+                    "large"
+                  ],
+                  "description": "Stored `large` unless set."
+                },
+                "maxVideoPreview": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": -1,
+                  "maximum": 86400,
+                  "description": "Most video preview seconds; -1 = no limit, 0 = none, null = no directive."
+                },
+                "nosnippetPlacements": {
+                  "type": "array",
+                  "maxItems": 64,
+                  "description": "Placements whose text search engines must not quote (`data-nosnippet`), by block + 0-based position as `inspect_page_render` shows them. REPLACES the list; [] clears it.",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "blockName",
+                      "position"
+                    ],
+                    "properties": {
+                      "blockName": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "position": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    }
+                  }
                 },
                 "changefreq": {
                   "type": "string",
@@ -3731,8 +3830,66 @@
       }
     },
     {
+      "name": "set_page_type_seo_many",
+      "description": "Set the SEO every page of a type inherits when it has none of its own — the `<title>` template and og:type per page type — and the site's default title template, in one call.\nUSE FOR: 'all blog posts should end with | Acme Blog', 'news pages are articles when shared', a site-wide title pattern. A page's own SEO title still wins (`get_page_seo` shows each origin).\nDO NOT USE FOR: one page's own title -> `set_page_seo_many`; creating or restructuring a page type -> `upsert_page_types_many`.\nPage types are this chat's draft; the site template is a site setting. Both live after Stage + the operator's Publish live.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "siteTitleTemplate": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "`<title>` of pages whose type has no template. Variables `{page_title}`, `{short_title}`, `{site_name}`; must contain `{page_title}` or `{short_title}`; no other braces. E.g. `{page_title} | {site_name}`, `{page_title} – Blog | {site_name}`."
+          },
+          "pageTypes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "pageType"
+              ],
+              "properties": {
+                "pageType": {
+                  "type": "string",
+                  "description": "Slug from `list_page_types`."
+                },
+                "titleTemplate": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 200,
+                  "description": "null = use the site template. Variables `{page_title}`, `{short_title}`, `{site_name}`; must contain `{page_title}` or `{short_title}`; no other braces. E.g. `{page_title} | {site_name}`, `{page_title} – Blog | {site_name}`."
+                },
+                "ogType": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "website",
+                    "article",
+                    "profile",
+                    null
+                  ],
+                  "description": "`article` for dated posts (blog, news): adds article:published_time/modified_time. `profile` for person pages. null = `website`."
+                },
+                "expectedVersion": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
       "name": "autofill_page_seo_many",
-      "description": "Write pages' FIRST meta description (+ optional og:image), one transaction. A Stage refuses pages without one -> run after building, before Staging.\nDO NOT USE FOR: pages created with `build_page` -> pass `page.metaDescription` there; changing a filled description -> `bulk_optimize_seo` (only when the user asks) or `set_page_seo_many` (exact user-dictated value).\nCORE RULES:\n- Write each from the page's actual content, 150–160 chars for a human reading a search result: read core texts with ONE `get_page_seo({pageIds})`, never by rendering; or carry over the source description when migrating. Title 50–60 chars via `update_pages_many`.\n- Fill-once: same text again = no-op; a DIFFERENT text for a filled page (AlreadyAutofilled) aborts the whole batch -> leave such pages out.\nWrites this chat's draft: live only after Stage + the operator's Publish live (undo drops it).",
+      "description": "Write pages' FIRST meta description (+ optional og:image), one transaction. A Stage refuses pages without one -> run after building, before Staging.\nDO NOT USE FOR: pages created with `build_page` -> pass `page.metaDescription` there; changing a filled description -> `bulk_optimize_seo` (only when the user asks) or `set_page_seo_many` (exact user-dictated value).\nCORE RULES:\n- Write each from the page's actual content, 150–160 chars for a human reading a search result: read core texts with ONE `get_page_seo({pageIds})`, never by rendering; or carry over the source description when migrating. Title 50–60 chars via `update_pages_many`.\n- Fill-once: same text again = no-op; a DIFFERENT text for a filled field (AlreadyAutofilled / AlreadyFilled) aborts the whole batch -> leave such pages out.\nWrites this chat's draft: live only after Stage + the operator's Publish live (undo drops it).",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -3765,6 +3922,24 @@
                     "null"
                   ],
                   "format": "uuid"
+                },
+                "seoTitle": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "description": "Own `<title>`, only when `get_page_seo` shows the template title does not fit this page; usually leave out (the template renders)."
+                },
+                "ogTitle": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "description": "Own og:title, only when the share title must differ from the SEO title."
+                },
+                "ogDescription": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 320,
+                  "description": "Own og:description, only when it must differ from the meta description."
                 }
               }
             }
@@ -3774,7 +3949,7 @@
     },
     {
       "name": "find_redirects",
-      "description": "Search redirects (TOON rows: fromPath, toPath, status). Pre-flight before `bulk_delete_redirects` so the user sees what goes.",
+      "description": "Search redirects (TOON rows: fromPath, toPath, status, state, change). Pre-flight before `bulk_delete_redirects` so the user sees what goes.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3802,23 +3977,34 @@
               }
             ]
           },
+          "state": {
+            "description": "live: no pending change; staged / draft: a pending change in that state.",
+            "type": "string",
+            "enum": [
+              "all",
+              "live",
+              "staged",
+              "draft"
+            ]
+          },
           "filter": {
-            "description": "Substring of fromPath / toPath, searched across the whole table.",
+            "description": "Substring of fromPath / toPath (whole table).",
             "type": "string",
             "maxLength": 200
           },
           "limit": {
-            "description": "Default 50, max 200.",
+            "description": "Default 50.",
             "type": "integer",
             "minimum": 1,
             "maximum": 500
           },
-          "offset": {
-            "type": "integer",
-            "minimum": 0
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
           },
           "full": {
-            "description": "true = all rows, no truncation.",
+            "description": "true = 500 rows, no size cap.",
             "type": "boolean"
           }
         },
@@ -3827,7 +4013,7 @@
     },
     {
       "name": "check_links",
-      "description": "Check internal links (to own pages/media) in your draft, wherever stored: page content, module HTML, field defaults, layouts, templates, lists (menus, vocabularies), page terms/properties, plugin data. Each problem names the page, storage place and fixing tool.\nSeverity: BLOCK Stage + Publish = links to deleted pages/media, links without a page in the linking page's language, refs to a deleted list, removed term or deleted module in a list entry. BLOCK Publish (Stage warning) = links to unpublished pages. Warning = old plain-path links.\nUSE FOR: before `stage_changes` after deleting/unpublishing/translating pages; a Stage refused for links; operator asks about broken links.\nDO NOT USE FOR: external links or the built site (`get_quality_audit` checks the staged build).",
+      "description": "Check internal links (to own pages/media) in your draft, wherever stored: page content, module HTML, field defaults, layouts, templates, lists (menus, vocabularies), page terms/properties, plugin data. Each problem names the page, storage place and fixing tool.\nSeverity: BLOCK = Publish live refuses it (a Stage goes through and reports it): links to deleted pages/media, refs to a deleted list, removed term or deleted module in a list entry; with gate 'publish' also links to unpublished pages and links without a page in the linking page's language. Warning = old plain-path links.\nUSE FOR: before `stage_changes` after deleting/unpublishing/translating pages; links a Stage reported or Publish live refused; operator asks about broken links.\nDO NOT USE FOR: external links or the built site (`get_quality_audit` checks the staged build).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3936,7 +4122,7 @@
             "type": "boolean"
           },
           "filter": {
-            "description": "Case-insensitive substring over all columns.",
+            "description": "Substring, this page's rows only.",
             "type": "string",
             "maxLength": 200
           },
@@ -3944,14 +4130,14 @@
             "description": "Default 20.",
             "type": "integer",
             "minimum": 1,
-            "maximum": 500
+            "maximum": 100
           },
           "offset": {
             "type": "integer",
             "minimum": 0
           },
           "full": {
-            "description": "true = all rows, no truncation.",
+            "description": "true = 100 rows, no size cap.",
             "type": "boolean"
           }
         },
@@ -3960,7 +4146,7 @@
     },
     {
       "name": "list_quality_acceptances",
-      "description": "List accepted quality findings, category scores <100 and page-check rules. Check before asking the operator to decide something again. An acceptance applies ONLY to its page (`site-wide` = site-wide page-check rule, or, with `resource`, one audit for one file Caelo or a plugin ships (`/_caelo/plugin/…`, `/_app/immutable/…`), on every page loading it until the file changes). It records the accepted value — `score`: category score; `finding`: audit score in points (acceptedScore); `check`: up to acceptedCount errors of its rule (auditId = rule id); a worse value blocks again. `filter` searches audit/rule id, reason, page path, file.",
+      "description": "List accepted quality findings, category scores <100 and page-check rules. Check before asking the operator to decide something again. An acceptance applies ONLY to its page (`site-wide` = site-wide page-check rule, or, with `resource`, one audit for one file Caelo or a plugin ships (`/_caelo/plugin/…`, `/_app/immutable/…`), on every page loading it until the file changes). It records the accepted value — `score`: category score; `finding`: audit score in points (acceptedScore); `check`: up to acceptedCount errors of its rule (auditId = rule id); a worse value blocks again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3974,7 +4160,7 @@
             "type": "boolean"
           },
           "filter": {
-            "description": "Case-insensitive substring over all columns.",
+            "description": "Substring of audit/rule id, reason, page path or file.",
             "type": "string",
             "maxLength": 200
           },
@@ -3982,14 +4168,14 @@
             "description": "Default 50.",
             "type": "integer",
             "minimum": 1,
-            "maximum": 500
+            "maximum": 200
           },
           "offset": {
             "type": "integer",
             "minimum": 0
           },
           "full": {
-            "description": "true = all rows, no truncation.",
+            "description": "true = 200 rows, no size cap.",
             "type": "boolean"
           }
         },
@@ -3998,7 +4184,7 @@
     },
     {
       "name": "get_publish_gate",
-      "description": "Is Publish live open for the staged build? If not: why + next step (fix quality problems — target 100, zero findings — or hand truly unfixable ones to the operator as a decision; retry a failed check; wait for a running one). Call before telling the operator they can publish. Findings -> `get_quality_audit`.",
+      "description": "Is Publish live open for the staged build? If not: why + next step (fix quality problems — target 100, zero findings — or hand truly unfixable ones to the operator as a decision; retry a failed check; wait for a running one). Also which redirect changes go live with it. Call before telling the operator they can publish. Findings -> `get_quality_audit`.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -4231,7 +4417,7 @@
     },
     {
       "name": "inspect_page_render",
-      "description": "Inspect a rendered page's HTML/CSS cascade; default = slim summary (modules with moduleId/slug/kind/sizes, layer sizes, slot status).\nUSE FOR: the actual rule behind a layout/CSS issue a screenshot can't explain.\nDO NOT USE FOR: the visual impression -> `screenshot_page`.\nRenders this chat's branch preview (pending edits included); outside a chat -> published version.",
+      "description": "Inspect a rendered page's HTML/CSS cascade; default = slim summary (modules with moduleId/slug/block/position/sizes, layer sizes, slot status).\nUSE FOR: the actual rule behind a layout/CSS issue a screenshot can't explain.\nDO NOT USE FOR: the visual impression -> `screenshot_page`.\nRenders this chat's branch preview (pending edits included); outside a chat -> published version.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -4338,7 +4524,7 @@
     },
     {
       "name": "bulk_create_redirects",
-      "description": "Create redirects in one tx: a single one, a list ('/old-blog/* -> /blog/*' across many paths), a pasted CSV/table. `upsert:true` updates existing fromPath rows instead of skipping them.\nLive when the call returns (pushed to hosting, no build or Publish live); the result says so per target and names redirects to pages not published yet (404 until Publish live).",
+      "description": "Create or change redirects in one tx: a single one, a list ('/old-blog/* -> /blog/*' across many paths), a pasted CSV/table. `upsert:true` replaces an address's rule instead of skipping it.\nSaved as pending changes, never live on save; the result says per rule where it is served.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -4386,13 +4572,23 @@
           "upsert": {
             "type": "boolean",
             "default": false
+          },
+          "goLive": {
+            "type": "string",
+            "enum": [
+              "next_publish",
+              "later",
+              "now"
+            ],
+            "default": "next_publish",
+            "description": "next_publish: Staged (staging now, live with the next Publish live). later: Draft, served nowhere. now: ONLY when the operator asks for it live without Publish live; queues an approval card (needs the Publish live permission)."
           }
         }
       }
     },
     {
       "name": "bulk_delete_redirects",
-      "description": "Delete redirects in one transaction by EXACTLY ONE of `redirectIds`, `fromPaths`, `matches` (one redirect = one-item array). Run `find_redirects` FIRST and tell the user the count.\n`matches` (substring) is capped at 10 rows for you (every deleted 301 strands an inbound link): more -> REJECTED, nothing deleted; list them with `find_redirects`, show the operator, delete the confirmed ones by `redirectIds` (uncapped).\nGone from the live site when the call returns (pushed to hosting, no build); the result says so per target.",
+      "description": "Delete redirects in one transaction by EXACTLY ONE of `redirectIds`, `fromPaths`, `matches` (one redirect = one-item array). Run `find_redirects` FIRST and tell the user the count.\n`matches` (substring) is capped at 10 rows for you (every deleted 301 strands an inbound link): more -> REJECTED, nothing deleted; list them with `find_redirects`, show the operator, delete the confirmed ones by `redirectIds` (uncapped).\nSaved as pending removals (a rule not live yet is simply dropped); the result says per rule where it is gone.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -4418,13 +4614,58 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 500
+          },
+          "goLive": {
+            "type": "string",
+            "enum": [
+              "next_publish",
+              "later",
+              "now"
+            ],
+            "default": "next_publish",
+            "description": "next_publish: Staged (staging now, live with the next Publish live). later: Draft, served nowhere. now: ONLY when the operator asks for it live without Publish live; queues an approval card (needs the Publish live permission)."
           }
         }
       }
     },
     {
+      "name": "update_redirect_changes",
+      "description": "Change the state of saved redirect changes that are not live yet (find_redirects {state:'staged'|'draft'} lists them). New rules or removals: bulk_create_redirects / bulk_delete_redirects.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fromPaths": {
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "description": "From paths of pending changes, as find_redirects lists them."
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "include",
+              "keep_as_draft",
+              "discard",
+              "go_live_now"
+            ],
+            "description": "include: Draft -> Staged (live with the next Publish live). keep_as_draft: Staged -> Draft (served nowhere). discard: drop the change, the live rule stays. go_live_now: ONLY when the operator asks; queues an approval card that puts manual changes live without Publish live."
+          }
+        },
+        "required": [
+          "fromPaths",
+          "action"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "bulk_optimize_seo",
-      "description": "Re-optimize meta descriptions (+ og:image) of 1..N pages, all-or-nothing, regardless of fill state.\nUSE FOR: ONLY an explicit user request to optimize/rewrite SEO with context (keywords, intent, branding).\nDO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; exact dictated value -> `set_page_seo_many`.\nFirst read current descriptions + core text with ONE `get_page_seo({pageIds})`.\nWrites this chat's draft: live only after Stage + the operator's Publish live (undo drops it).",
+      "description": "Re-optimize the SEO texts (meta description, SEO title, og:title/og:description, og:image) of 1..N pages, all-or-nothing, regardless of fill state.\nUSE FOR: ONLY an explicit user request to optimize/rewrite SEO with context (keywords, intent, branding).\nDO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; exact dictated value -> `set_page_seo_many`; one title pattern for all pages of a type -> `set_page_type_seo_many`.\nFirst read current texts, their origins + core text with ONE `get_page_seo({pageIds})`. Each item names only the texts it rewrites.\nWrites this chat's draft: live only after Stage + the operator's Publish live (undo drops it).",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -4440,8 +4681,7 @@
               "type": "object",
               "additionalProperties": false,
               "required": [
-                "pageId",
-                "metaDescription"
+                "pageId"
               ],
               "properties": {
                 "pageId": {
@@ -4452,6 +4692,21 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 320
+                },
+                "seoTitle": {
+                  "type": "string",
+                  "maxLength": 200,
+                  "description": "Own `<title>`; \"\" = back to the title template."
+                },
+                "ogTitle": {
+                  "type": "string",
+                  "maxLength": 200,
+                  "description": "Own og:title; \"\" = shares the SEO title."
+                },
+                "ogDescription": {
+                  "type": "string",
+                  "maxLength": 320,
+                  "description": "Own og:description; \"\" = shares the meta description."
                 },
                 "ogImageAssetId": {
                   "type": [
@@ -4528,7 +4783,7 @@
     },
     {
       "name": "update_pages_many",
-      "description": "Edit metadata of 1..N pages — the ONLY tool for it: rename, retitle, reslug, status, template, page type, properties, terms.\nDO NOT USE FOR: nesting under another page / back to top level -> `move_pages`; SEO -> `set_page_seo_many`; modules -> `update_modules_many`.\nCORE RULES:\n- THREE independent identifiers, never substitute one for another: `title` (HTML <title>), `shortTitle` (label in breadcrumbs, menus, page picker; translated with the page), `slug` (URL). 'Rename this page' = `title` + `shortTitle`; the URL only when the operator asks.\n- Changing `slug` moves the page's URL AND every nested page's URL; a 301 from each old URL is created in the same transaction. On-site links (menus, link lists, modules, content) follow automatically — do not update them. A slug change moving 10+ URLs (page + subtree) pauses for one Owner click in chat.\n- Items apply independently: per-item failures (not found, version conflict) are reported, the rest applies.\n\nOver MCP: when this call needs the operator's approval, it queues an approval card in their Caelo admin (Live Edit chat and the pending-approvals page) and returns the outcome once they decide — tell them to approve the card; never ask them to paste a prompt into the Caelo chat.",
+      "description": "Edit metadata of 1..N pages — the ONLY tool for it: rename, retitle, reslug, status, template, page type, properties, terms.\nDO NOT USE FOR: nesting under another page / back to top level -> `move_pages`; SEO -> `set_page_seo_many`; modules -> `update_modules_many`.\nCORE RULES:\n- THREE independent identifiers, never substitute one for another: `title` (page title; `<title>` via its title template), `shortTitle` (label in breadcrumbs, menus, page picker; translated with the page), `slug` (URL). 'Rename this page' = `title` + `shortTitle`; the URL only when the operator asks.\n- Changing `slug` moves the page's URL AND every nested page's URL; a 301 from each old URL is created in the same transaction. On-site links (menus, link lists, modules, content) follow automatically — do not update them. A slug change moving 10+ URLs (page + subtree) pauses for one Owner click in chat.\n- Items apply independently: per-item failures (not found, version conflict) are reported, the rest applies.\n\nOver MCP: when this call needs the operator's approval, it queues an approval card in their Caelo admin (Live Edit chat and the pending-approvals page) and returns the outcome once they decide — tell them to approve the card; never ask them to paste a prompt into the Caelo chat.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -4592,7 +4847,7 @@
                 },
                 "properties": {
                   "type": "object",
-                  "description": "Page type properties, merged (null removes one), e.g. `{author:'Ada', event_date:'2026-11-03'}`.",
+                  "description": "Page type properties, merged (null removes one), e.g. `{event_date:'2026-11-03', authors:['/team/ada', '/team/ben']}` (a `page` property: page paths, in order).",
                   "additionalProperties": true
                 },
                 "terms": {
@@ -4761,7 +5016,8 @@
                           "list",
                           "module",
                           "module-list"
-                        ]
+                        ],
+                        "description": "`link` value: `{href, target?}`, read as {{f}} or {{f.href}}, {{f.target}}, {{f.title}} (no label: that is a text field of its own). Other scalars have no dot paths."
                       },
                       "label": {
                         "type": "string",
@@ -4844,11 +5100,11 @@
                       "list": {
                         "type": "string",
                         "pattern": "^caelo:list/[0-9a-f-]{36}$",
-                        "description": "Required when `bind:\"shared\"`."
+                        "description": "Required when `bind:\"shared\"`. On a `page_terms` or `breadcrumbs` source: a vocabulary — breadcrumbs then lead through the page's term overview page (`landing_page`)."
                       },
                       "source": {
                         "type": "object",
-                        "description": "bind \"source\": {kind:\"query\", defaults:{page_type:\"<slug>\", order:\"published_desc\", limit:10}, editable?:[knobs a placement may set; default none]} — defaults need order and limit (no limit with paginate) | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages|pagination} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
+                        "description": "bind \"source\": {kind:\"query\", defaults:{page_type:\"<slug>\", order:\"published_desc\", limit:10}, editable?:[knobs a placement may set; default none]} — defaults need order and limit (no limit with paginate); `refers_to:{property, page:\"self\"|\"caelo:page/<id>\"}` = pages whose `page` property names that page (an author page's articles) | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages|pagination} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
                       },
                       "paginate": {
                         "type": "object",
@@ -5004,7 +5260,7 @@
     },
     {
       "name": "submit_plugin",
-      "description": "Submit a plugin you wrote for validation + the Owner's approval. USE when the operator needs behaviour no existing tool or module gives (form storing entries, booking list, private notes tool).\nCORE RULES:\n- TWO-STEP: validates and queues only. The Owner approves the exact source at /settings/plugins (/settings/plugins/installations if it requests access) — say it is submitted for approval; never claim it is active.\n- `slug` and `version` must equal the manifest's.\n- Extra access must be requested + explained: `cms_admin_schema` for private author storage (declare `adminSchema`), `chat_runner_tools` for chat-callable tools (declare `tools`, each named `<slug_with_underscores>__<name>`); a reason per capability in `capabilityReasons`. The Owner sees every tool name + description verbatim — describe honestly what each does. Private-storage writes from a chat stay in the chat until it is published.\n- Result has validationErrors[]; on failure read each `hint`, fix the source, resubmit in the same turn.",
+      "description": "Submit a plugin you wrote for validation + the Owner's approval. USE when the operator needs behaviour no existing tool or module gives (form storing entries, booking list, private notes tool).\nCORE RULES:\n- TWO-STEP: validates and queues only. The Owner approves the exact source at /settings/plugins (/settings/plugins/installations if it requests access) — say it is submitted for approval; never claim it is active.\n- `slug` and `version` must equal the manifest's.\n- Extra access must be requested + explained: `cms_admin_schema` for private author storage (declare `adminSchema`), `chat_runner_tools` for chat-callable tools (declare `tools`, each named `<slug_with_underscores>__<name>`); a reason per capability in `capabilityReasons`. The Owner sees every tool name + description verbatim — describe honestly what each does. Private-storage writes from a chat stay in the chat until it is published.\n- Requestable capabilities: cms_admin, cms_admin_schema, ai_provider, chat_runner_tools, background_workers, change_journal, email, head_contributions, url_slots (slots host and path-prefix only, declared as urlTables), client_assets, list_sources, list_types, list_resolve, companion_skills, font_assets, private_files, image_generation, site_media_read, content_variants, link_resolve, consent_provider, page_output, collections, batch_jobs, visitor_ai. Any other is refused.\n- Not available yet, refused: hasStaticRender (#1737); render a widget in the browser from its `component`.\n- `ai_provider` needs a daily cap: `capabilityConstraints.ai_provider.maxDailyCostMicrocents` (100000000 = $1). `email` gives `ctx.email.queue` of the plugin's `mailTemplates` (from a worker, the Owner panel or an approved tool call) and `unsubscribeLink`; no `send`.\n- Result has validationErrors[]; on failure read each `hint`, fix the source, resubmit in the same turn.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -5029,7 +5285,7 @@
           "manifest": {
             "type": "object",
             "additionalProperties": true,
-            "description": "{slug, version, tier: 2, schema (public tables for its own visitor data), operations, optional adminSchema, tools, requestedCapabilities, capabilityReasons, publicOperations, tableKinds, hasStaticRender}. publicOperations entries are {name, kind: read|write, captcha: required|none, inputJsonSchema, reads, writes, rateLimit?: {max, windowSeconds}}; tableKinds gives every schema table one kind (published: visitors read; inbox: visitors only insert; visitor-state: visitors read+write; private: admin only)."
+            "description": "{slug, version, tier: 2, schema (public tables for its own visitor data), operations, optional adminSchema, tools, requestedCapabilities, capabilityReasons, publicOperations, tableKinds, component}. publicOperations entries are {name, kind: read|write, captcha: required|none, inputJsonSchema, reads, writes, rateLimit?: {max, windowSeconds}}; tableKinds gives every schema table one kind (published: visitors read; inbox: visitors only insert; visitor-state: visitors read+write; private: admin only)."
           },
           "source": {
             "type": "string",
@@ -5357,7 +5613,6 @@
               "cms_admin",
               "cms_admin_schema",
               "ai_provider",
-              "snapshots",
               "chat_runner_tools",
               "background_workers",
               "change_journal",
@@ -5375,7 +5630,11 @@
               "site_media_read",
               "content_variants",
               "link_resolve",
-              "consent_provider"
+              "consent_provider",
+              "page_output",
+              "collections",
+              "batch_jobs",
+              "visitor_ai"
             ]
           },
           "target": {
@@ -5468,7 +5727,7 @@
     },
     {
       "name": "reload_plugin",
-      "description": "Retry loading an ACTIVE plugin on every server — the fix for health `failing` (servers don't retry on their own). Use after the cause was fixed, when transient, or when asked. Returns this server's result; others follow within seconds (`get_plugin`). Not for awaiting-activation/disabled plugins (activation = Owner's decision: `activate_plugin`), nor health `awaiting_approval` (`propose_approve_plugin_release`).",
+      "description": "Retry loading an ACTIVE plugin on every server — the fix for health `failing` (servers don't retry on their own). Use after the cause was fixed, when transient, or when asked. Returns this server's result; others follow on their next request (`get_plugin`). Not for awaiting-activation/disabled plugins (activation = Owner's decision: `activate_plugin`), nor health `awaiting_approval` (`propose_approve_plugin_release`).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5831,7 +6090,7 @@
     },
     {
       "name": "propose_create_mcp_token",
-      "description": "Propose minting an MCP bearer token. `scope`: `chat` (default) = `caelo_chat` surface; `admin` also unlocks the Power-MCP tools for external agents. `allowCaeloAi` (admin only, default false) lets that agent spend the install's own AI (image generation, Caelo-side translation); leave off unless the operator asks (the agent then uses its own subscription).\nCREDENTIALS: the created password / token is never shown to you (not now, not later, not on request); never ask for or offer it. After approval, tell the operator where the approver collects it once (the result's `credential` field names the place).\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
+      "description": "Propose minting an MCP bearer token; it acts as the person who approves it. `scope`: `chat` (default) = `caelo_chat` surface; `power` also unlocks the Power-MCP tools for external agents. `allowCaeloAi` (`power` only, default false, Owner approval) lets that agent spend the install's own AI (image generation, Caelo-side translation); leave off unless the operator asks (the agent then uses its own subscription).\nCREDENTIALS: the created password / token is never shown to you (not now, not later, not on request); never ask for or offer it. After approval, tell the operator where the approver collects it once (the result's `credential` field names the place).\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -5848,7 +6107,7 @@
             "type": "string",
             "enum": [
               "chat",
-              "admin"
+              "power"
             ]
           },
           "aiCostCapMicrocents": {
@@ -6032,7 +6291,7 @@
     },
     {
       "name": "propose_set_site_seo",
-      "description": "Set site-wide SEO settings. Read current values with `get_site_seo` first.\nUSE FOR: site status `Site URL: not configured`; publish failed with `Site base URL is not configured`; preview flags `site-base-url-unset`; operator names the site's domain or asks for sitemap / organization changes.\nDO NOT USE FOR: site language (`set_site_identity`); per-page SEO (`set_page_seo_many`).\nCORE RULES: pass only changed fields (omitted keep their value), except while the base URL is unset every proposal must include `siteBaseUrl`.\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
+      "description": "Set site-wide SEO settings. Read current values with `get_site_seo` first.\nUSE FOR: site status `Site URL: not configured`; publish failed with `Site base URL is not configured`; preview flags `site-base-url-unset`; operator names the site's domain or asks for sitemap / feed / IndexNow / organization changes; operator wants pages or crawlers kept out of robots.txt (a search results page, an AI crawler).\nDO NOT USE FOR: site language (`set_site_identity`); per-page SEO and noindex (`set_page_seo_many`); a robots.txt file (`propose_set_static_files` refuses it: robots.txt is built from these rules).\nCORE RULES: pass only changed fields (omitted keep their value), except while the base URL is unset every proposal must include `siteBaseUrl`. After approval it is saved, not live: offer the Stage; Publish live stays the operator's.\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -6046,6 +6305,14 @@
           "sitemapEnabled": {
             "type": "boolean",
             "description": "Emit sitemap.xml + the robots.txt Sitemap line."
+          },
+          "feedEnabled": {
+            "type": "boolean",
+            "description": "Emit /feed.xml (Atom, the pages changed last), link it from every page and robots.txt, and ping the WebSub hub after each Publish live."
+          },
+          "indexNowEnabled": {
+            "type": "boolean",
+            "description": "Serve the IndexNow key file and submit the URLs each Publish live changed (Bing, Yandex, Seznam, Naver, Yep; not Google)."
           },
           "organizationJson": {
             "type": "object",
@@ -6073,6 +6340,47 @@
                 }
               }
             }
+          },
+          "robotsRules": {
+            "type": "array",
+            "maxItems": 20,
+            "description": "robots.txt rules of the live site; REPLACES the whole list (send the groups to keep; [] removes all). Without a `*` group the file says `User-agent: * / Allow: /`; staging always blocks every crawler. One group per crawler: `*` (every crawler) stands alone, each user agent in one group only. A crawler follows ONLY the most specific group naming it, so a named crawler's group (`GPTBot`) repeats the `*` paths that should bind it too. Paths start with `/`; `*` matches anything, a closing `$` ends the match. Disallow stops crawling, not indexing: a page that must vanish from search keeps noindex and stays crawlable until it is gone, and a search results page is noindex AND disallowed (each language's path). `Disallow: /` for `*` takes the whole site out of search: only when the operator says so.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "userAgents"
+              ],
+              "properties": {
+                "userAgents": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 10,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  "description": "`*`, or crawler product tokens (`Googlebot`, `GPTBot`, `CCBot`)."
+                },
+                "allow": {
+                  "type": "array",
+                  "maxItems": 50,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 512
+                  }
+                },
+                "disallow": {
+                  "type": "array",
+                  "maxItems": 50,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 512
+                  },
+                  "description": "e.g. `/de/suche/`, `/en/search/`, `/*?q=`."
+                }
+              }
+            }
           }
         }
       },
@@ -6080,7 +6388,7 @@
     },
     {
       "name": "get_site_seo",
-      "description": "Read site-wide SEO settings: `siteBaseUrl` (null = unset, publishing fails), `sitemapEnabled`, `organizationJson`. Change via `propose_set_site_seo`. Per-page SEO: `get_page_seo`; site language: `get_site_defaults`.",
+      "description": "Read site-wide SEO settings: `siteBaseUrl` (null = unset, publishing fails), `sitemapEnabled`, `feedEnabled`, `indexNowEnabled`, `organizationJson`, the robots.txt rules with the live file they make, the site's `<title>` template and name, and how the latest WebSub pings / IndexNow submissions went. Change via `propose_set_site_seo`; the title template via `set_page_type_seo_many`. Per-page SEO: `get_page_seo`; default share image: `set_theme_asset` slot socialShare; site language: `get_site_defaults`.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -6107,7 +6415,7 @@
     },
     {
       "name": "get_gateway_settings",
-      "description": "Read public API gateway settings (captcha, proof-of-work, max body). Use before `propose_set_gateway_settings`.",
+      "description": "Read public API gateway settings (captcha, proof-of-work, max body) and `refreshPings`: per gateway, whether it took the admin's last refresh ping after a publish (lastErrorAt later than lastOkAt = it missed it and may serve older published state; tell the operator the reason). Use before `propose_set_gateway_settings`.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -6412,6 +6720,98 @@
       }
     },
     {
+      "name": "propose_set_visitor_ai",
+      "description": "Propose the visitor AI's settings: on/off, provider, model, budgets (24 hours, 30 days, per conversation, staging per 24 hours), conversations at once, and ceilings that lower a plugin's limits (null = the plugin's).\nUSE FOR: the operator wants visitors' questions answered with AI (a site assistant plugin needs it before it can be activated), or a budget or limit changed. Read `get_visitor_ai` first.\nCORE RULES: send only what changes. Omit `model` with a new provider: its fastest model is chosen. Never propose a budget the operator did not name (when they name none, propose the stored ones). NEVER include an API key: the card asks the operator for it and you never see it.\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether visitors' conversations run at all."
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "anthropic",
+              "openai",
+              "google"
+            ]
+          },
+          "model": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$",
+            "description": "The model id; the provider's fastest class unless there is a reason."
+          },
+          "dailyBudgetUsd": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100000,
+            "description": "Most the live site spends in any 24 hours."
+          },
+          "monthlyBudgetUsd": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000000,
+            "description": "Most the live site spends in any 30 days."
+          },
+          "conversationBudgetUsd": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Most one conversation spends."
+          },
+          "stagingDailyBudgetUsd": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10000,
+            "description": "Staging's own budget per 24 hours."
+          },
+          "maxConcurrent": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "description": "Conversations answered at once."
+          },
+          "maxTurns": {
+            "description": "null: the plugin's limit.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 20
+          },
+          "maxQuestionChars": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 20,
+            "maximum": 2000
+          },
+          "maxAnswerTokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 64,
+            "maximum": 2000
+          }
+        },
+        "additionalProperties": false
+      },
+      "gated": true
+    },
+    {
+      "name": "get_visitor_ai",
+      "description": "Read the visitor AI (the AI that answers visitors through a plugin such as a site assistant): settings, whether a key is stored for live and staging (provider and date, never the key), why it cannot run (`blocked`), and what visitors spent in the last 24 hours and 30 days. Use before `propose_set_visitor_ai` and when the operator asks what the assistant costs.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
       "name": "propose_rotate_gateway_cookie_secret",
       "description": "Propose rotating the secret the public gateway signs visitor cookies with. ONLY when the operator asks or it may have leaked (logs, backup, former contractor): irreversible — every visitor re-identified, rate-limit + captcha state restart, signed-in visitors sign in again. You never see the secret.\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
       "inputSchema": {
@@ -6570,6 +6970,169 @@
       }
     },
     {
+      "name": "get_security_headers",
+      "description": "Read the site's response-header policy and the headers staging and the live site send now (CSP, Referrer-Policy, Permissions-Policy, framing, HSTS), what the build derived and which plugin added what.\nUSE FOR: a security scan names a missing header; a script, embed or frame is blocked; before `propose_set_security_headers`.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "propose_set_security_headers",
+      "description": "Change the site's response-header policy; only the named settings change. The build derives each CSP from what it ships (origins in markup, approved tags and embeds, inline hashes), so a host used in a page needs no entry.\nUSE FOR: `extraSources` when a Stage finding names a host and this tool as the next step; `frameAncestors` when another site must embed this one; `cspMode` when the operator decides to enforce.\nDO NOT USE FOR: allowing an embed or tag for visitors -> consent tools; turning off a blocker -> move the handler into module `js`.\nCORE RULES: read `get_security_headers` first. Patch fields replace, so `extraSources` carries every entry to keep. Propose `enforce` only when it lists nothing that enforcing would stop and the Stage's quality check shows no CSP violation, and tell the operator what that rests on: the check opens a few pages and gives no consent, so a violation elsewhere or after consent reaches nobody and is blocked for visitors. After approval it is saved, not live: offer the Stage; Publish live stays the operator's.\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cspMode": {
+            "type": "string",
+            "enum": [
+              "report_only",
+              "enforce"
+            ]
+          },
+          "frameAncestors": {
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 253,
+              "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+            }
+          },
+          "referrerPolicy": {
+            "type": "string",
+            "enum": [
+              "strict-origin-when-cross-origin",
+              "strict-origin",
+              "same-origin",
+              "no-referrer"
+            ]
+          },
+          "allowedFeatures": {
+            "maxItems": 9,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "bluetooth",
+                "camera",
+                "geolocation",
+                "hid",
+                "microphone",
+                "midi",
+                "payment",
+                "serial",
+                "usb"
+              ]
+            }
+          },
+          "hsts": {
+            "type": "object",
+            "properties": {
+              "maxAgeSeconds": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 63072000
+              },
+              "includeSubdomains": {
+                "type": "boolean"
+              },
+              "preload": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "maxAgeSeconds",
+              "includeSubdomains",
+              "preload"
+            ],
+            "additionalProperties": false
+          },
+          "extraSources": {
+            "type": "object",
+            "properties": {
+              "script": {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+                }
+              },
+              "style": {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+                }
+              },
+              "img": {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+                }
+              },
+              "font": {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+                }
+              },
+              "connect": {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+                }
+              },
+              "frame": {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+                }
+              },
+              "media": {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+                }
+              },
+              "form": {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "gated": true
+    },
+    {
       "name": "get_static_file",
       "description": "Read one static file's text by path. Read it before `propose_set_static_files` replaces it.",
       "inputSchema": {
@@ -6589,7 +7152,7 @@
     },
     {
       "name": "propose_set_static_files",
-      "description": "Create or replace static data files at chosen addresses on the site's domain, served with the right Content-Type like robots.txt: a bot IP list, /.well-known/security.txt, ads.txt, a CSV. One call for several files, they apply together.\nDO NOT USE FOR: anything visitors read as a page (pages and modules), images (media), redirects, or HTML, JavaScript, CSS or SVG, which are refused. Google or Bing verification by HTML file: use their DNS or meta-tag route instead.\nCORE RULES: `path` is the full address (no /api or /_ folders, robots.txt and sitemap.xml are built). Allowed endings are .json, .txt, .csv, .xml or none, and the ending must fit `contentType`. At most 256 KiB per file and 50 files per site. Send the file exactly as it must be served in `body`, as text. After approval it is saved, not live: offer the Stage.\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
+      "description": "Create or replace static data files at chosen addresses on the site's domain, served with the right Content-Type like robots.txt: a bot IP list, /.well-known/security.txt, ads.txt, a CSV. One call for several files, they apply together.\nDO NOT USE FOR: anything visitors read as a page (pages and modules), images (media), redirects, or HTML, JavaScript, CSS or SVG, which are refused. Google or Bing verification by HTML file: use their DNS or meta-tag route instead.\nCORE RULES: `path` is the full address (no /api or /_ folders, robots.txt and sitemap.xml are built; robots.txt rules: `propose_set_site_seo` robotsRules). Allowed endings are .json, .txt, .csv, .xml or none, and the ending must fit `contentType`. At most 256 KiB per file and 50 files per site. Send the file exactly as it must be served in `body`, as text. After approval it is saved, not live: offer the Stage.\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -6644,7 +7207,7 @@
     },
     {
       "name": "propose_external_redirect",
-      "description": "Send an address on this site to another website with a real redirect: a short link on a QR code or letter, a booking link, an old subdomain's target. One call for several, approved together. Never build a page with a JS forward for this.\nDO NOT USE FOR: a target on this site (`bulk_create_redirects`, the path only).\nCORE RULES: `url` is the full `https://` address as a browser shows it: no credentials, no port, no host of this install. `statusCode` defaults to 302; use 301 only when the destination never changes, because browsers remember it. On the plain GCP hosting the `url` cannot carry a `?query` or `#fragment`. Live on the hosting right after approval, no Publish live.\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
+      "description": "Send an address on this site to another website with a real redirect: a short link on a QR code or letter, a booking link, an old subdomain's target. One call for several, approved together. Never build a page with a JS forward for this.\nDO NOT USE FOR: a target on this site (`bulk_create_redirects`, the path only).\nCORE RULES: `url` is the full `https://` address as a browser shows it: no credentials, no port, no host of this install. `statusCode` defaults to 302; use 301 only when the destination never changes, because browsers remember it. On the plain GCP hosting the `url` cannot carry a `?query` or `#fragment`. Approved rules are Staged (live with the next Publish live); `goLive: \"now\"` only when the operator wants them live at approval.\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -6694,6 +7257,14 @@
               ],
               "additionalProperties": false
             }
+          },
+          "goLive": {
+            "default": "next_publish",
+            "type": "string",
+            "enum": [
+              "next_publish",
+              "now"
+            ]
           }
         },
         "required": [
@@ -6726,6 +7297,216 @@
         "additionalProperties": false
       },
       "gated": true
+    },
+    {
+      "name": "get_plugin_config",
+      "description": "Read a plugin's configuration: every field with its current value, what it does, allowed values, and whether it needs approval. Also lists the per-entity fields (page, module, content instance, page type).\nUSE FOR: before update_plugin_config, propose_plugin_config or set_plugin_entity_config_many; when the operator asks how a plugin is set up.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pluginSlug": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,54}$"
+          }
+        },
+        "required": [
+          "pluginSlug"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "preview_plugin_config",
+      "description": "Dry-run a configuration change: which fields move from what to what, and, when the plugin offers one, its own report (e.g. how test queries' results would change). Writes nothing.\nUSE FOR: a change whose result the operator should see first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pluginSlug": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,54}$"
+          },
+          "patch": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "pluginSlug",
+          "patch"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_plugin_config",
+      "description": "Change a plugin's configuration with a merge patch: send only the fields that change, groups nested, a map key set to null takes its default. Lands on this chat's draft like any edit; undo works.\nDO NOT USE FOR: fields marked APPROVAL in get_plugin_config (propose_plugin_config).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pluginSlug": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,54}$"
+          },
+          "patch": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "pluginSlug",
+          "patch"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "propose_plugin_config",
+      "description": "Change plugin configuration fields marked APPROVAL in get_plugin_config (cost limits and the like). The patch may include routine fields; all apply together after the approval.\nDO NOT USE FOR: a patch without an APPROVAL field (update_plugin_config). `reason` is shown to the operator: say why in their terms.\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pluginSlug": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,54}$"
+          },
+          "patch": {
+            "type": "object"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "pluginSlug",
+          "patch",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "gated": true
+    },
+    {
+      "name": "set_plugin_entity_config_many",
+      "description": "Set a plugin's per-entity fields (e.g. how a module counts for search) for many pages, modules, content instances or page types in one call; null takes the default again. Lands on this chat's draft.\nUSE FOR: overrides the operator asks for, after get_plugin_config shows the fields.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pluginSlug": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,54}$"
+          },
+          "items": {
+            "minItems": 1,
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "page",
+                    "module",
+                    "contentInstance",
+                    "pageType"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "values": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "values"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "pluginSlug",
+          "items"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "start_plugin_batch",
+      "description": "Start a long task a plugin offers (a batch: it runs outside the admin and can take minutes). Returns at once with the run; follow it with list_plugin_batches. What it writes reaches the site with the next Stage and the operator's Publish live.\nUSE FOR: the operator asks a plugin to rebuild or recompute something, and the plugin offers that as a batch (get_plugin lists them).\nDO NOT USE FOR: a batch that is already running (the tool says so), or for changing settings (update_plugin_config).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pluginSlug": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,54}$"
+          },
+          "operation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "input": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "pluginSlug",
+          "operation"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_plugin_batches",
+      "description": "List plugin batch runs, newest first: what ran, how it was started (activation, operator, stage, schedule), how it ended, its result or error.\nUSE FOR: following a batch you started, or when the operator asks whether a plugin's background task ran.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pluginSlug": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,54}$"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "stopped"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "stop_plugin_batch",
+      "description": "Stop a plugin batch run that has not ended (queued or running). It ends at its next step; what it already wrote stays until the plugin writes again.\nUSE FOR: the operator no longer wants a running batch, or wants to start it again with other input.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "runId"
+        ],
+        "additionalProperties": false
+      }
     },
     {
       "name": "cancel_proposal",
@@ -7086,7 +7867,7 @@
     },
     {
       "name": "list_theme_history",
-      "description": "List a theme's edit history (who changed what, when; newest first, max 100). Omit `themeSlug` for the ACTIVE theme.",
+      "description": "List a theme's edit history (who changed what, when; newest first). Omit `themeSlug` for the ACTIVE theme.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -7097,22 +7878,22 @@
             "pattern": "^[a-z0-9][a-z0-9-]*$"
           },
           "filter": {
-            "description": "Case-insensitive substring over all columns.",
+            "description": "Substring, this page's rows only.",
             "type": "string",
             "maxLength": 200
           },
           "limit": {
-            "description": "Default 50.",
+            "description": "Default 20.",
             "type": "integer",
             "minimum": 1,
-            "maximum": 500
+            "maximum": 50
           },
           "offset": {
             "type": "integer",
             "minimum": 0
           },
           "full": {
-            "description": "true = all rows, no truncation.",
+            "description": "true = 50 rows, no size cap.",
             "type": "boolean"
           }
         },
@@ -7121,7 +7902,7 @@
     },
     {
       "name": "set_theme_asset",
-      "description": "Bind a theme brand-asset slot to a media row, or clear it with `mediaId: null`. Active theme unless `themeSlug`. A bound favicon is emitted as `<link rel=\"icon\">` on every page — never hand-write icon tags in modules.",
+      "description": "Bind a theme brand-asset slot to a media row, or clear it with `mediaId: null`. Active theme unless `themeSlug`. A bound favicon is emitted as `<link rel=\"icon\">` on every page — never hand-write icon tags in modules. `socialShare` is the site's default link-preview image (og:image): every page without its own shows it after the next Stage + Publish live, so never copy it onto pages with `set_page_seo_many`.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -7311,7 +8092,7 @@
     },
     {
       "name": "deploy_staging",
-      "description": "Rebuild the STAGING site (noindex, never visitor-facing) from PUBLISHED content; returns run id, page/file counts, preview URL.\nUSE FOR: before `propose_deploy_promote` when staging has no (or an outdated) successful build | after fixing a failed build (e.g. `regenerate_media_variants`) | operator asks to refresh staging.\nCORE RULES: this chat's unpublished changes are NOT in the build until published; never tell the operator pending edits are on staging. Production isn't reachable here: go live via `propose_deploy_promote`. Failed build -> fix the generator's named cause, then call again; never retry unchanged.",
+      "description": "Rebuild the STAGING site (noindex, never visitor-facing) from PUBLISHED content; returns run id, page/file counts, preview URL.\nUSE FOR: before `propose_deploy_promote` when staging has no (or an outdated) successful build | after fixing a failed build (e.g. `regenerate_media_variants`) | operator asks to refresh staging.\nCORE RULES: this chat's unpublished changes are NOT in the build until published; never tell the operator pending edits are on staging. Production isn't reachable here: go live via `propose_deploy_promote`. Content it could not render is built and reported, not a failure: repair what it names, then rebuild. Failed build -> fix the generator's named cause, then call again; never retry unchanged.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -7623,7 +8404,7 @@
             "type": "boolean"
           },
           "filter": {
-            "description": "Case-insensitive substring over all columns.",
+            "description": "Substring, this page's rows only.",
             "type": "string",
             "maxLength": 200
           },
@@ -7631,14 +8412,14 @@
             "description": "Default 50.",
             "type": "integer",
             "minimum": 1,
-            "maximum": 500
+            "maximum": 200
           },
           "offset": {
             "type": "integer",
             "minimum": 0
           },
           "full": {
-            "description": "true = all rows, no truncation.",
+            "description": "true = 200 rows, no size cap.",
             "type": "boolean"
           }
         },
@@ -7706,7 +8487,7 @@
             ]
           },
           "filter": {
-            "description": "Case-insensitive substring over all columns.",
+            "description": "Substring, this page's rows only.",
             "type": "string",
             "maxLength": 200
           },
@@ -7714,14 +8495,14 @@
             "description": "Default 50.",
             "type": "integer",
             "minimum": 1,
-            "maximum": 500
+            "maximum": 200
           },
           "offset": {
             "type": "integer",
             "minimum": 0
           },
           "full": {
-            "description": "true = all rows, no truncation.",
+            "description": "true = 200 rows, no size cap.",
             "type": "boolean"
           }
         },
@@ -7764,7 +8545,7 @@
             "type": "boolean"
           },
           "filter": {
-            "description": "Case-insensitive substring over all columns.",
+            "description": "Substring, this page's rows only.",
             "type": "string",
             "maxLength": 200
           },
@@ -7772,14 +8553,14 @@
             "description": "Default 50.",
             "type": "integer",
             "minimum": 1,
-            "maximum": 500
+            "maximum": 100
           },
           "offset": {
             "type": "integer",
             "minimum": 0
           },
           "full": {
-            "description": "true = all rows, no truncation.",
+            "description": "true = 100 rows, no size cap.",
             "type": "boolean"
           }
         },
@@ -7805,7 +8586,7 @@
     },
     {
       "name": "get_module_impact",
-      "description": "Blast radius of editing one module: every live page placing it + severity and reasons. Use BEFORE editing a possibly shared module (header, footer, CTA) to tell the operator what else changes, or to pick `fork_placement_content` instead.",
+      "description": "Blast radius of editing one module, as this chat sees the site: pages placing it, layouts and parent modules holding it, severity and reasons. Use BEFORE editing a possibly shared module (header, footer, CTA) to tell the operator what else changes, or to pick `fork_placement_content` instead.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -7822,7 +8603,7 @@
     },
     {
       "name": "list_unpublished_changes",
-      "description": "List what THIS chat changed that is not published yet (pages — SEO included, marked `· SEO` — modules, templates, layouts, theme, lists), split unstaged | staged. Use before saying work is ready to publish, to summarise what publishing ships, or to check an edit landed.",
+      "description": "List what THIS chat changed that is not published yet (pages — SEO included, marked `· SEO` — modules, templates, layouts, theme, lists), split unstaged | staged; plus the site's pending redirect changes (going live, waiting for their target, Draft) and what the next Publish live ships (pages new/changed/removed, site-wide parts, settings). Use before saying work is ready to publish, to summarise what publishing ships, or to check an edit landed.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -7907,7 +8688,7 @@
     },
     {
       "name": "get_page_seo",
-      "description": "Read pages' stored SEO fields (meta description, OG image, canonical, noindex, sitemap, autofill/optimize times) AND core text (plain text of own content blocks, no header/footer chrome, this chat's draft, ~1500 chars). A 'pending (not staged)' line names SEO fields this chat changed: live only after Stage + Publish live.\nUSE FOR: reading before writing/optimizing descriptions — ALL pages in one call, then ONE `autofill_page_seo_many` (first description) or `bulk_optimize_seo`/`set_page_seo_many`.\nDO NOT USE `inspect_page_render`/`screenshot_page` for this (layout/visual only). No SEO row -> `autofill_page_seo_many` fills it.",
+      "description": "Read pages' SEO head as a build renders it — `<title>`, meta description, og:title/description/type, robots — each with its ORIGIN (the operator's own / AI-written / reviewed / page type or site template / inherited / none), plus the stored own fields, canonical, sitemap, `data-nosnippet` placements, the `shareImage` each page really gets, and core text (plain text of own content blocks, this chat's draft, ~1500 chars). A 'pending (not staged)' line names SEO fields this chat changed: live only after Stage + Publish live.\nUSE FOR: reading before writing/optimizing SEO — ALL pages in one call, then ONE `autofill_page_seo_many` (first texts) or `bulk_optimize_seo`/`set_page_seo_many`. Fill only real gaps: a template or inherited value is no gap, the operator's own text is never yours to rewrite unasked.\nDO NOT USE `inspect_page_render`/`screenshot_page` for this (layout/visual only). No SEO row -> `autofill_page_seo_many` fills it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -7937,7 +8718,7 @@
         "type": "object",
         "properties": {
           "filter": {
-            "description": "Case-insensitive substring over all columns.",
+            "description": "Substring, this page's rows only.",
             "type": "string",
             "maxLength": 200
           },
@@ -7945,14 +8726,14 @@
             "description": "Default 50.",
             "type": "integer",
             "minimum": 1,
-            "maximum": 500
+            "maximum": 100
           },
           "offset": {
             "type": "integer",
             "minimum": 0
           },
           "full": {
-            "description": "true = all rows, no truncation.",
+            "description": "true = 100 rows, no size cap.",
             "type": "boolean"
           }
         },
@@ -8001,7 +8782,7 @@
             ]
           },
           "filter": {
-            "description": "Case-insensitive substring over all columns.",
+            "description": "Substring, this page's rows only.",
             "type": "string",
             "maxLength": 200
           },
@@ -8009,14 +8790,14 @@
             "description": "Default 50.",
             "type": "integer",
             "minimum": 1,
-            "maximum": 500
+            "maximum": 200
           },
           "offset": {
             "type": "integer",
             "minimum": 0
           },
           "full": {
-            "description": "true = all rows, no truncation.",
+            "description": "true = 200 rows, no size cap.",
             "type": "boolean"
           }
         },
@@ -8143,7 +8924,7 @@
     },
     {
       "name": "upsert_list_types_many",
-      "description": "Create or replace list types (the SHAPE of a list).\nDO NOT USE FOR: a near-duplicate of a shipped type (reuse `links`/`menu`); changing a plugin-shipped type (create your own slug).\nCORE RULES:\n- `root.allow` = top-level node kinds. `purpose` = why the type exists (later reads decide by it). `current_from` names the node's link field that marks the current page.\n- Field types: text, richtext, link (value {href}), media, select (`options`), boolean, number, date, icon, module (embedded; `accepts` = module types, absent = any), term (entries of vocabulary list `list: <slug>`).\n- Vocabulary types: one node kind with text fields `name` + `slug`.\n- `source` -> generated entries instead of stored children: {kind:'query', editable:[knobs an entry may change], defaults:{page_type, order, limit, …}} | {kind:'system', name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:'plugin', name}.\n- Mega menu: root.allow [\"column\"]; `column` {fields:[heading text], children:{name:\"links\", allow:[\"link\",\"news\"]}}; `link` {fields:[label text*, link link*], current_from:\"link\"}; `news` {fields:[heading text], source:{kind:\"query\", editable:[\"limit\"], defaults:{page_type:\"news\", order:\"published_desc\", limit:3}}} (`*` = required:true).\n- `dropValues:true` deletes values of removed kinds/fields: only with the operator's consent.\n- `expectedVersion` (from `list_list_types`) guards concurrent changes.",
+      "description": "Create or replace list types (the SHAPE of a list).\nDO NOT USE FOR: a near-duplicate of a shipped type (reuse `links`/`menu`); changing a plugin-shipped type (create your own slug).\nCORE RULES:\n- `root.allow` = top-level node kinds. `purpose` = why the type exists (later reads decide by it). `current_from` names the node's link field that marks the current page.\n- Field types: text, richtext, link (value {href}), media, select (`options`), boolean, number, date, icon, module (embedded; `accepts` = module types, absent = any), term (entries of vocabulary list `list: <slug>`).\n- Vocabulary types: one node kind with text fields `name` + `slug` and link `landing_page` (the term's overview page: term chips link there, breadcrumbs lead through it).\n- `source` -> generated entries instead of stored children: {kind:'query', editable:[knobs an entry may change], defaults:{page_type, order, limit, …}} | {kind:'system', name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:'plugin', name}.\n- Mega menu: root.allow [\"column\"]; `column` {fields:[heading text], children:{name:\"links\", allow:[\"link\",\"news\"]}}; `link` {fields:[label text*, link link*], current_from:\"link\"}; `news` {fields:[heading text], source:{kind:\"query\", editable:[\"limit\"], defaults:{page_type:\"news\", order:\"published_desc\", limit:3}}} (`*` = required:true).\n- `dropValues:true` deletes values of removed kinds/fields: only with the operator's consent.\n- `expectedVersion` (from `list_list_types`) guards concurrent changes.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -8484,7 +9265,7 @@
     },
     {
       "name": "preview_list_source",
-      "description": "Show what a generated list (page query, system or plugin source) returns for a page BEFORE binding/saving it; same resolver as preview + build, this chat's draft view. Only published pages appear; empty = wrong filter (page type slug, terms) or nothing published yet.\nE.g. `source`:{kind:'query', editable:['limit'], defaults:{page_type:'news', order:'published_desc', limit:3}}.\n`pageId` = page it renders on; needed for breadcrumbs/children/siblings/page_terms; a query excludes that page.",
+      "description": "Show what a generated list (page query, system or plugin source) returns for a page BEFORE binding/saving it; same resolver as preview + build, this chat's draft view. Only published pages appear; empty = wrong filter (page type slug, terms) or nothing published yet.\nE.g. `source`:{kind:'query', editable:['limit'], defaults:{page_type:'news', order:'published_desc', limit:3}}.\n`pageId` = page it renders on; needed for breadcrumbs/children/siblings/page_terms and `refers_to` page \"self\"; a query excludes that page.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -8551,7 +9332,7 @@
     },
     {
       "name": "upsert_page_types_many",
-      "description": "Create or replace page types in one transaction, when the operator starts a new kind of content ('a news section with categories', 'a job board').\nCORE RULES:\n- `templates`: ids from `list_templates`; none fits -> `create_template` with `newPageType` instead (template + type in one call). `defaultTemplate` is one of them.\n- `properties`: fields every page of the type carries (e.g. `author` text, `event_date` date); no `module` fields. `vocabularies[].list`: list id from `list_lists`.\n- Order for 'news with categories': `upsert_lists_many` (a `categories` list) -> `create_template` with `newPageType` (or this, reusing a template) -> `build_page`/`update_pages_many` with pageType, properties, terms.\n- Type in use: a new property's default is written into its pages; dropping a template they use is refused (move them first); dropping a property/vocabulary they hold values for needs `dropValues:true` (only with operator agreement). Pass `expectedVersion` from `list_page_types`.",
+      "description": "Create or replace page types in one transaction, when the operator starts a new kind of content ('a news section with categories', 'a job board').\nCORE RULES:\n- `templates`: ids from `list_templates`; none fits -> `create_template` with `newPageType` instead (template + type in one call). `defaultTemplate` is one of them.\n- `properties`: fields every page of the type carries (e.g. `event_date` date); no `module` fields. `vocabularies[].list`: list id from `list_lists`.\n- A page that names other pages (authors, reviewer, speakers, manufacturer) -> a `page` property, e.g. `{name:\"authors\", label:\"Authors\", type:\"page\", pageType:\"author\", multiple:true}`: the named pages are ordinary pages of their own type (create it in the same call), never text. The named page lists its referrers with a query `refers_to:{property:\"authors\", page:\"self\"}`.\n- Order for 'news with categories': `upsert_lists_many` (a `categories` list) -> `create_template` with `newPageType` (or this, reusing a template) -> `build_page`/`update_pages_many` with pageType, properties, terms.\n- Type in use: a new property's default is written into its pages; dropping a template they use is refused (move them first); dropping a property/vocabulary they hold values for needs `dropValues:true` (only with operator agreement). Pass `expectedVersion` from `list_page_types`.\n- Its `<title>` template and og:type (dated posts -> `article`): `set_page_type_seo_many`; a replacement here keeps them.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -8600,7 +9381,7 @@
                   "type": "array",
                   "items": {
                     "type": "object",
-                    "description": "a field: {name, label, type, required?, default?, options?, …}"
+                    "description": "a field: {name, label, type, required?, default?, options?, …}; type `page` = pages it names, in order: {pageType?: <page type slug>, multiple?}"
                   }
                 },
                 "vocabularies": {
