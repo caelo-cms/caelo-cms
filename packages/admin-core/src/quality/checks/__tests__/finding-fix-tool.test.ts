@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pluginAuditFinding } from "@caelo-cms/plugin-sdk";
 import { createDefaultToolRegistry } from "../../../ai/tools/index.js";
@@ -21,11 +21,13 @@ const PLUGINS = resolve(import.meta.dir, "../../../../../plugins");
 function shippedFixTools(): Set<string> {
   const out = new Set<string>();
   const walk = (dir: string) => {
-    for (const name of readdirSync(dir)) {
+    // The entries' kinds come with the listing: no stat-then-read.
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const name = entry.name;
       if (name === "node_modules" || name === "dist" || name.startsWith(".")) continue;
       const path = join(dir, name);
-      if (statSync(path).isDirectory()) walk(path);
-      else if (path.endsWith(".ts") && !path.endsWith(".test.ts")) {
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile() && path.endsWith(".ts") && !path.endsWith(".test.ts")) {
         for (const m of readFileSync(path, "utf8").matchAll(/\btool: "([^"]*)"/g)) {
           out.add(m[1] as string);
         }
