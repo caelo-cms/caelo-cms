@@ -413,11 +413,6 @@ export function shardBytes(s: ParsedShard): number {
   return s.data.byteLength + s.entryOffsets.byteLength + s.postingOffsets.byteLength + 64;
 }
 
-/** Parses a format-2 store file: the documents it holds, in key order. */
-export function parseStore(data: Uint8Array): KeyedDoc[] {
-  return JSON.parse(utf8Decoder.decode(inflateRawSync(data))) as KeyedDoc[];
-}
-
 /** A format-3 store block as loaded: the compressed documents and where each is. */
 export interface StoreBlock {
   readonly keys: Uint32Array;
