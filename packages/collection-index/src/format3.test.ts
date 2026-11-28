@@ -10,6 +10,7 @@
 import { describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { inflateRawSync } from "node:zlib";
 import {
   applyChanges,
   buildRelease,
@@ -18,6 +19,8 @@ import {
   columnValues,
   docPosition,
   FileCache,
+  keysOfTerms,
+  keywordTerm,
   openRelease,
   parseRelease,
   RELEASE_FORMAT,
@@ -40,7 +43,7 @@ function memory() {
   return {
     files,
     sink: (n: string, d: Uint8Array) => void files.set(n, d),
-    cache: (budget = 1 << 28) => new FileCache(source, budget),
+    cache: (budget = 2 ** 28) => new FileCache(source, budget),
     reads: () => reads,
   };
 }
@@ -102,53 +105,6 @@ describe("an honest cache bound (#1780)", () => {
     expect(cache.stats.misses).toBe(4);
   });
 
-  it("counts what parsed files hold, so the heap follows the budget", async () => {
-    const store = memory();
-    const docs = Array.from({ length: 3000 }, (_v, i) => ({
-      id: `p${i}`,
-      lang: "de",
-      values: {
-        title: `Seite ${i} über ${["Preise", "Versand", "Logfile", "Crawler"][i % 4]}`,
-        target: `/t/${i}`,
-        sections: Array.from({ length: 4 }, (_s, k) => ({
-          anchor: `s${k}`,
-          heading: `Abschnitt ${k}`,
-          text: `Ein längerer Text Nummer ${i}-${k} mit Wörtern wie Analyse, Bericht, Kosten, Übersicht und ${"Füllwort ".repeat(30)}`,
-        })),
-      },
-    }));
-    const built = await buildRelease(docs, {
-      schema: SCHEMA,
-      sink: store.sink,
-      embed: async (t) => clustered(t),
-      vectorModel: { id: "fake-32", dims: 32 },
-      tuning: { packMaxBytes: 0 },
-    });
-    const cache = store.cache(1 << 40);
-    const release = await openRelease(built.manifest, cache);
-    Bun.gc(true);
-    const before = process.memoryUsage().heapUsed;
-    const kept: unknown[] = [];
-    for (const s of release.segments) {
-      kept.push(await s.reader.docs());
-      for (let i = 0; i < s.reader.manifest.shards.length; i++)
-        kept.push(await s.reader.termsWithPrefix(s.reader.manifest.shards[i]?.first ?? "", 1));
-      kept.push(await s.reader.stored(Array.from({ length: 3000 }, (_v, k) => k + 1)));
-    }
-    Bun.gc(true);
-    const grown = process.memoryUsage().heapUsed - before;
-    // The decoded documents above are held by this test, not the cache: what
-    // the cache holds is what it counts, within a third either way.
-    const decoded =
-      JSON.stringify(
-        kept.at(-1) instanceof Map ? [...(kept.at(-1) as Map<number, unknown>).values()] : [],
-      ).length * 2;
-    const cached = grown - decoded;
-    expect(cache.bytesHeld).toBeGreaterThan(0);
-    expect(cached).toBeLessThan(cache.bytesHeld * 1.35 + 4_000_000);
-    expect(cache.stats.bytesLoaded).toBeGreaterThanOrEqual(cache.stats.bytesRead * 0.9);
-  }, 120_000);
-
   it("keeps store blocks compressed and decodes only the documents asked for", async () => {
     const store = memory();
     const built = await buildRelease(
@@ -168,6 +124,26 @@ describe("an honest cache bound (#1780)", () => {
     let all = 0;
     for await (const _d of reader?.allStored() ?? []) all++;
     expect(all).toBe(200);
+  });
+});
+
+describe("keys from postings (#1779)", () => {
+  it("lists each key once, also for a term named twice (two boosts on one value)", async () => {
+    const store = memory();
+    const built = await buildRelease(
+      Array.from({ length: 30 }, (_v, i) => doc(i)),
+      {
+        schema: SCHEMA,
+        sink: store.sink,
+        embed: async (t) => clustered(t),
+        vectorModel: { id: "fake-32", dims: 32 },
+      },
+    );
+    const release = await openRelease(built.manifest, store.cache());
+    const term = keywordTerm("target", "/ziel/2");
+    const held = await keysOfTerms(release, [term, term]);
+    expect(held.size).toBe(1);
+    expect(held.get(term)).toEqual([3, 20]);
   });
 });
 
@@ -322,6 +298,23 @@ describe("a format-2 release (#1780)", () => {
       minSimilarity: -1,
     });
     expect(near.length).toBe(4);
+  });
+
+  // #1780 — the measured undercount: a parsed store file holds about twice
+  // its JSON text, which is several times the compressed file.
+  it("counts a parsed store file as its decoded text, not its compressed size", async () => {
+    const c = cache();
+    const release = await openRelease(manifest, c);
+    const segment = release.segments[0]?.reader;
+    const storeFile = segment?.manifest.stores[0]?.file as string;
+    const before = { read: c.stats.bytesRead, loaded: c.stats.bytesLoaded };
+    await segment?.stored([1, 2, 3, 4]);
+    const read = c.stats.bytesRead - before.read;
+    const loaded = c.stats.bytesLoaded - before.loaded;
+    expect(read).toBe((files.get(storeFile) as Uint8Array).length);
+    const text = new TextDecoder().decode(inflateRawSync(files.get(storeFile) as Uint8Array));
+    expect(loaded).toBe(1024 + text.length * 2);
+    expect(loaded).toBeGreaterThan(read * 3);
   });
 
   it("is never extended: the next release is built from its documents", async () => {

@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_EMBEDDING_MODEL_ID, type EmbeddingModel, embeddingModel } from "@caelo-cms/shared";
 import { Tokenizer } from "@huggingface/tokenizers";
@@ -155,11 +155,12 @@ describe(`CompactTokenizer, ${model.id}`, () => {
       );
       const texts: string[] = [];
       const walk = (path: string): void => {
-        for (const name of readdirSync(path)) {
-          if (name === "node_modules" || name.startsWith(".")) continue;
-          const child = join(path, name);
-          if (statSync(child).isDirectory()) walk(child);
-          else if (name.endsWith(".md")) texts.push(...readFileSync(child, "utf8").split(/\n\n+/));
+        for (const entry of readdirSync(path, { withFileTypes: true })) {
+          if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+          const child = join(path, entry.name);
+          if (entry.isDirectory()) walk(child);
+          else if (entry.isFile() && entry.name.endsWith(".md"))
+            texts.push(...readFileSync(child, "utf8").split(/\n\n+/));
         }
       };
       walk(join(import.meta.dir, "../../../docs"));

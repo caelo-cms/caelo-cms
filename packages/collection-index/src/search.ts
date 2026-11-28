@@ -740,13 +740,15 @@ export async function keysOfTerms(
   release: OpenRelease,
   terms: readonly string[],
 ): Promise<Map<string, number[]>> {
-  const out = new Map<string, number[]>(terms.map((t) => [t, []]));
+  // Once per term: a term named twice must not list its keys twice.
+  const unique = [...new Set(terms)];
+  const out = new Map<string, number[]>(unique.map((t) => [t, []]));
   await Promise.all(
     release.segments.map(async (seg) => {
-      const lists = await Promise.all(terms.map((t) => seg.reader.postings(t)));
+      const lists = await Promise.all(unique.map((t) => seg.reader.postings(t)));
       lists.forEach((list, i) => {
         if (!list) return;
-        const keys = out.get(terms[i] as string) as number[];
+        const keys = out.get(unique[i] as string) as number[];
         for (const k of list.keys) if (!seg.removed.has(k)) keys.push(k);
       });
     }),

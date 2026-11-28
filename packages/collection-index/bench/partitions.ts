@@ -19,7 +19,7 @@
  * Markdown table for docs/dev/scale-gate.md.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_EMBEDDING_MODEL_ID, embeddingModel } from "@caelo-cms/shared";
 import { createNativeEmbedder } from "../../models/src/native.js";
@@ -62,11 +62,12 @@ function passages(): string[] {
   }
   const seen = new Set<string>();
   const walk = (dir: string): void => {
-    for (const name of readdirSync(dir)) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const name = entry.name;
       if (name === "node_modules" || name.startsWith(".") || name === "dist") continue;
       const path = join(dir, name);
-      if (statSync(path).isDirectory()) walk(path);
-      else if (name.endsWith(".md"))
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile() && name.endsWith(".md"))
         for (const p of readFileSync(path, "utf8").split(/\n\n+/))
           if (p.trim().length >= 60) seen.add(p.trim().slice(0, 1200));
     }
@@ -106,7 +107,9 @@ async function vectors(
   if (file) {
     mkdirSync(cacheDir as string, { recursive: true });
     const all = new Float32Array(out.length * dims);
-    out.forEach((v, i) => all.set(v, i * dims));
+    out.forEach((v, i) => {
+      all.set(v, i * dims);
+    });
     writeFileSync(file, new Uint8Array(all.buffer));
   }
   return out;
