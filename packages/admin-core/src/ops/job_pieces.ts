@@ -109,18 +109,23 @@ export const registerJobPiecesOp = defineOperation({
            AND piece_key NOT IN (SELECT jsonb_array_elements_text(${keys}))
       `);
       await tx.execute(sql`
-        INSERT INTO job_pieces (kind, subject_id, scope, piece, piece_key, state)
-        SELECT ${input.kind}, ${input.subjectId}::uuid, ${input.scope},
-               (SELECT COALESCE(max(piece) + 1, 0) FROM job_pieces
-                 WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid
-                   AND scope = ${input.scope}) + k.n - 1,
-               k.key, 'open'
-        FROM jsonb_array_elements_text(${keys}) WITH ORDINALITY AS k(key, n)
-        WHERE NOT EXISTS (
-          SELECT 1 FROM job_pieces p
-           WHERE p.kind = ${input.kind} AND p.subject_id = ${input.subjectId}::uuid
-             AND p.scope = ${input.scope} AND p.piece_key = k.key
+        WITH fresh AS (
+          SELECT k.key, k.n FROM jsonb_array_elements_text(${keys}) WITH ORDINALITY AS k(key, n)
+          WHERE NOT EXISTS (
+            SELECT 1 FROM job_pieces p
+             WHERE p.kind = ${input.kind} AND p.subject_id = ${input.subjectId}::uuid
+               AND p.scope = ${input.scope} AND p.piece_key = k.key
+          )
+        ), base AS (
+          SELECT COALESCE(max(piece) + 1, 0) AS b FROM job_pieces
+           WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid
+             AND scope = ${input.scope}
         )
+        INSERT INTO job_pieces (kind, subject_id, scope, piece, piece_key, state)
+        -- Numbered on from the highest piece, without gaps, in the plan's order.
+        SELECT ${input.kind}, ${input.subjectId}::uuid, ${input.scope},
+               base.b + (row_number() OVER (ORDER BY fresh.n))::int - 1, fresh.key, 'open'
+        FROM fresh, base
       `);
     } else {
       // An index shard is its number in a plan every attempt makes alike.

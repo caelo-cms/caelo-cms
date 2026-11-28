@@ -40,7 +40,7 @@ import {
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
-import { MAX_CLAIM_SECONDS, type PieceClaim, workerName } from "../ops/job_pieces.js";
+import { MAX_CLAIM_SECONDS, MAX_PIECES, type PieceClaim, workerName } from "../ops/job_pieces.js";
 import {
   ActionRefusal,
   type AdminJobDeps,
@@ -297,7 +297,7 @@ export const pluginBatchJobKind: ReportingJobKindDef = {
             .number()
             .int()
             .min(0)
-            .max(MAX_BATCH_PIECES - 1),
+            .max(MAX_PIECES - 1),
         })
         .strict(),
       async handle(deps, runId, input) {

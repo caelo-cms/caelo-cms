@@ -511,8 +511,10 @@ describe("job_pieces", () => {
     await op("job_pieces.done", { kind: "collection_index", subjectId: s, scope, piece: 0 });
     // The next plan skips what it did and names a new piece: c (open) goes, d joins.
     expect(await register(s, 3, [], ["a", "b", "d"])).toEqual({ unfinished: 2 });
-    const keys = [await claim(s, "lead"), await claim(s, "lead")].map((c) => c.key).sort();
-    expect(keys).toEqual(["b", "d"]);
+    const next = [await claim(s, "lead"), await claim(s, "lead")];
+    expect(next.map((c) => c.key).sort()).toEqual(["b", "d"]);
+    // d is numbered on from the highest piece, without a gap.
+    expect(next.find((c) => c.key === "d")?.piece).toBe(2);
     expect(await claim(s, "lead")).toEqual({ wait: true });
     await expect(register(s, 2, [], ["x", "x"])).rejects.toThrow(/named twice/);
   });
