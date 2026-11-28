@@ -1604,25 +1604,16 @@ async function buildSite(
   if (indexNowKey !== null) {
     await writeSearchFile(indexNowKeyFile(indexNowKey), indexNowKey, "text/plain; charset=utf-8");
   }
-  // #1763 — /llms.txt, when a plugin switches it on (off by default). It
-  // speaks for the whole site: an incremental build adds the pages it
-  // leaves alone from the live record, and before the first recorded build
-  // (no record to read them from) it leaves the deployed file as it is,
-  // like the HTML of those pages.
+  // #1763 — /llms.txt, when a plugin switches it on (off by default).
   if ((await args.plugins.resolveAgentFiles()).llmsTxt) {
-    const full = pagesToBuild === null;
-    if (full || contentStates.hasRecord) {
-      await writeSearchFile(
-        LLMS_TXT_FILE,
-        await buildLlmsTxt(
-          tx,
-          seo,
-          { siteBaseUrl: seoSettings.siteBaseUrl, sitemap: sitemapEmitted },
-          full ? [] : contentStates.liveNotRendered(new Set(pageRows.map((p) => p.page_id))),
-        ),
-        LLMS_TXT_CONTENT_TYPE,
-      );
-    }
+    await writeSearchFile(
+      LLMS_TXT_FILE,
+      await buildLlmsTxt(tx, seo, {
+        siteBaseUrl: seoSettings.siteBaseUrl,
+        sitemap: sitemapEmitted,
+      }),
+      LLMS_TXT_CONTENT_TYPE,
+    );
   }
   // cdn_manifest.json is always written.
   await media.finish(writeBuildFile);

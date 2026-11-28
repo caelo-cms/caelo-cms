@@ -280,30 +280,4 @@ describe("ContentStates", () => {
     s.record(page("p1"));
     expect(() => s.record(page("p1"))).toThrow("recorded twice");
   });
-
-  it("#1763 — names the live pages a build does not render, as published", () => {
-    const live = (url: string | null, title: string | null) => ({
-      url,
-      fingerprint: url === null ? null : FP_A,
-      pluginFingerprint: null,
-      title,
-      summary: title === null ? null : `${title} text`,
-      changedAt: "2026-11-01T00:00:00.000Z",
-    });
-    const s = states(
-      {
-        p1: live("https://example.com/p1/", "One"),
-        p2: live("https://example.com/p2/", "Two"),
-        gone: live(null, null),
-      },
-      7,
-      false,
-    );
-    expect(s.hasRecord).toBe(true);
-    // p1 is rendered (it speaks for itself), a page no longer live is left out.
-    expect(s.liveNotRendered(new Set(["p1"]))).toEqual([
-      { pageId: "p2", url: "https://example.com/p2/", title: "Two", summary: "Two text" },
-    ]);
-    expect(states({}, null, false).hasRecord).toBe(false);
-  });
 });

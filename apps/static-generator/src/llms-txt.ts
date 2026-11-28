@@ -123,57 +123,27 @@ export function renderLlmsTxt(args: {
   return `${lines.join("\n")}\n`;
 }
 
-/** A path without its trailing slash (the root stays `/`). */
-function barePath(path: string): string {
-  return path.length > 1 ? path.replace(/\/+$/, "") : path;
-}
-
-/** A page live as recorded that the build leaves alone (`ContentStates.liveNotRendered`). */
-export interface LiveRecordedPage {
-  readonly pageId: string;
-  readonly url: string;
-  readonly title: string;
-  readonly summary: string;
-}
-
 /**
  * The file of a build: its indexing state ({@link SeoPass.indexedPages}),
  * the page types' names, the site's name (else its host) and the home
  * page's meta description as the summary.
- *
- * An incremental build renders only the pages a change reached, while the
- * file speaks for the whole site: the other pages come from the live
- * record (`unchanged`), with the URL, title and description they were
- * published with, never from page rows that may hold unpublished edits.
- * A recorded page whose URL is not its own address (a canonical pointing
- * elsewhere) is left out, as the build leaves it out.
  */
 export async function buildLlmsTxt(
   tx: TransactionRunner,
   seo: Pick<SeoPass, "indexedPages">,
   site: { readonly siteBaseUrl: string; readonly sitemap: boolean },
-  unchanged: readonly LiveRecordedPage[] = [],
 ): Promise<string> {
   const indexed = await seo.indexedPages();
-  const { pageTypes, paths, siteName } = await loadLlmsTxtContext(tx, [
-    ...indexed.map((p) => p.pageId),
-    ...unchanged.map((p) => p.pageId),
-  ]);
+  const { pageTypes, siteName } = await loadLlmsTxtContext(
+    tx,
+    indexed.map((p) => p.pageId),
+  );
   const base = new URL(site.siteBaseUrl);
-  const own = unchanged.flatMap((p) => {
-    const path = paths.get(p.pageId);
-    // A page row that is gone keeps its deployed HTML until a full build:
-    // without its page type it cannot be filed, so it waits for that build.
-    if (path === undefined || !URL.canParse(p.url)) return [];
-    if (barePath(new URL(p.url).pathname) !== barePath(path)) return [];
-    return [{ pageId: p.pageId, url: p.url, title: p.title, metaDescription: p.summary }];
-  });
-  const all = [...indexed, ...own];
-  const home = all.find((p) => new URL(p.url).pathname === "/");
+  const home = indexed.find((p) => new URL(p.url).pathname === "/");
   return renderLlmsTxt({
     siteName: siteName?.trim() || base.host,
     summary: home?.metaDescription ?? "",
-    pages: all.map((p) => {
+    pages: indexed.map((p) => {
       const pageType = pageTypes.get(p.pageId);
       if (pageType === undefined) {
         throw new Error(`llms.txt: page ${p.pageId} of the build has no page type`);
@@ -196,28 +166,19 @@ function jsonb(value: unknown): ReturnType<typeof sql> {
 export async function loadLlmsTxtContext(
   tx: TransactionRunner,
   pageIds: readonly string[],
-): Promise<{
-  readonly pageTypes: Map<string, string>;
-  readonly paths: Map<string, string>;
-  readonly siteName: string | null;
-}> {
+): Promise<{ readonly pageTypes: Map<string, string>; readonly siteName: string | null }> {
   const pageTypes = new Map<string, string>();
-  const paths = new Map<string, string>();
   for (let at = 0; at < pageIds.length; at += 1000) {
     const ids = pageIds.slice(at, at + 1000);
     const rows = (await tx.execute(sql`
-      SELECT p.id::text AS page_id, p.current_path,
-             coalesce(pt.definition->>'name', pt.slug) AS name
+      SELECT p.id::text AS page_id, coalesce(pt.definition->>'name', pt.slug) AS name
       FROM pages p JOIN page_types pt ON pt.id = p.page_type_id
       WHERE p.id IN (SELECT jsonb_array_elements_text(${jsonb(ids)})::uuid)
-    `)) as unknown as { page_id: string; current_path: string; name: string }[];
-    for (const r of rows) {
-      pageTypes.set(r.page_id, r.name);
-      paths.set(r.page_id, r.current_path);
-    }
+    `)) as unknown as { page_id: string; name: string }[];
+    for (const r of rows) pageTypes.set(r.page_id, r.name);
   }
   const site = (await tx.execute(sql`
     SELECT site_name FROM site_defaults WHERE id = 1
   `)) as unknown as { site_name: string | null }[];
-  return { pageTypes, paths, siteName: site[0]?.site_name ?? null };
+  return { pageTypes, siteName: site[0]?.site_name ?? null };
 }
