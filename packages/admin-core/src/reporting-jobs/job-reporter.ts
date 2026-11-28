@@ -128,10 +128,9 @@ export function faultWatchingReporter(inner: JobReporter): {
       subjectId: inner.subjectId,
       attempt: inner.attempt,
       // Everything the order handed the attempt passes through: v0.12.17
-      // dropped `capacity` here, so every Google Cloud audit refused to
-      // start its Lighthouse runs (#1766's quota-sized widths never arrived).
+      // dropped a field here (#1789), and a helper's slot (#1776) says
+      // which task it is in its piece claims.
       ...(inner.slot ? { slot: inner.slot } : {}),
-      ...(inner.capacity ? { capacity: inner.capacity } : {}),
       get stopped() {
         return inner.stopped;
       },

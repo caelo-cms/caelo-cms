@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { reportedLighthouseReserve } from "../../quality/audit-job.js";
 import { gcpAuditLauncherFromEnv } from "../../quality/gcp-audit-launcher.js";
 import { parseJobOrder, runOrder } from "../job-entry.js";
 import {
@@ -19,7 +20,6 @@ import {
   type ReportTransport,
 } from "../job-reporter.js";
 import type { JobOrder, ReportEnvelope } from "../protocol.js";
-import { planRunCapacity } from "../run-capacity.js";
 import { runJobAttempt } from "../run-job.js";
 
 const ORDER: JobOrder = {
@@ -148,16 +148,14 @@ describe("deferAttempt and faultWatchingReporter", () => {
     expect(watched.fault()).toBeInstanceOf(ReportError);
   });
 
-  it("passes the order's capacity and task slot through, so the audit can size its Lighthouse runs", () => {
-    // v0.12.17: the wrapper dropped `capacity`, and every Google Cloud audit
-    // failed with "the audit runner's order carries no CPU capacity".
-    const capacity = planRunCapacity("p", "europe-west1", 3000);
-    const inner = createJobReporter({ ...ORDER, capacity, tasks: 2, maxTasks: 2 }, recording(), {
+  it("passes the order's task slot through, so a helper's task claims as itself", () => {
+    // v0.12.17: the wrapper dropped a field of the order (#1789).
+    const helper = "00000000-0000-4000-8000-000000001776";
+    const inner = createJobReporter({ ...ORDER, tasks: 2, helper }, recording(), {
       taskIndex: 1,
     });
     const watched = faultWatchingReporter(inner).reporter;
-    expect(inner.slot).toBeDefined();
-    expect(watched.capacity).toEqual(capacity);
+    expect(inner.slot).toEqual({ index: 1, count: 2, helper });
     expect(watched.slot).toEqual(inner.slot);
     // Every field the reporter carries survives the wrapper, not only these two.
     for (const key of Object.keys(inner) as (keyof typeof inner)[]) {
@@ -166,17 +164,20 @@ describe("deferAttempt and faultWatchingReporter", () => {
     }
   });
 
-  it("the GCP Lighthouse launcher starts from a wrapped reporter's capacity", () => {
-    const capacity = planRunCapacity("p", "europe-west1", 3000);
-    const watched = faultWatchingReporter(
-      createJobReporter({ ...ORDER, capacity }, recording()),
-    ).reporter;
+  it("#1776 — the GCP Lighthouse launcher books its batches through a wrapped reporter", async () => {
+    const t = recording({ bookingId: "00000000-0000-4000-8000-00000000b001", tasks: 5 });
+    const watched = faultWatchingReporter(createJobReporter(ORDER, t)).reporter;
     const env = {
       CAELO_PROVIDER: "gcp",
       CAELO_AUDIT_JOB: "projects/p/locations/europe-west1/jobs/caelo-production-audit",
       CAELO_AUDIT_RESULTS_BUCKET: "p-caelo-production-audit-results",
     };
-    expect(gcpAuditLauncherFromEnv(env, watched.capacity?.lighthouseTasks)).not.toBeNull();
+    const launcher = gcpAuditLauncherFromEnv(env, reportedLighthouseReserve(watched));
+    expect(launcher).not.toBeNull();
+    const slot = await launcher?.reserve?.(15, 900);
+    expect(slot?.tasks).toBe(5);
+    await slot?.release();
+    expect(t.sent.map((e) => e.action)).toEqual(["lighthouse-reserve", "lighthouse-release"]);
   });
 });
 
