@@ -20,7 +20,17 @@ describe("propose_set_site_seo", () => {
       pendingQueuePath: "/settings/seo",
       // #1706 — the card shows the server's text (the live robots.txt).
       approvalPreviewOp: "site_defaults.preview_set_seo",
+      // #1758 — and the plugins' word on the robots rules it proposes.
+      pluginWrites: expect.any(Function),
     });
+  });
+
+  it("#1758 — names the robots rules it proposes as a plugin write, and nothing else", () => {
+    const writes = proposeSetSiteSeoTool.gated?.pluginWrites;
+    const rules = [{ userAgents: ["GPTBot"], allow: [], disallow: ["/"] }];
+    expect(writes?.({ robotsRules: rules })).toEqual([{ kind: "robots_rules", rules }]);
+    expect(writes?.({ sitemapEnabled: false })).toEqual([]);
+    expect(writes?.({ robotsRules: [{ userAgents: ["bad agent"], disallow: ["/"] }] })).toEqual([]);
   });
 
   it("validates arguments at the tool boundary", () => {

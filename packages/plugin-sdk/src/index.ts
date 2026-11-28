@@ -26,7 +26,7 @@
  * module and ONLY this module — the validator enforces it.
  */
 
-import type { FontMetadata, FontRef, PageUrlStyle } from "@caelo-cms/shared";
+import type { FontMetadata, FontRef, PageUrlStyle, RobotsRules } from "@caelo-cms/shared";
 // The list model only (Zod underneath): the SDK is bundled into the
 // plugin sandbox with everything it imports at runtime.
 import {
@@ -858,9 +858,18 @@ export const pluginAuditFinding = z
      * ("Translation missing: …"), then what is wrong and why it matters.
      */
     message: z.string().min(1).max(1000),
-    /** The AI tool that fixes it (the plugin's own or a core tool) and one sentence of how. */
+    /**
+     * The AI tool that fixes it (the plugin's own or a core tool) and one
+     * sentence of how. `tool` is a tool name as a model calls it (letters,
+     * digits, `_` and `-`, the names AI providers accept), never free text.
+     */
     fix: z
-      .object({ tool: z.string().min(1).max(80), hint: z.string().min(1).max(500) })
+      .object({
+        tool: z
+          .string()
+          .regex(/^[A-Za-z0-9_-]{1,80}$/, "a tool name: letters, digits, _ and -, at most 80"),
+        hint: z.string().min(1).max(500),
+      })
       .strict()
       .optional(),
   })
@@ -879,6 +888,11 @@ export const MAX_AUDIT_FACT_BATCH_PAGES = 200;
  * needs them side by side (a page and its language versions in one
  * batch). Core then calls the operation once per batch with `facts`, and
  * files the findings of every call. A plugin that needs no facts omits it.
+ * A sandboxed (runtime-installed) plugin gets each call as one message of
+ * at most 1 MB: a batch whose facts take more arrives as consecutive calls
+ * of its pages in the order asked for (with `"own"`, each with its own
+ * pages), and a page whose facts alone take more is cut like the caps cut
+ * it (`truncatedFacts`). Keep batches that must be read side by side small.
  *
  * `batchPages` (answer to the first call only, #1721): what `pages` the
  * batch calls carry. `"all"` (the default): every page of the build, on
@@ -1064,7 +1078,7 @@ export interface PluginAuditPageFacts {
   /** Every `<a href>` of the body. */
   readonly links: readonly (PluginAuditUrl & {
     readonly hreflang: string | null;
-    /** The visible link text (or its `aria-label` / `title`), whitespace-collapsed. */
+    /** The visible link text, else the `alt` of images in it (a linked logo), else its `aria-label` / `title`; whitespace-collapsed. */
     readonly text: string;
     /** The module root it sits in (`data-caelo-module-id`), if any. */
     readonly moduleId: string | null;
@@ -1135,8 +1149,30 @@ export interface PluginAuditFindingsArgs {
 }
 
 /**
+ * The kinds of write a `writeHintsOperation` can be shown
+ * ({@link PluginWrite}). A plugin receives `module` and `values` unless it
+ * names its kinds in `writeHintsKinds` (epic #1751), so a new kind never
+ * reaches a plugin that does not read it.
+ */
+export const PLUGIN_WRITE_KINDS = [
+  "module",
+  "values",
+  "page_seo",
+  "media_alt",
+  "robots_rules",
+] as const;
+
+/** One of {@link PLUGIN_WRITE_KINDS}. */
+export type PluginWriteKind = (typeof PLUGIN_WRITE_KINDS)[number];
+
+/** The kinds a plugin that names none in `writeHintsKinds` is shown. */
+export const DEFAULT_PLUGIN_WRITE_KINDS: readonly PluginWriteKind[] = ["module", "values"];
+
+/**
  * One write a plugin's `writeHintsOperation` is shown: module markup the
- * AI wrote (with the module's fields), or content values it stored.
+ * AI wrote (with the module's fields), content values it stored, and
+ * (epic #1751, for plugins that name these kinds) a page's SEO texts, an
+ * image's alt text, or the robots.txt rules it proposes.
  */
 export type PluginWrite =
   | {
@@ -1150,6 +1186,30 @@ export type PluginWrite =
       readonly kind: "values";
       readonly moduleId: string | null;
       readonly values: Readonly<Record<string, unknown>>;
+    }
+  | {
+      /** The SEO texts the AI set on a page, as stored; a text it left alone is absent. */
+      readonly kind: "page_seo";
+      readonly pageId: string;
+      readonly seoTitle?: string;
+      readonly metaDescription?: string;
+      readonly ogTitle?: string;
+      readonly ogDescription?: string;
+    }
+  | {
+      /** The alt text the AI set on a library image. */
+      readonly kind: "media_alt";
+      readonly assetId: string;
+      readonly alt: string;
+    }
+  | {
+      /**
+       * The robots.txt rules a proposal would put live, whole (they replace
+       * the list): shown before the Owner approves, and the hints land on the
+       * approval card next to the file the rules make.
+       */
+      readonly kind: "robots_rules";
+      readonly rules: RobotsRules;
     };
 
 /** What a `writeHintsOperation` is called with. */
@@ -1276,6 +1336,20 @@ export interface PluginChangesArgs {
 export const pluginWriteHints = z
   .object({ hints: z.array(z.string().min(1).max(600)).max(5) })
   .strict();
+
+/**
+ * #1763 — what an `agentFilesOperation` returns: which files for agents
+ * the build writes. Core builds each file; a plugin only switches it.
+ */
+export const pluginAgentFiles = z
+  .object({
+    /** Write `/llms.txt`: the indexable pages by page type, with title, URL and description. */
+    llmsTxt: z.boolean(),
+  })
+  .strict();
+
+/** What an `agentFilesOperation` returns ({@link pluginAgentFiles}). */
+export type PluginAgentFiles = z.infer<typeof pluginAgentFiles>;
 
 /** A plugin slug as a reference to another plugin (same shape as `pluginManifest.slug`). */
 const pluginSlugRef = z
@@ -1565,6 +1639,17 @@ export const pluginManifest = z
      *  `operations`. Needs no capability: it reads like a render and only
      *  adds sentences to the AI's tool result. */
     writeHintsOperation: z.string().min(1).max(120).optional(),
+    /** See `PluginDefinition.writeHintsKinds` (epic #1751). Only with
+     *  `writeHintsOperation`; absent = `module` and `values`. */
+    writeHintsKinds: z
+      .array(z.enum(PLUGIN_WRITE_KINDS))
+      .min(1)
+      .max(PLUGIN_WRITE_KINDS.length)
+      .optional(),
+    /** See `PluginDefinition.agentFilesOperation` (#1763). Must name one of
+     *  `operations`. Needs no capability: it only switches files core
+     *  builds from what the sitemap already lists. */
+    agentFilesOperation: z.string().min(1).max(120).optional(),
     /** See `PluginDefinition.changeConsumer` (#1267). Its operations must
      *  be in `operations`; it needs `change_journal`, and each core kind
      *  the `cms_admin` read grant. */
@@ -1894,6 +1979,31 @@ export const pluginManifest = z
         code: "custom",
         path: ["writeHintsOperation"],
         message: `writeHintsOperation "${m.writeHintsOperation}" is not one of the plugin's operations`,
+      });
+    }
+    if (m.agentFilesOperation !== undefined && !m.operations.includes(m.agentFilesOperation)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["agentFilesOperation"],
+        message: `agentFilesOperation "${m.agentFilesOperation}" is not one of the plugin's operations`,
+      });
+    }
+    if (m.writeHintsKinds !== undefined && m.writeHintsOperation === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["writeHintsKinds"],
+        message:
+          "writeHintsKinds names the writes a writeHintsOperation is shown; set the operation too",
+      });
+    }
+    if (
+      m.writeHintsKinds !== undefined &&
+      new Set(m.writeHintsKinds).size !== m.writeHintsKinds.length
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["writeHintsKinds"],
+        message: "writeHintsKinds names a kind twice",
       });
     }
     // #635 — the projection can only name what private storage declares.
@@ -2765,7 +2875,7 @@ export interface PluginFonts {
     input: FontRef & { offset: number; length: number },
   ): Promise<{ dataBase64: string; sizeBytes: number; eof: boolean }>;
 }
-export type { FontMetadata, FontRef, PageUrlStyle } from "@caelo-cms/shared";
+export type { FontMetadata, FontRef, PageUrlStyle, RobotsRules } from "@caelo-cms/shared";
 
 export interface PluginContextTier1 extends PluginContext {
   readonly fonts?: PluginFonts;
@@ -3401,6 +3511,31 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly writeHintsOperation?: string;
   /**
+   * Epic #1751 — the kinds of write the `writeHintsOperation` is shown
+   * ({@link PLUGIN_WRITE_KINDS}); absent = `module` and `values`. Name a
+   * kind only when the operation reads it: `page_seo` (after the AI set a
+   * page's SEO texts), `media_alt` (an image's alt text), `robots_rules`
+   * (a robots.txt proposal: the hints are also shown on its approval card).
+   *
+   * @example
+   *   writeHintsKinds: ["module", "values", "page_seo"],
+   */
+  readonly writeHintsKinds?: ReadonlyArray<PluginWriteKind>;
+  /**
+   * #1763 — the files for agents a build writes: an operation in
+   * `operations` taking `{}` and returning {@link PluginAgentFiles}. Core
+   * calls it at every build, as a render (read-only) invocation on the main
+   * line, and writes `/llms.txt` when any active plugin answers
+   * `llmsTxt: true`. Core builds the file itself, from the pages the
+   * sitemap lists (published, indexable, canonical to themselves); the
+   * plugin only switches it, so it reaches staging with the Stage and the
+   * live site with Publish live like every other file.
+   *
+   * @example
+   *   agent_files: async (ctx) => ({ llmsTxt: (await ctx.config.get()).llms_txt === true }),
+   */
+  readonly agentFilesOperation?: string;
+  /**
    * Issue #1267 — what this plugin reacts to from the change journal
    * ({@link PluginChangeConsumerSpec}). Replaces the domain-event outbox
    * (`ctx.events`) and the module-change push: one mechanism, gated per
@@ -3613,6 +3748,8 @@ export function manifestFromDefinition(def: {
   readonly sitemapEntriesOperation?: string;
   readonly auditFindingsOperation?: string;
   readonly writeHintsOperation?: string;
+  readonly writeHintsKinds?: ReadonlyArray<PluginWriteKind>;
+  readonly agentFilesOperation?: string;
   readonly changeConsumer?: PluginChangeConsumerSpec;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   readonly capabilityReasons?: PluginManifest["capabilityReasons"];
@@ -3704,6 +3841,8 @@ export function manifestFromDefinition(def: {
     hasListResolve: Boolean(def.listResolveOperation),
     ...(def.auditFindingsOperation ? { auditFindingsOperation: def.auditFindingsOperation } : {}),
     ...(def.writeHintsOperation ? { writeHintsOperation: def.writeHintsOperation } : {}),
+    ...(def.writeHintsKinds ? { writeHintsKinds: [...def.writeHintsKinds] } : {}),
+    ...(def.agentFilesOperation ? { agentFilesOperation: def.agentFilesOperation } : {}),
     ...(def.changeConsumer ? { changeConsumer: def.changeConsumer } : {}),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
     ...(def.capabilityReasons ? { capabilityReasons: def.capabilityReasons } : {}),

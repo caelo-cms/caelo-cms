@@ -12,6 +12,7 @@
  */
 
 import type { PluginSkillSpec } from "@caelo-cms/plugin-sdk";
+import { CRAWLER_POLICY_SKILL, SEO_AUDIT_SKILL } from "./skills-checks.js";
 
 const SCHEMA_MAPPING: PluginSkillSpec = {
   slug: "seo-schema-mapping",
@@ -97,4 +98,10 @@ const TOPIC_PAGES: PluginSkillSpec = {
 };
 
 /** Every skill the plugin ships. */
-export const SEO_SKILLS: readonly PluginSkillSpec[] = [SCHEMA_MAPPING, AUTHOR_PAGES, TOPIC_PAGES];
+export const SEO_SKILLS: readonly PluginSkillSpec[] = [
+  SCHEMA_MAPPING,
+  AUTHOR_PAGES,
+  TOPIC_PAGES,
+  SEO_AUDIT_SKILL,
+  CRAWLER_POLICY_SKILL,
+];

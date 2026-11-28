@@ -88,6 +88,7 @@ import { pageContentFingerprint, pluginRegionsDigest } from "./content-fingerpri
 import type { ContentStates } from "./content-states.js";
 import type { MediaPass, OgImageOutcome } from "./media-pass.js";
 import type { RenderFailure } from "./nested-modules-pass.js";
+import { SITEMAP_IMAGE_NS, sitemapImageLines, sitemapImagesOf } from "./sitemap-images.js";
 import {
   ExtraSitemaps,
   prepareStructuredDataPass,
@@ -168,11 +169,26 @@ export interface SeoPass {
   /** The public URL this build gave a page: what its canonical carries. */
   publicUrl(pageId: string): string;
   /**
+   * #1763 — the pages of the build's indexing state: indexable (the sitemap's
+   * pages) and canonical to themselves, in build order, with the URL, title
+   * and meta description they ship. What `/llms.txt` lists.
+   */
+  indexedPages(): Promise<IndexedPage[]>;
+  /**
    * #1719 — on a Stage, every page whose share image the build could not
    * publish (it ships without `og:image`); always empty on other builds,
    * which refused it while preparing.
    */
   readonly renderFailures: readonly RenderFailure[];
+}
+
+/** One page of the build's indexing state ({@link SeoPass.indexedPages}). */
+export interface IndexedPage {
+  readonly pageId: string;
+  /** Its absolute public URL. */
+  readonly url: string;
+  readonly title: string;
+  readonly metaDescription: string;
 }
 
 /** A JSON value bound as one jsonb parameter. */
@@ -489,6 +505,8 @@ export async function prepareSeoPass(args: {
   };
   // #1257 — indexable follow-up pages of each overview, for the sitemap.
   const followUpsOf = new Map<string, number[]>();
+  // #1762 — page 1's library images, for its sitemap entry.
+  const imagesOf = new Map<string, string[]>();
   // #1753, #1761 — what plugins add to the graphs and the news and video
   // sitemaps; null when no plugin contributes (nothing is loaded then).
   const structured = await prepareStructuredDataPass({
@@ -543,6 +561,8 @@ export async function prepareSeoPass(args: {
           firstPublishedAt: bundle.firstPublishedAt,
           updatedAt: bundle.updatedAt,
         });
+        // #1762 — the library images the page shows, as it ships.
+        imagesOf.set(bundle.pageId, sitemapImagesOf(p.html, settings.siteBaseUrl));
         // #1752 — the article's modified time is the date the record gives.
         p.html = setArticleModifiedTime(p.html, contentStates.changedAt(bundle.pageId));
         // #1753 — and every graph value that asked for it: one that kept the
@@ -559,6 +579,35 @@ export async function prepareSeoPass(args: {
       const url = publicUrls.get(pageId);
       if (url === undefined) throw new Error(`seo-pass: no public URL resolved for page ${pageId}`);
       return url;
+    },
+
+    async indexedPages() {
+      const indexable = seoBundles.filter(isIndexable);
+      // A canonical override points elsewhere unless it names the page's own
+      // URL: resolve those pages' own URLs once, without the override.
+      const overridden = indexable.filter((b) => b.canonicalOverride !== null);
+      const own = new Map(
+        overridden.length === 0
+          ? []
+          : await plugins.resolvePublicPageUrls(
+              overridden.map((b) => ({
+                id: b.pageId,
+                slug: b.slug,
+                currentPath: b.currentPath,
+                canonicalOverride: null,
+              })),
+              urlArgs,
+            ),
+      );
+      const absolute = (url: string) => new URL(url, settings.siteBaseUrl).href;
+      return indexable.flatMap((b): IndexedPage[] => {
+        const canonical = absolute(publicUrlOf(b));
+        const ownUrl = own.get(b.pageId);
+        if (ownUrl !== undefined && absolute(ownUrl) !== canonical) return [];
+        return [
+          { pageId: b.pageId, url: canonical, title: b.title, metaDescription: b.metaDescription },
+        ];
+      });
     },
 
     async apply(pages) {
@@ -758,11 +807,16 @@ export async function prepareSeoPass(args: {
         // What the page shows last changed live — not the last draft edit
         // of its row (docs/dev/search-engine-feed.md).
         const lastmod = contentStates.changedAt(b.pageId);
-        const urlEntry = (loc: string, alternates: readonly string[]): string =>
+        const urlEntry = (
+          loc: string,
+          alternates: readonly string[],
+          images: readonly string[] = [],
+        ): string =>
           [
             "  <url>",
             `    <loc>${enc(loc)}</loc>`,
             ...alternates,
+            ...sitemapImageLines(images),
             `    <lastmod>${lastmod}</lastmod>`,
             `    <changefreq>${b.changefreq}</changefreq>`,
             `    <priority>${b.priority.toFixed(1)}</priority>`,
@@ -778,7 +832,7 @@ export async function prepareSeoPass(args: {
               `    <xhtml:link rel="alternate" hreflang="${enc(a.hreflang)}" href="${enc(a.href)}" />`,
           );
         return [
-          urlEntry(publicUrlOf(b), alternates),
+          urlEntry(publicUrlOf(b), alternates, imagesOf.get(b.pageId)),
           ...(followUpsOf.get(b.pageId) ?? [])
             .sort((x, y) => x - y)
             .map((n) => urlEntry(followUpUrlOf(b, n), [])),
@@ -786,7 +840,8 @@ export async function prepareSeoPass(args: {
       });
       const xml = [
         '<?xml version="1.0" encoding="UTF-8"?>',
-        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">',
+        // #1762 — the image namespace only where an entry lists an image.
+        `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml"${[...imagesOf.values()].some((i) => i.length > 0) ? ` xmlns:image="${SITEMAP_IMAGE_NS}"` : ""}>`,
         ...entries,
         "</urlset>",
         "",

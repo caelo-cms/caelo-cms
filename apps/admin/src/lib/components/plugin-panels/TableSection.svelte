@@ -74,6 +74,23 @@
   const selectedIds = $derived(JSON.stringify(selected.map((k) => JSON.parse(k))));
 </script>
 
+{#snippet pager()}
+  {#if view.nextPageHref || view.firstPageHref}
+    <div class="flex justify-end gap-2">
+      {#if view.firstPageHref}
+        <a href={view.firstPageHref} class={buttonVariants({ variant: "outline", size: "sm" })}
+          >First page</a
+        >
+      {/if}
+      {#if view.nextPageHref}
+        <a href={view.nextPageHref} class={buttonVariants({ variant: "outline", size: "sm" })}
+          >Next page</a
+        >
+      {/if}
+    </div>
+  {/if}
+{/snippet}
+
 <Card data-testid="panel-section-{section.id}">
   <CardHeader>
     <div class="flex flex-wrap items-start justify-between gap-3">
@@ -143,7 +160,14 @@
         <AlertDescription>The plugin could not load this list: {view.error}</AlertDescription>
       </Alert>
     {:else if view.rows.length === 0}
-      <EmptyStatePlaceholder description={section.emptyMessage} />
+      <!-- A filtered page can come back empty while more of the site follows
+           (the operation reads a bounded part per call): offer the next one. -->
+      <EmptyStatePlaceholder
+        description={view.nextPageHref
+          ? "Nothing matches in this part of the list. More follows on the next page."
+          : section.emptyMessage}
+      />
+      {@render pager()}
     {:else}
       {#if selectable && selected.length > 0}
         <div
@@ -228,20 +252,7 @@
           {/each}
         </TableBody>
       </Table>
-      {#if view.nextPageHref || view.firstPageHref}
-        <div class="flex justify-end gap-2">
-          {#if view.firstPageHref}
-            <a href={view.firstPageHref} class={buttonVariants({ variant: "outline", size: "sm" })}
-              >First page</a
-            >
-          {/if}
-          {#if view.nextPageHref}
-            <a href={view.nextPageHref} class={buttonVariants({ variant: "outline", size: "sm" })}
-              >Next page</a
-            >
-          {/if}
-        </div>
-      {/if}
+      {@render pager()}
     {/if}
   </CardContent>
 </Card>

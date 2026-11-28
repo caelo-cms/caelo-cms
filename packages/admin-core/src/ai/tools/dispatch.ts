@@ -11,6 +11,7 @@
  * they flow back to the model so it can correct course.
  */
 
+import type { PluginWrite } from "@caelo-cms/plugin-sdk";
 import type {
   DatabaseAdapter,
   ErrorDetail,
@@ -374,6 +375,13 @@ export interface GatedToolSpec {
    * the arguments do not explain. Written by the server, not by the AI.
    */
   readonly approvalPreviewOp?: string;
+  /**
+   * Epic #1751 — the writes a call proposes, for the plugins' write hints
+   * (`writeHintsKinds`): they see them before the Owner decides, and what
+   * they answer is added to the approval card under their slug, below the
+   * server's own preview. Empty for arguments that propose none of them.
+   */
+  readonly pluginWrites?: (args: unknown) => readonly PluginWrite[];
 }
 
 export interface ToolDefinitionWithHandler<I> {

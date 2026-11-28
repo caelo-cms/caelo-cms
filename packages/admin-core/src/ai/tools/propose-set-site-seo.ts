@@ -21,6 +21,13 @@ export const proposeSetSiteSeoTool = makeProposeTool({
   opName: "site_defaults.propose_set_seo",
   pendingQueuePath: "/settings/seo",
   approvalPreviewOp: "site_defaults.preview_set_seo",
+  // Epic #1751 — a plugin that knows crawlers (seo: which token serves
+  // which purpose, which ones ignore robots.txt) adds its caveats to the card.
+  pluginWrites: (args) => {
+    const parsed = siteSeoProposalInputSchema.safeParse(args);
+    const rules = parsed.success ? parsed.data.robotsRules : undefined;
+    return rules === undefined ? [] : [{ kind: "robots_rules", rules }];
+  },
   when:
     "Set site-wide SEO settings. Read current values with `get_site_seo` first.\n" +
     "USE FOR: site status `Site URL: not configured`; publish failed with `Site base URL is not configured`; preview flags `site-base-url-unset`; operator names the site's domain or asks for sitemap / feed / IndexNow / organization changes; operator wants pages or crawlers kept out of robots.txt (a search results page, an AI crawler).\n" +
@@ -78,7 +85,19 @@ export const proposeSetSiteSeoTool = makeProposeTool({
               minItems: 1,
               maxItems: 10,
               items: { type: "string", maxLength: 64 },
-              description: "`*`, or crawler product tokens (`Googlebot`, `GPTBot`, `CCBot`).",
+              description:
+                '`*`, or crawler product tokens (`Googlebot`, `GPTBot`, `CCBot`), or alone `__usage_ai-training` (training preference: `disallow: ["/"]` = do not train; no crawler, no contentSignal).',
+            },
+            contentSignal: {
+              type: "object",
+              additionalProperties: false,
+              description:
+                '`Content-Signal` line: may these crawlers use the site for search results, AI answers (aiInput), AI training (aiTrain). A preference, blocks nothing; keep `allow`/`disallow` (a group needs a path, e.g. `allow: ["/"]`).',
+              properties: {
+                search: { type: "boolean" },
+                aiInput: { type: "boolean" },
+                aiTrain: { type: "boolean" },
+              },
             },
             allow: { type: "array", maxItems: 50, items: { type: "string", maxLength: 512 } },
             disallow: {
@@ -114,6 +133,7 @@ export const getSiteSeoTool = makeReadTool<Record<string, never>>({
       robotsRules: unknown[];
       robotsTxt: string | null;
       robotsWarnings: string[];
+      robotsNotes: string[];
       titleTemplate: string;
       siteName: string | null;
       searchNotifications: {
@@ -134,6 +154,7 @@ export const getSiteSeoTool = makeReadTool<Record<string, never>>({
       `siteName (og:site_name, {site_name}): ${v.siteName ?? "(not set — set_site_identity)"}`,
       `robotsRules: ${JSON.stringify(v.robotsRules)}`,
       ...v.robotsWarnings.map((w) => `robots WARNING: ${w}`),
+      ...v.robotsNotes.map((n) => `robots NOTE: ${n}`),
       v.robotsTxt === null
         ? "robots.txt: (none until the site URL is set)"
         : `robots.txt of the live site after the next Stage + Publish live (staging blocks every crawler):\n${v.robotsTxt.trimEnd()}`,

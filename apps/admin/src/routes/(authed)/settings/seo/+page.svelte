@@ -177,7 +177,9 @@
       <CardTitle class="text-base">robots.txt rules</CardTitle>
       <CardDescription>
         Pages or crawlers to keep out, one group per crawler: <code class="font-mono">User-agent</code>
-        lines, then <code class="font-mono">Allow</code> and <code class="font-mono">Disallow</code> paths
+        lines, an optional <code class="font-mono">Content-Signal</code> line (search, ai-input,
+        ai-train = yes or no), then <code class="font-mono">Allow</code> and
+        <code class="font-mono">Disallow</code> paths
         (<code class="font-mono">*</code> matches anything, a closing <code class="font-mono">$</code> ends
         the match). Disallow stops crawling, not indexing: a page that must disappear from search keeps
         noindex. Saved rules reach the live site with the next Stage and Publish live; staging keeps
@@ -187,6 +189,9 @@
     <CardContent class="space-y-4">
       {#each data.settings.robotsWarnings as warning (warning)}
         <Alert variant="destructive"><AlertDescription>{warning}</AlertDescription></Alert>
+      {/each}
+      {#each data.settings.robotsNotes as note (note)}
+        <Alert data-testid="robots-note"><AlertDescription>{note}</AlertDescription></Alert>
       {/each}
       <form method="post" action="?/saveRobots" class="space-y-2">
         <input type="hidden" name="_csrf" value={data.csrfToken} />

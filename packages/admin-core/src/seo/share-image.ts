@@ -15,8 +15,14 @@
 
 import type { RenderScope } from "@caelo-cms/plugin-host";
 import { resolveShareImages } from "@caelo-cms/plugin-host";
-import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
-import { buildMediaUrl, pickShareImage, type ShareImageSource } from "@caelo-cms/shared";
+import { type TransactionRunner, textArray, uuidArray } from "@caelo-cms/query-api";
+import {
+  buildMediaUrl,
+  pickShareImage,
+  SHARE_IMAGE_ORIG_FORMATS,
+  SHARE_IMAGE_ORIG_MAX_BYTES,
+  type ShareImageSource,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 
 /** A page's share image as a surface shows it. */
@@ -90,9 +96,11 @@ export async function loadShareImageUrls(
     JOIN media_assets ma ON ma.id = mv.asset_id AND ma.deleted_at IS NULL
     WHERE mv.asset_id = ANY(${uuidArray(assetIds)})
     ORDER BY mv.asset_id,
-      CASE mv.variant
-        WHEN 'webp-1200' THEN 0 WHEN 'webp-1600' THEN 1
-        WHEN 'webp-800'  THEN 2 WHEN 'orig'      THEN 3 ELSE 4
+      CASE
+        WHEN mv.variant = 'orig' AND mv.format = ANY(${textArray([...SHARE_IMAGE_ORIG_FORMATS])})
+          AND mv.size_bytes <= ${SHARE_IMAGE_ORIG_MAX_BYTES} THEN 0
+        WHEN mv.variant = 'webp-1200' THEN 1 WHEN mv.variant = 'webp-1600' THEN 2
+        WHEN mv.variant = 'webp-800'  THEN 3 WHEN mv.variant = 'orig'      THEN 4 ELSE 5
       END
   `)) as unknown as { asset_id: string; variant: string; slug: string }[];
   return new Map(rows.map((r) => [r.asset_id, buildMediaUrl(r.slug, r.variant)]));

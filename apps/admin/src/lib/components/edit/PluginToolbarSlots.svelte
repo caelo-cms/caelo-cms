@@ -21,6 +21,7 @@
   import { type EditorToolbarSlot, promptText, splitToolbarSlots } from "#lib/plugin-toolbar.js";
   import { cn } from "#lib/utils.js";
   import { askInChat } from "./ask-in-chat.js";
+  import ToolbarPreview from "./ToolbarPreview.svelte";
 
   let {
     slots,
@@ -108,6 +109,9 @@
           {/each}
         </ul>
       {/if}
+      {#each slot.state.previews ?? [] as preview, i (i)}
+        <ToolbarPreview {preview} images={slot.previewImages ?? {}} />
+      {/each}
     {/if}
     {#if slot.prompts.length > 0}
       <div class="flex flex-wrap gap-2 pt-1">
@@ -159,7 +163,14 @@
             <span class="absolute right-1 top-1 size-2 rounded-full bg-red-500" aria-hidden="true"></span>
           {/if}
         </PopoverTrigger>
-        <PopoverContent class="p-4">
+        <PopoverContent
+          class={cn(
+            "p-4",
+            // #1760 — a search result is drawn at a result list's width.
+            (slot.state?.previews?.length ?? 0) > 0 &&
+              "max-h-[min(40rem,calc(100vh-6rem))] w-[40rem] max-w-[calc(100vw-2rem)] overflow-y-auto",
+          )}
+        >
           {@render slotPanel(slot)}
         </PopoverContent>
       </Popover>

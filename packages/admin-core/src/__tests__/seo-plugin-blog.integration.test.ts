@@ -33,7 +33,11 @@ import seoPlugin from "@caelo-cms/plugin-seo";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { pageDataFindings } from "../../../plugins/seo/src/schema/data-rules.js";
+import { SCHEMA_TYPES } from "../../../plugins/seo/src/schema/types.js";
 import { lockPluginRow } from "../locks.js";
+import { siteHostsOf } from "../quality/checks/links-analysis.js";
+import { extractPageFacts } from "../quality/checks/page-facts.js";
 import { createStructuredDataCheck } from "../quality/checks/structured-data.js";
 import { registerAdminOps } from "../register.js";
 import { runSeoPass } from "./fixtures/seo-pass.js";
@@ -491,6 +495,42 @@ describe("#1756 the seo plugin on a blog", () => {
       itemListElement: [{ "@type": "ListItem", position: 1, url: url("graph") }],
       numberOfItems: 1,
     });
+  });
+
+  it("#1757 — the structured data checks read the graph core wrote: the article and its authors' pages as they are", async () => {
+    const findings = async (pageId: string, slug: string, pageType: string, schemaType: string) => {
+      const html = await preview(pageId);
+      const facts = extractPageFacts(
+        { pageId, path: `/${PFX}-${slug}`, url: url(slug), html },
+        siteHostsOf([BASE]),
+        "no-sitemap",
+      );
+      const spec = SCHEMA_TYPES[schemaType];
+      if (!spec) throw new Error(schemaType);
+      const roles = schemaType === "BlogPosting" ? { authors: "prop:authors" } : {};
+      return pageDataFindings(facts, { pageType: `${PFX}-${pageType}`, schemaType, roles }, spec);
+    };
+    const rulesOf = async (...args: Parameters<typeof findings>) =>
+      (await findings(...args)).map((f) => f.rule);
+    // The fixture's article shows only its byline, not its title: the
+    // headline its BlogPosting carries is on no visible line. Its authors
+    // are named, so no article-author-missing.
+    expect(await rulesOf(ids.article, "graph", "article", "BlogPosting")).toEqual([
+      "structured-data-not-visible",
+    ]);
+    // Anna's page shows her name, role and bio and links her LinkedIn: only
+    // the portrait is missing.
+    const anna = await findings(ids.anna, "anna", "author", "ProfilePage");
+    expect(anna.map((f) => f.rule)).toEqual(["author-page-incomplete"]);
+    expect(anna[0]?.message).toContain("has no portrait.");
+    expect(anna[0]?.severity).toBe("warning");
+    // Ben's page has no module at all: his name is not on it either.
+    expect(await rulesOf(ids.ben, "ben", "author", "ProfilePage")).toEqual([
+      "structured-data-not-visible",
+      "author-page-incomplete",
+    ]);
+    // The topic page lists the article: an ItemList with an entry.
+    expect(await rulesOf(ids.topic, "seo", "topic", "CollectionPage")).toEqual([]);
   });
 
   it("names a page with a relative canonical override by its absolute URL, core and plugin alike (Codex on #1797)", async () => {

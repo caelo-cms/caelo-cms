@@ -19,7 +19,12 @@
  * and it never undoes the write, which already happened.
  */
 
-import { type PluginWrite, pluginWriteHints } from "@caelo-cms/plugin-sdk";
+import {
+  DEFAULT_PLUGIN_WRITE_KINDS,
+  type PluginWrite,
+  type PluginWriteKind,
+  pluginWriteHints,
+} from "@caelo-cms/plugin-sdk";
 import {
   isPluginDisabled,
   loadedPlugins,
@@ -58,11 +63,18 @@ export async function collectPluginWriteHints(
     const lp = loadedPlugins.all().find((p) => p.slug === slug);
     const operationName = lp?.definition.writeHintsOperation;
     if (typeof operationName !== "string") continue;
+    // Epic #1751 — each plugin sees only the kinds it reads: a kind core
+    // added later never reaches a plugin that would refuse it.
+    const kinds = new Set<PluginWriteKind>(
+      lp?.definition.writeHintsKinds ?? DEFAULT_PLUGIN_WRITE_KINDS,
+    );
+    const shown = writes.filter((w) => kinds.has(w.kind));
+    if (shown.length === 0) continue;
     const r = await runPluginOperation({
       invocation: renderInvocation({ chatBranchId }),
       pluginSlug: slug,
       operationName,
-      args: { writes },
+      args: { writes: shown },
     });
     if (!r.ok) {
       out.push({ slug, error: `${operationName} failed: ${r.error.kind}: ${r.error.message}` });

@@ -22,7 +22,12 @@ function textsOf(writes: readonly PluginWrite[]): { text: string; refs: string }
     else if (Array.isArray(v)) for (const e of v) collect(e);
     else if (typeof v === "object" && v !== null) for (const e of Object.values(v)) collect(e);
   };
-  for (const w of writes) collect(w.kind === "module" ? w.html : w.values);
+  // Page content only: the SEO texts, alt texts and robots rules the plugin
+  // also reads (writeHintsKinds) are no place for a link.
+  for (const w of writes) {
+    if (w.kind === "module") collect(w.html);
+    else if (w.kind === "values") collect(w.values);
+  }
   const raw = parts.join("\n");
   return { text: raw.replace(/<[^>]*>/g, " ").toLowerCase(), refs: raw };
 }

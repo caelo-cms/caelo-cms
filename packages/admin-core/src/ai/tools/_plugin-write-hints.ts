@@ -67,6 +67,50 @@ export async function storedModuleWrites(
 }
 
 /**
+ * Epic #1751 — wrap a tool whose writes are given by its input (an alt
+ * text, a page's SEO texts): a successful write carries the plugins' hints
+ * on the writes `writesOf` names. Only plugins that name the kind in
+ * `writeHintsKinds` see them.
+ */
+export function withPluginWrites<T>(
+  tool: ToolDefinitionWithHandler<T>,
+  writesOf: (input: T) => readonly PluginWrite[],
+): ToolDefinitionWithHandler<T> {
+  return {
+    ...tool,
+    handler: async (ctx, input, toolCtx) => {
+      const result = await tool.handler(ctx, input, toolCtx);
+      if (!result.ok) return result;
+      const suffix = await pluginWriteHintsSuffix(ctx, writesOf(input));
+      return suffix ? { ...result, content: `${result.content}${suffix}` } : result;
+    },
+  };
+}
+
+/**
+ * Epic #1751 — the `page_seo` writes of an SEO tool's items: each page with
+ * the SEO texts the item set (a plugin reads the resolved head itself).
+ */
+export function pageSeoWrites(
+  items: readonly {
+    readonly pageId: string;
+    readonly seoTitle?: string | undefined;
+    readonly metaDescription?: string | undefined;
+    readonly ogTitle?: string | undefined;
+    readonly ogDescription?: string | undefined;
+  }[],
+): PluginWrite[] {
+  return items.map((i) => ({
+    kind: "page_seo",
+    pageId: i.pageId,
+    ...(i.seoTitle !== undefined ? { seoTitle: i.seoTitle } : {}),
+    ...(i.metaDescription !== undefined ? { metaDescription: i.metaDescription } : {}),
+    ...(i.ogTitle !== undefined ? { ogTitle: i.ogTitle } : {}),
+    ...(i.ogDescription !== undefined ? { ogDescription: i.ogDescription } : {}),
+  }));
+}
+
+/**
  * Wrap a module-writing tool: a successful write carries the plugins'
  * hints on the modules `moduleIdsOf` names.
  */

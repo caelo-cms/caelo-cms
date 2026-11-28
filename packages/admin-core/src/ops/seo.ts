@@ -40,6 +40,7 @@ import {
   type RobotsRules,
   robotsMetaContent,
   robotsRuleGroupSchema,
+  robotsRulesNotes,
   robotsRulesSchema,
   robotsRulesWarnings,
   robotsTxt,
@@ -307,10 +308,13 @@ export const SEO_GET_MANY_MAX = 50;
 
 export const pagesSeoShareImagesOp = defineReadOperation({
   name: "pages_seo.share_images",
+  // #1760 — the seo plugin's shared-link preview shows the image a page
+  // really gets.
+  pluginAccess: "read",
   readScope: "request",
   // CLAUDE.md §11: reads are open. The editor's read; the AI gets the same
   // through get_page_seo. A read op: no transaction while plugins answer (#1212).
-  actorScope: ["human", "ai", "system"],
+  actorScope: ["human", "ai", "plugin", "system"],
   input: z.object({ pageIds: z.array(z.string().uuid()).min(1).max(SEO_GET_MANY_MAX) }).strict(),
   output: z.object({
     images: z.array(shareImageOutput.extend({ pageId: z.string() })),
@@ -982,6 +986,8 @@ export const siteDefaultsGetSeoOp = defineOperation({
     robotsTxt: z.string().nullable(),
     /** What a rule set takes from search engines (the whole site for `*`, …). */
     robotsWarnings: z.array(z.string()),
+    /** #1758 — what its preference lines (training token, Content-Signal) do and do not do. */
+    robotsNotes: z.array(z.string()),
     /**
      * #1752 — the `<title>` template of pages without their own SEO title
      * whose page type has none (`set_page_type_seo_many` sets it).
@@ -1036,6 +1042,7 @@ export const siteDefaultsGetSeoOp = defineOperation({
               rules: robotsRules,
             }),
       robotsWarnings: robotsRulesWarnings(robotsRules),
+      robotsNotes: robotsRulesNotes(robotsRules),
       titleTemplate: r.seo_title_template,
       siteName: r.site_name,
     });

@@ -43,6 +43,7 @@ and validates the answer against `pluginEditorToolbarState`:
 | `summary` | the tooltip and the popover's first line |
 | `items` (up to 20) | popover lines: `label`, `detail`, `tone`, `current`, and `pageId`, which opens that page in the editor |
 | `hidden: true` | the place is left out for this page |
+| `previews` (up to 4) | fixed previews core draws in the popover, never plugin markup: `search-result` (`device` desktop or mobile, `siteName`, `displayUrl`, `title`, `description`, each cut by the plugin) and `social-card` (`siteName`, `title`, `description`, `imageAssetId`: a media id the admin resolves to the original's URL, or null). The seo plugin's `search-preview` place uses both (#1760). |
 
 A language without a version of the page is not a `problem`: missing
 translations are a clean 404 by design (CMS_REQUIREMENTS §7.2).

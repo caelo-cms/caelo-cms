@@ -59,7 +59,7 @@
 
 import { copyFile, link, mkdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, textArray } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
   enrichResponsiveImages,
@@ -71,6 +71,8 @@ import {
   mediaUrlForRef,
   parseVariantWidth,
   runBatched,
+  SHARE_IMAGE_ORIG_FORMATS,
+  SHARE_IMAGE_ORIG_MAX_BYTES,
   variantFamily,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -356,8 +358,10 @@ export class MediaPass {
 
   /**
    * Publish the og:image of a page (it need not appear on any page, so the
-   * HTML rewrite may not have published it): the best social-size variant
-   * of the asset, at its build-relative path.
+   * HTML rewrite may not have published it): the original when every
+   * social platform shows it (JPEG or PNG up to 5 MB, #1757:
+   * `SHARE_IMAGE_ORIG_FORMATS`), else the best social-size variant of the
+   * asset, at its build-relative path.
    *
    * #1719 — an asset that was deleted, has no image file or is a reference
    * image is the site's content: a Stage (`unresolved: "report"`) gets the
@@ -373,12 +377,14 @@ export class MediaPass {
       WHERE mv.asset_id = ${assetId}::uuid
         AND ma.deleted_at IS NULL
       ORDER BY
-        CASE mv.variant
-          WHEN 'webp-1200' THEN 0
-          WHEN 'webp-1600' THEN 1
-          WHEN 'webp-800'  THEN 2
-          WHEN 'orig'      THEN 3
-          ELSE 4
+        CASE
+          WHEN mv.variant = 'orig' AND mv.format = ANY(${textArray([...SHARE_IMAGE_ORIG_FORMATS])})
+            AND mv.size_bytes <= ${SHARE_IMAGE_ORIG_MAX_BYTES} THEN 0
+          WHEN mv.variant = 'webp-1200' THEN 1
+          WHEN mv.variant = 'webp-1600' THEN 2
+          WHEN mv.variant = 'webp-800'  THEN 3
+          WHEN mv.variant = 'orig'      THEN 4
+          ELSE 5
         END
       LIMIT 1
     `)) as unknown as VariantRow[];

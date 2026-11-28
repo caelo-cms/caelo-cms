@@ -10,17 +10,29 @@
 
 import { error } from "@sveltejs/kit";
 import { valueAt } from "#lib/plugin-panels.js";
-import { findSection, panelCaller, requirePanel, tableArgs } from "#lib/server/plugin-panels.js";
+import {
+  findSection,
+  panelCaller,
+  requirePanel,
+  tableArgs,
+  withFilterOptions,
+} from "#lib/server/plugin-panels.js";
 import type { RequestHandler } from "./$types";
 
 export const GET: RequestHandler = async ({ locals, params, url }) => {
   const panel = requirePanel(locals, params.slug, params.panel);
-  const section = findSection(panel, params.section, "table");
-  const download = section.download;
+  const declared = findSection(panel, params.section, "table");
+  const download = declared.download;
   if (!download) throw error(404, "This table has no download.");
+  const call = panelCaller(locals, params.slug);
+  // #1760 — filters whose options are site data are checked against them too.
+  const resolved = await withFilterOptions(declared, call);
+  if (!resolved.ok)
+    throw error(502, `The plugin could not list a filter's options: ${resolved.message}`);
+  const section = resolved.section;
   // The filters, not the page: a download is the whole filtered view.
   const { filterArgs } = tableArgs(section, url);
-  const r = await panelCaller(locals, params.slug)(download.operation, {
+  const r = await call(download.operation, {
     ...filterArgs,
     ...section.args,
     ...download.args,

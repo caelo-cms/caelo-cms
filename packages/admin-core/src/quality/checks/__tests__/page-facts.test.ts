@@ -107,6 +107,19 @@ describe("extractPageFacts", () => {
     expect(f.truncatedFacts).toEqual([]);
   });
 
+  it("names an image link by its image's alt when it shows no text (epic #1751)", () => {
+    const f = extractPageFacts(
+      page(
+        `<html><body><a href="/"><img src="/logo.png" alt="Acme home"></a><a href="/x" title="X"><img src="/x.png" alt=""></a><a href="/y">Shop <img src="/y.png" alt="cart"></a><a href="/z"><img src="/z.png" alt="Hidden" aria-hidden="true"></a><a href="/w"><span aria-hidden="true"><img src="/w.png" alt="Also hidden"></span></a></body></html>`,
+      ),
+      HOSTS,
+      "no-sitemap",
+    );
+    // An image hidden from screen readers names nothing (it or an ancestor
+    // aria-hidden): those links have no name.
+    expect(f.links.map((l) => l.text)).toEqual(["Acme home", "X", "Shop", "", ""]);
+  });
+
   it("takes the page's sitemap alternates, null when the sitemap does not list it", () => {
     const xml = `<?xml version="1.0"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">

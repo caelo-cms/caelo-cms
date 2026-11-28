@@ -24,6 +24,9 @@
 import { definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 import { SEO_CONFIG } from "./config.js";
 import { AUDIT_OPERATION, SEO_OPERATIONS, WRITE_HINTS_OPERATION } from "./operations.js";
+import { AGENT_FILES_OPERATION } from "./rules/agent-files.js";
+import { SEO_OVERVIEW_PANEL } from "./rules/overview.js";
+import { SEO_PREVIEW_TOOLBAR } from "./rules/previews.js";
 import { MAPPINGS_TABLE } from "./schema/mapping.js";
 import { SITEMAP_ENTRIES_OPERATION, STRUCTURED_DATA_OPERATION } from "./schema/operations.js";
 import { SEO_SKILLS } from "./skills.js";
@@ -84,6 +87,13 @@ export default definePlugin<PluginContextTier1>({
   pageOutputObserver: { operation: OBSERVE_OPERATION },
   auditFindingsOperation: AUDIT_OPERATION,
   writeHintsOperation: WRITE_HINTS_OPERATION,
+  // #1757, #1758 — the SEO texts, alt texts and robots.txt proposals the AI writes too.
+  writeHintsKinds: ["module", "values", "media_alt", "page_seo", "robots_rules"],
+  // #1763 — the llms.txt switch; core writes the file.
+  agentFilesOperation: AGENT_FILES_OPERATION,
+  // #1760 — the overview panel and the search / share preview in the editor.
+  adminPanels: [SEO_OVERVIEW_PANEL],
+  editorToolbar: [SEO_PREVIEW_TOOLBAR],
   tools: SEO_TOOLS,
   skills: SEO_SKILLS,
   operations: SEO_OPERATIONS,

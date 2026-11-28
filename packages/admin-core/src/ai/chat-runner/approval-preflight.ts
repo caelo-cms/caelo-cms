@@ -25,7 +25,8 @@
  * in the first place.
  */
 
-import { pluginToolsRegistry } from "@caelo-cms/plugin-host";
+import { collectPluginWriteHints, pluginToolsRegistry } from "@caelo-cms/plugin-host";
+import type { PluginWrite } from "@caelo-cms/plugin-sdk";
 import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 
@@ -154,12 +155,38 @@ export async function serverApprovalPreview(
   args: unknown,
 ): Promise<string | null> {
   if (typeof tools?.get !== "function") return null;
-  const op = tools.get(toolName)?.gated?.approvalPreviewOp;
+  const gated = tools.get(toolName)?.gated;
+  const op = gated?.approvalPreviewOp;
   if (!op) return null;
   const r = await execute(registry, adapter, ctx, op, args);
-  if (r.ok) return (r.value as { preview: string }).preview;
-  const why = "message" in r.error ? r.error.message : r.error.kind;
-  return `Could not read what this would change: ${why}`;
+  if (!r.ok) {
+    const why = "message" in r.error ? r.error.message : r.error.kind;
+    return `Could not read what this would change: ${why}`;
+  }
+  const preview = (r.value as { preview: string }).preview;
+  return gated.pluginWrites
+    ? `${preview}${await pluginNotesForCard(ctx, gated.pluginWrites(args))}`
+    : preview;
+}
+
+/**
+ * Epic #1751 — what the active plugins say about the writes a gated call
+ * proposes (their write hints, `writeHintsKinds`), as card lines under each
+ * plugin's slug. A plugin that fails says so on the card: the approver must
+ * not read its silence as "nothing to add".
+ */
+async function pluginNotesForCard(
+  ctx: ExecutionContext,
+  writes: readonly PluginWrite[],
+): Promise<string> {
+  const results = await collectPluginWriteHints(writes, ctx.chatBranchId ?? null);
+  return results
+    .map((res) =>
+      "error" in res
+        ? `\nThe ${res.slug} plugin could not check this: ${res.error}`
+        : `\nFrom the ${res.slug} plugin:\n${res.hints.map((h) => `- ${h}`).join("\n")}`,
+    )
+    .join("");
 }
 
 /**

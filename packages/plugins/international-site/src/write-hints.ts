@@ -81,7 +81,7 @@ export function writeHints(state: WriteHintState, writes: readonly PluginWrite[]
       for (const tag of literalHreflangs(w.html)) {
         found.set(`hreflang:${tag}`, `The markup sets hreflang="${tag}" on a fixed link`);
       }
-    } else {
+    } else if (w.kind === "values") {
       hrefsIn(w.values, hrefs);
     }
     for (const href of hrefs) {

@@ -4,7 +4,7 @@
  * #1753, #1761 — the calls core makes to ask plugins about pages at the
  * structured-data and sitemap-entries points: consecutive pages, at most
  * {@link STRUCTURED_DATA_PAGES_PER_CALL} per call, AND at most
- * {@link COMPOSITION_CALL_ARGS_BYTES} of arguments on the wire.
+ * {@link PLUGIN_CALL_ARGS_BYTES} of arguments on the wire (call-wire-budget.ts).
  *
  * Why bytes too: a sandboxed plugin receives its call as ONE message of at
  * most `SANDBOX_MESSAGE_BYTES` (sandbox-protocol.ts). A page record is
@@ -25,24 +25,9 @@ import {
   type StructuredDataArgs,
   type StructuredDataPage,
 } from "@caelo-cms/plugin-sdk";
-import { SANDBOX_MESSAGE_BYTES } from "./sandbox-protocol.js";
-
-/**
- * The bytes a call's arguments may take: one sandbox message, less room for
- * the rest of it (the plugin's slug and version, the invocation, the theme
- * tokens; a few KB in practice). The same budget the audit's fact batches
- * keep.
- */
-export const COMPOSITION_CALL_ARGS_BYTES = SANDBOX_MESSAGE_BYTES - 64 * 1024;
+import { jsonWireBytes as jsonBytes, PLUGIN_CALL_ARGS_BYTES } from "./call-wire-budget.js";
 
 const PAGE_REF_RE = /^caelo:page\/([0-9a-f-]{36})$/i;
-
-const encoder = new TextEncoder();
-
-/** The bytes `value` takes as JSON on the wire. */
-function jsonBytes(value: unknown): number {
-  return encoder.encode(JSON.stringify(value)).length;
-}
 
 /** The pages one page names: its `page` properties' targets and its terms' overview pages. */
 export function namedPages(page: StructuredDataPage): string[] {
@@ -123,7 +108,7 @@ export interface CompositionCalls {
  */
 export function compositionCalls(
   input: StructuredDataArgs,
-  maxBytes: number = COMPOSITION_CALL_ARGS_BYTES,
+  maxBytes: number = PLUGIN_CALL_ARGS_BYTES,
   perCall: number = STRUCTURED_DATA_PAGES_PER_CALL,
 ): CompositionCalls {
   const base = jsonBytes({ pages: [], related: [], pageTypes: input.pageTypes, site: input.site });

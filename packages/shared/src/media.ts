@@ -81,6 +81,17 @@ export const MEDIA_VARIANT_TAGS = [
 ] as const;
 export type MediaVariantTag = (typeof MEDIA_VARIANT_TAGS)[number];
 
+/**
+ * #1757 — the share image (`og:image`) is the original where every social
+ * platform shows it: JPEG or PNG of at most 5 MB (LinkedIn shows no WebP;
+ * LinkedIn and X take files up to 5 MB). Any other original ships its
+ * 1200 px WebP, which the seo plugin's check reports. The build and the
+ * editor's share-image read pick by this one rule.
+ */
+export const SHARE_IMAGE_ORIG_FORMATS = ["jpeg", "png"] as const;
+/** Largest original the share image uses as it is ({@link SHARE_IMAGE_ORIG_FORMATS}). */
+export const SHARE_IMAGE_ORIG_MAX_BYTES = 5 * 1024 * 1024;
+
 /** Width-in-pixels target for each WebP variant. */
 export const MEDIA_VARIANT_WIDTHS: Record<Exclude<MediaVariantTag, "orig">, number> = {
   "webp-1600": 1600,

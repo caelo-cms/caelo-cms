@@ -179,6 +179,88 @@ describe("pages.delete — dead-URL disposition", () => {
   });
 });
 
+/** Run `body` as the system actor on a raw connection (fixture writes). */
+async function asSystem<T>(body: (tx: SQL) => Promise<T>): Promise<T> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    return await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return body(tx as unknown as SQL);
+    });
+  } finally {
+    await sql.end();
+  }
+}
+
+describe("#1762 — disposition '410': removed on purpose", () => {
+  it("leaves a Staged 410 rule at the page's address, live with the next Publish live", async () => {
+    const id = await makePage(`${PFX}-gone`);
+    const r = await execute(registry, adapter, SYSTEM, "pages.delete", {
+      pageId: id,
+      disposition: "410",
+    });
+    expect(r.ok).toBe(true);
+    expect((r.value as { keptRedirects: unknown[] }).keptRedirects).toEqual([]);
+    expect(await isDeleted(id)).toBe(true);
+    const rules = await redirectsFrom(`/${PFX}-gone`);
+    expect(rules).toHaveLength(1);
+    expect(Number(rules[0]?.status_code)).toBe(410);
+  });
+
+  it("keeps a redirect the address already has, live or pending", async () => {
+    const live = await makePage(`${PFX}-gone-live`);
+    const pending = await makePage(`${PFX}-gone-pending`);
+    // A live rule shadowed by the page (the build wins while it is served).
+    await asSystem(
+      (tx) =>
+        tx`INSERT INTO redirects (from_path, to_path, status_code, created_by) VALUES (${`/${PFX}-gone-live`}, '/home', 301, ${SYSTEM.actorId}::uuid)`,
+    );
+    // A pending change at the other address (a manual save, Staged).
+    const saved = await execute(registry, adapter, SYSTEM, "redirects.create_many", {
+      redirects: [{ fromPath: `/${PFX}-gone-pending`, toPath: "/blog", statusCode: 302 }],
+      upsert: true,
+    });
+    expect(saved.ok).toBe(true);
+    const r = await execute(registry, adapter, SYSTEM, "pages.delete_many", {
+      deletions: [
+        { pageId: live, disposition: "410" },
+        { pageId: pending, disposition: "410" },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    const kept = (
+      r.value as { keptRedirects: { fromPath: string; toPath: string; state: string }[] }
+    ).keptRedirects;
+    expect(kept.map((k) => [k.fromPath, k.toPath, k.state]).sort()).toEqual([
+      [`/${PFX}-gone-live`, "/home", "live"],
+      [`/${PFX}-gone-pending`, "/blog", "pending"],
+    ]);
+    // No 410 replaced either rule.
+    const gone = await asSystem(
+      (tx) =>
+        tx`SELECT from_path FROM pending_redirects WHERE from_path LIKE ${`/${PFX}-gone-%`} AND status_code = 410`,
+    );
+    expect(gone).toHaveLength(0);
+    expect(await isDeleted(live)).toBe(true);
+    expect(await isDeleted(pending)).toBe(true);
+  });
+
+  it("refuses a 410 for the home page and deletes nothing", async () => {
+    const homeId = await makePage(`${PFX}-gone-home`);
+    const designated = await execute(registry, adapter, SYSTEM, "pages.set_home_page", {
+      pageId: homeId,
+    });
+    expect(designated.ok).toBe(true);
+    const r = await execute(registry, adapter, SYSTEM, "pages.delete", {
+      pageId: homeId,
+      disposition: "410",
+    });
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r.ok ? null : r.error)).toContain("cannot answer 410");
+    expect(await isDeleted(homeId)).toBe(false);
+  });
+});
+
 describe("pages.delete_many — per-page disposition (the regression)", () => {
   it("each page in the batch gets its own disposition, all on one call", async () => {
     const a = await makePage(`${PFX}-bulk-a`); // → 301

@@ -76,6 +76,8 @@ interface OpenLink {
   readonly label: string | null;
   readonly scope: Scope;
   text: string;
+  /** The `alt` of the images inside it: an image link's name (a linked logo). */
+  imageAlt: string;
   readonly depth: number;
 }
 
@@ -260,6 +262,11 @@ export function extractPageFacts(
           const v = attrs[attr];
           if (v !== undefined) addText(v, scope, attr);
         }
+        // An image hidden from assistive technology (aria-hidden on it or
+        // around it) names nothing: screen readers never read its alt.
+        if (name === "img" && attrs.alt !== undefined && !scope.ariaHidden) {
+          for (const l of open) l.imageAlt += ` ${attrs.alt}`;
+        }
         if (name === "input" && BUTTON_INPUTS.has((attrs.type ?? "").toLowerCase())) {
           if (attrs.value !== undefined) addText(attrs.value, scope, "value");
         }
@@ -270,6 +277,7 @@ export function extractPageFacts(
             label: attrs["aria-label"] ?? attrs.title ?? null,
             scope,
             text: "",
+            imageAlt: "",
             depth: stack.length,
           });
         }
@@ -295,7 +303,11 @@ export function extractPageFacts(
             links.push({
               ...urlOf(last.href, base, hosts),
               hreflang: last.hreflang,
-              text: cut(collapse(last.text) || collapse(last.label ?? "")),
+              // The link's name: its visible text, else the alt of its
+              // images (a linked logo), else aria-label / title.
+              text: cut(
+                collapse(last.text) || collapse(last.imageAlt) || collapse(last.label ?? ""),
+              ),
               moduleId: last.scope.moduleId,
               listItem: last.scope.listItem,
               pluginSlug: last.scope.pluginSlug,

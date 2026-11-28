@@ -12,6 +12,7 @@
 
 import { setPageSeoToolInput } from "@caelo-cms/shared";
 import { makeBulkTool } from "./_make-bulk-tool.js";
+import { pageSeoWrites, withPluginWrites } from "./_plugin-write-hints.js";
 
 /** A `max-snippet` / `max-video-preview` limit: -1 = no limit, null = no directive. */
 const limit = (max: number, what: string) => ({
@@ -21,7 +22,7 @@ const limit = (max: number, what: string) => ({
   description: `${what}; -1 = no limit, 0 = none, null = no directive.`,
 });
 
-export const setPageSeoManyTool = makeBulkTool({
+const setPageSeoManyBase = makeBulkTool({
   name: "set_page_seo_many",
   description: [
     "Set pages' SEO fields to exact values, all-or-nothing. ONLY on explicit user instruction (e.g. 'set the home meta description to X', 'keep the pricing table out of Google snippets').",
@@ -99,3 +100,8 @@ export const setPageSeoManyTool = makeBulkTool({
   },
   opName: "pages_seo.set_many",
 });
+
+/** The tool, with the plugins' hints on the SEO texts it set (epic #1751). */
+export const setPageSeoManyTool = withPluginWrites(setPageSeoManyBase, (input) =>
+  pageSeoWrites(input.items),
+);

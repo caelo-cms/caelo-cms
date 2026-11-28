@@ -20,6 +20,8 @@ interface SeoSettings {
   robotsRules: RobotsRules;
   robotsTxt: string | null;
   robotsWarnings: string[];
+  /** #1758 — what the preference lines (training token, Content-Signal) do not do. */
+  robotsNotes: string[];
   /** #1752 — the `<title>` template of pages whose page type has none. */
   titleTemplate: string;
   siteName: string | null;
@@ -97,6 +99,7 @@ export const load: PageServerLoad = async ({ locals }) => {
           robotsRules: [],
           robotsTxt: null,
           robotsWarnings: [],
+          robotsNotes: [],
           titleTemplate: "",
           siteName: null,
           searchNotifications: [],

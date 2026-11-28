@@ -18,6 +18,25 @@
 import { truncateKeepingIds } from "@caelo-cms/shared";
 import { z } from "zod";
 
+/** A UTF-16 surrogate with no partner: half of a character such as an emoji. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/**
+ * Text as Postgres stores it in jsonb: a lone surrogate becomes U+FFFD.
+ * Findings quote what a check met (a JSON parser's error naming half of an
+ * emoji, a text cut between the halves of one), and `JSON.stringify` writes
+ * such a half as `\ud83d`, which jsonb refuses: recording the Stage audit
+ * would fail on one quoted character. Every finding passes this schema at
+ * each boundary (the check's output, the hand-over, the read), so it is
+ * done once, here. Text columns get the same U+FFFD from the encoder.
+ */
+export function storableText(text: string): string {
+  return text.replace(LONE_SURROGATE, "\uFFFD");
+}
+
+/** A finding's text: within `max` characters, storable in jsonb. */
+const findingText = (max: number) => z.string().min(1).max(max).transform(storableText);
+
 /** How bad a finding is. Only `error` can block Publish live. */
 export const FINDING_SEVERITIES = ["error", "warning", "info"] as const;
 
@@ -51,10 +70,16 @@ export const ruleIdSchema = z
 /** Where the AI fixes a finding: the tool to call and what to do with it. */
 export const findingFixSchema = z
   .object({
-    /** An AI tool name (`set_page_seo_many`, `update_modules_many`, …). */
-    tool: z.string().min(1).max(80),
+    /**
+     * An AI tool name (`set_page_seo_many`, `update_modules_many`, …): the
+     * characters a model can call a tool by (AI providers accept letters,
+     * digits, `_` and `-`), never free text a plugin chose.
+     */
+    tool: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{1,80}$/, "a tool name: letters, digits, _ and -, at most 80"),
     /** One sentence: what to change, in the tool's terms. */
-    hint: z.string().min(1).max(500),
+    hint: findingText(500),
   })
   .strict();
 
@@ -71,7 +96,7 @@ export const findingSchema = z
      * description: …") — the chat's fix offer shows that label per page,
      * next to the page path, so do not repeat the path in it.
      */
-    message: z.string().min(1).max(1000),
+    message: findingText(1000),
     fix: findingFixSchema.optional(),
   })
   .strict();

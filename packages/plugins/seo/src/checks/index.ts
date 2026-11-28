@@ -72,6 +72,13 @@ export const SEO_AUDIT_RULES: readonly SeoAuditRule[] = [];
 /** Most findings one answer may carry (the SDK contract). */
 const MAX_FINDINGS_PER_ANSWER = 499;
 
+/**
+ * The longest finding message (the SDK contract). A message names paths,
+ * texts and module ids the site chose, so a long one is cut here rather
+ * than failing the whole answer at core's check.
+ */
+const MAX_MESSAGE_CHARS = 1000;
+
 const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 } as const;
 
 /**
@@ -95,7 +102,25 @@ const auditArgs = z.object(auditArgShape).strict();
 function capped(findings: readonly PluginAuditFinding[]): PluginAuditFinding[] {
   return [...findings]
     .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
-    .slice(0, MAX_FINDINGS_PER_ANSWER);
+    .slice(0, MAX_FINDINGS_PER_ANSWER)
+    .map((f) => ({ ...f, message: boundedMessage(f.message) }));
+}
+
+/** A UTF-16 surrogate with no partner: a text cut between the halves of an emoji. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/**
+ * A message within the SDK's length, cut on a character boundary. A rule
+ * that cut a quoted text in the middle of a character (a surrogate pair)
+ * left half of it, which Postgres refuses in the jsonb the audit is
+ * recorded in: it is dropped here.
+ */
+export function boundedMessage(message: string): string {
+  const whole = message.replace(LONE_SURROGATE, "");
+  if (whole.length <= MAX_MESSAGE_CHARS) return whole;
+  let cut = whole.slice(0, MAX_MESSAGE_CHARS - 1);
+  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
+  return `${cut}…`;
 }
 
 /** The fact batches of the first answer: every page, in staged order. */

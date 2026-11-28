@@ -9,7 +9,7 @@
 
   import type { PanelValueDisplay } from "@caelo-cms/plugin-sdk";
   import { Badge } from "#lib/components/ui/badge/index.js";
-  import { badgeVariant, formatValue } from "#lib/plugin-panels.js";
+  import { badgeVariant, formatValue, pageEditorHref } from "#lib/plugin-panels.js";
 
   interface Props {
     display: PanelValueDisplay;
@@ -18,10 +18,16 @@
   let { display, value }: Props = $props();
 
   const text = $derived(formatValue(display, value));
+  /** #1760 — the editor link of a `page` value; null for anything but a page id. */
+  const editorHref = $derived(display.format === "page" ? pageEditorHref(value) : null);
 </script>
 
 {#if text === ""}
   <span class="text-muted-foreground" aria-label="empty">–</span>
+{:else if editorHref !== null}
+  <a href={editorHref} class="text-primary underline-offset-2 hover:underline" data-testid="panel-page-link">
+    Open in editor
+  </a>
 {:else if display.format === "badge"}
   <Badge variant={badgeVariant(display, value)}>{text}</Badge>
 {:else if display.format === "json"}

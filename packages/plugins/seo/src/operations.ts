@@ -10,6 +10,18 @@ import type { PluginContextTier1, PluginOperation } from "@caelo-cms/plugin-sdk"
 import { seoAudit } from "./checks/index.js";
 import { seoWriteHints } from "./hints/index.js";
 import { AUDIT_RULES, WRITE_HINT_RULES } from "./rule-sets.js";
+import { AGENT_FILES_OPERATION, agentFiles } from "./rules/agent-files.js";
+import {
+  PLAN_CRAWLER_POLICY_OPERATION,
+  planCrawlerPolicyOperation,
+} from "./rules/crawler-operations.js";
+import {
+  OVERVIEW_PAGE_TYPES_OPERATION,
+  OVERVIEW_ROWS_OPERATION,
+  overviewPageTypes,
+  overviewRows,
+} from "./rules/overview.js";
+import { SEO_PREVIEW_OPERATION, seoPreview } from "./rules/previews.js";
 import {
   getSchemaMapping,
   SITEMAP_ENTRIES_OPERATION,
@@ -36,6 +48,11 @@ export const WRITE_HINTS_OPERATION = "write_hints";
 export const SEO_OPERATIONS: Readonly<Record<string, PluginOperation<PluginContextTier1>>> = {
   [AUDIT_OPERATION]: (ctx, args) => seoAudit(ctx, args, AUDIT_RULES),
   [WRITE_HINTS_OPERATION]: (ctx, args) => seoWriteHints(ctx, args, WRITE_HINT_RULES),
+  [PLAN_CRAWLER_POLICY_OPERATION]: (ctx, args) => planCrawlerPolicyOperation(ctx, args),
+  [AGENT_FILES_OPERATION]: (ctx) => agentFiles(ctx),
+  [OVERVIEW_ROWS_OPERATION]: (ctx, args) => overviewRows(ctx, args),
+  [OVERVIEW_PAGE_TYPES_OPERATION]: (ctx) => overviewPageTypes(ctx),
+  [SEO_PREVIEW_OPERATION]: (ctx, args) => seoPreview(ctx, args),
   // #1756 — the schema mapping per page type.
   [STRUCTURED_DATA_OPERATION]: (ctx, args) => structuredData(ctx, args),
   [SITEMAP_ENTRIES_OPERATION]: (ctx, args) => sitemapEntries(ctx, args),

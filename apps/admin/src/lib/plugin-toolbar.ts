@@ -19,6 +19,12 @@ export interface EditorToolbarSlot {
   readonly state: PluginEditorToolbarState | null;
   /** Why the state could not be shown, phrased for the operator. */
   readonly error: string | null;
+  /**
+   * #1760 — the editor's own URL of each library image a preview names
+   * (`imageAssetId`); an id with no live image is absent, and the card says
+   * the image is missing.
+   */
+  readonly previewImages?: Readonly<Record<string, string>>;
 }
 
 /** How many places the bar shows before the rest move behind "+N". */

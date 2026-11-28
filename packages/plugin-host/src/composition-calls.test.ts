@@ -6,7 +6,8 @@ import {
   type StructuredDataArgs,
   type StructuredDataPage,
 } from "@caelo-cms/plugin-sdk";
-import { COMPOSITION_CALL_ARGS_BYTES, compositionCalls } from "./composition-calls.js";
+import { PLUGIN_CALL_ARGS_BYTES } from "./call-wire-budget.js";
+import { compositionCalls } from "./composition-calls.js";
 import { SANDBOX_MESSAGE_BYTES } from "./sandbox-protocol.js";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -47,7 +48,7 @@ function input(
 
 describe("compositionCalls (#1753, #1761; Codex on #1797)", () => {
   it("keeps a call's arguments within one sandbox message, with room for the envelope", () => {
-    expect(COMPOSITION_CALL_ARGS_BYTES).toBe(SANDBOX_MESSAGE_BYTES - 64 * 1024);
+    expect(PLUGIN_CALL_ARGS_BYTES).toBe(SANDBOX_MESSAGE_BYTES - 64 * 1024);
     // 50 pages of two 20,000-character properties: about 2 MB in one call before.
     const long = "x".repeat(20_000);
     const pages = Array.from({ length: 50 }, (_, i) =>
@@ -56,7 +57,7 @@ describe("compositionCalls (#1753, #1761; Codex on #1797)", () => {
     const { calls, oversized } = compositionCalls(input(pages));
     expect(oversized).toEqual([]);
     expect(calls.length).toBeGreaterThan(1);
-    for (const c of calls) expect(bytes(c.args)).toBeLessThanOrEqual(COMPOSITION_CALL_ARGS_BYTES);
+    for (const c of calls) expect(bytes(c.args)).toBeLessThanOrEqual(PLUGIN_CALL_ARGS_BYTES);
     // Every page asked once, in order.
     expect(calls.flatMap((c) => c.pages.map((p) => p.pageId))).toEqual(pages.map((p) => p.pageId));
   });
