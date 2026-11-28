@@ -13,6 +13,7 @@
     CardTitle,
   } from "#lib/components/ui/card/index.js";
   import { Input } from "#lib/components/ui/input/index.js";
+  import { Label } from "#lib/components/ui/label/index.js";
 
   let { data, form } = $props();
 </script>
@@ -43,6 +44,7 @@
       <CardContent>
         <form method="post" enctype="multipart/form-data" class="flex flex-wrap items-center gap-3">
           <input type="hidden" name="_csrf" value={data.csrfToken} />
+          <Label for="data-upload-file">Export file</Label>
           <Input id="data-upload-file" type="file" name="file" accept=".csv,.jsonl,.ndjson,.json,.txt" class="max-w-sm" />
           <Button type="submit">Upload</Button>
         </form>
