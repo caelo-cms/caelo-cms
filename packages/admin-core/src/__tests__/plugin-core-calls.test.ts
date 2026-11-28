@@ -140,7 +140,7 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
   seo: {
     "site_defaults.get_seo": {
       notBackground:
-        "plan_crawler_policy (an AI tool) and the Stage audit read the robots rules, one row",
+        "plan_crawler_policy (an AI tool) and the Stage audit read the robots rules, one row; the editor toolbar place reads the base URL for a site-relative canonical",
     },
     "pages_seo.overview": {
       notBackground:

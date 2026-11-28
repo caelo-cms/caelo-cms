@@ -329,6 +329,11 @@ export type PanelFilter = z.infer<typeof panelFilter>;
  * Cursor paging: each page asks for `pageSize` rows through `limitArg`; the
  * next page passes the last row's `cursor.key` value as `cursor.arg`.
  * More pages exist while the result's `hasMoreKey` is true.
+ *
+ * `nextCursorKey` names the result's own next cursor instead (epic #1751):
+ * an operation that filters what it reads can answer a page with no row
+ * while more of the list follows, and a cursor on the last row would then
+ * be lost. When it is set, the last row's `cursor.key` is not read.
  */
 export const panelPaging = z
   .object({
@@ -336,6 +341,7 @@ export const panelPaging = z
     limitArg: argName,
     cursor: z.object({ arg: argName, key: panelKeyPath }).strict(),
     hasMoreKey: panelKeyPath,
+    nextCursorKey: panelKeyPath.optional(),
   })
   .strict();
 

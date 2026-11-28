@@ -6,6 +6,7 @@ import { describe, expect, it } from "bun:test";
 import {
   manifestFromDefinition,
   type PluginContextTier1,
+  pluginAuditFinding,
   pluginEditorToolbarState,
   pluginManifest,
 } from "@caelo-cms/plugin-sdk";
@@ -52,6 +53,27 @@ describe("duplicate titles and descriptions", () => {
     expect(titles[0]?.fix?.tool).toBe("bulk_optimize_seo");
     // An empty description is no duplicate of another empty one.
     expect(duplicateFindings(heads, "metaDescription")).toEqual([]);
+  });
+
+  it("keeps every message within the SDK's length, whatever the paths", () => {
+    const long = (n: number) => head(n, "Shared", "x", { path: `/${"deep/".repeat(36)}page-${n}` });
+    const found = duplicateFindings(
+      Array.from({ length: 7 }, (_, i) => long(i)),
+      "seoTitle",
+    );
+    expect(found).toHaveLength(7);
+    for (const f of found) expect(pluginAuditFinding.safeParse(f).success).toBe(true);
+    expect(found[0]?.message).toContain("and 1 more");
+  });
+
+  it("stays linear for a title 50,000 pages share", () => {
+    const heads = Array.from({ length: 50_000 }, (_, i) => head(i, "Shop", "Buy."));
+    const started = performance.now();
+    const found = duplicateFindings(heads, "seoTitle");
+    expect(found).toHaveLength(50_000);
+    expect(found[49_999]?.message).toContain("and 49994 more");
+    // Quadratic grouping took about 79 s here; linear takes well under one.
+    expect(performance.now() - started).toBeLessThan(5_000);
   });
 
   it("reads the staged pages a thousand at a time", async () => {
@@ -119,6 +141,19 @@ describe("the overview panel", () => {
     });
   });
 
+  it("keeps the next cursor when every read part of the site had no match", async () => {
+    let n = 0;
+    const ctx = {
+      cms: { call: async () => ({ pages: [], nextCursor: `c${++n}` }) },
+    } as unknown as PluginContextTier1;
+    const r = await overviewRows(ctx, { origin: "unset", limit: 50 });
+    // No row to carry it: the answer does, and the panel names it.
+    expect(r).toEqual({ rows: [], hasMore: true, nextCursor: `c${n}` });
+    const manifest = pluginManifest.parse(manifestFromDefinition(seo));
+    const table = manifest.adminPanels?.find((p) => p.slug === "overview")?.sections[0];
+    expect(table?.kind === "table" ? table.paging?.nextCursorKey : undefined).toBe("nextCursor");
+  });
+
   it("offers the site's page types as a filter", async () => {
     const ctx = {
       cms: { call: async () => ({ pageTypes: [{ id: id(9), name: "Article", slug: "article" }] }) },
@@ -128,13 +163,13 @@ describe("the overview panel", () => {
 });
 
 describe("the search and share preview", () => {
-  const ctx = (resolved: unknown) =>
+  const ctx = (resolved: unknown, url = "https://example.com/blog/hello-world/") =>
     ({
       cms: {
         call: async (op: string) => {
           if (op === "pages_seo.get") return { seo: null, resolved };
-          if (op === "pages.resolve_public_urls")
-            return { urls: { [id(1)]: "https://example.com/blog/hello-world/" } };
+          if (op === "pages.resolve_public_urls") return { urls: { [id(1)]: url } };
+          if (op === "site_defaults.get_seo") return { siteBaseUrl: "https://example.com" };
           if (op === "pages_seo.share_images")
             return { images: [{ pageId: id(1), assetId: id(7), source: "site" }] };
           throw new Error(op);
@@ -171,6 +206,26 @@ describe("the search and share preview", () => {
       description: "Share text.",
     });
     expect(state.summary).toContain("ends in …");
+  });
+
+  it("shows a site-relative canonical override on the site's address", async () => {
+    const state = await seoPreview(
+      ctx(
+        {
+          title: v("Pricing"),
+          metaDescription: v("Prices."),
+          ogTitle: v("", "inherited"),
+          ogDescription: v("", "inherited"),
+          robots: "",
+        },
+        "/preferred-page/",
+      ),
+      { pageId: id(1) },
+    );
+    expect(state.previews?.[0]).toMatchObject({
+      siteName: "example.com",
+      displayUrl: "example.com › preferred-page",
+    });
   });
 
   it("says when there is no description, and hides for a page it cannot see", async () => {

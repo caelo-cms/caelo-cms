@@ -36,7 +36,20 @@ const answer = z.object({ pages: z.array(head), nextCursor: z.string().nullable(
 
 type Head = z.infer<typeof head>;
 
-/** The findings of pages that share one text, each page once. */
+/** Most characters of a path a message names. */
+const PATH_CHARS = 120;
+/** The SDK's longest finding message (`pluginAuditFinding.message`). */
+const MESSAGE_CHARS = 1000;
+
+function short(path: string): string {
+  return path.length > PATH_CHARS ? `${path.slice(0, PATH_CHARS - 1)}…` : path;
+}
+
+/**
+ * The findings of pages that share one text, each page once. Linear in the
+ * pages: a template title shared by 50,000 pages is one group, and each
+ * message names only a few of its peers.
+ */
 export function duplicateFindings(
   heads: readonly Head[],
   field: "seoTitle" | "metaDescription",
@@ -46,19 +59,27 @@ export function duplicateFindings(
     if (h.noindex || h.canonicalUrl !== null) continue;
     const text = h[field].value.replace(/\s+/g, " ").trim();
     if (text === "") continue;
-    groups.set(text, [...(groups.get(text) ?? []), h]);
+    const group = groups.get(text);
+    if (group) group.push(h);
+    else groups.set(text, [h]);
   }
   const what = field === "seoTitle" ? "title" : "description";
+  const tag = field === "seoTitle" ? "<title>" : "meta description";
   const out: PluginAuditFinding[] = [];
   for (const [text, group] of groups) {
     if (group.length < 2) continue;
+    // The first NAMED + 1 pages hold NAMED peers of every page.
+    const sample = group.slice(0, NAMED + 1);
     for (const h of group) {
-      const others = group.filter((g) => g !== h).map((g) => g.path);
+      const peers = sample.filter((g) => g !== h).slice(0, NAMED);
+      const more = group.length - 1 - peers.length;
+      const message = `Duplicate ${what}: ${short(h.path)} shares its ${tag} "${text.slice(0, 80)}" with ${peers.map((g) => short(g.path)).join(", ")}${more > 0 ? ` and ${more} more` : ""}, so search engines cannot tell the pages apart. Versions of one page in different languages may share it: accept the finding for them.`;
       out.push({
         rule: field === "seoTitle" ? "duplicate-title" : "duplicate-description",
         severity: "error",
         pageId: h.pageId,
-        message: `Duplicate ${what}: ${h.path} shares its ${field === "seoTitle" ? "<title>" : "meta description"} "${text.slice(0, 80)}" with ${others.slice(0, NAMED).join(", ")}${others.length > NAMED ? ` and ${others.length - NAMED} more` : ""}, so search engines cannot tell the pages apart. Versions of one page in different languages may share it: accept the finding for them.`,
+        message:
+          message.length > MESSAGE_CHARS ? `${message.slice(0, MESSAGE_CHARS - 1)}…` : message,
         fix: {
           tool: "bulk_optimize_seo",
           hint:

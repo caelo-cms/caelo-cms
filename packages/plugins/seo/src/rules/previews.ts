@@ -69,6 +69,22 @@ export function displayUrl(url: string): string {
   return [u.host, ...parts.map((p) => decodeURIComponent(p))].join(" › ").slice(0, 300);
 }
 
+/**
+ * The page's URL as a result list shows it. A canonical override may be
+ * site-relative (`/preferred-page/`), which `pages.resolve_public_urls`
+ * passes on as written; it is resolved against the site's base URL.
+ */
+async function absoluteUrl(ctx: PluginContextTier1, url: string): Promise<string> {
+  if (URL.canParse(url)) return url;
+  const { siteBaseUrl } = z
+    .object({ siteBaseUrl: z.string().nullable() })
+    .passthrough()
+    .parse(await ctx.cms?.call("site_defaults.get_seo", {}));
+  // resolve_public_urls refuses without a base URL, so it is set here.
+  if (!siteBaseUrl) throw new Error("seo: the site base URL is not set, so no page has an address");
+  return new URL(url, siteBaseUrl).href;
+}
+
 /** Text a preview field takes: one line, within the SDK's length. */
 function clip(text: string, max: number): string {
   const one = text.replace(/\s+/g, " ").trim();
@@ -92,17 +108,18 @@ export async function seoPreview(
     }),
   ).urls[pageId];
   if (!url) throw new Error(`seo: no public URL for page ${pageId}`);
+  const pageUrl = await absoluteUrl(ctx, url);
   const image =
     shareImages
       .parse(await ctx.cms.call("pages_seo.share_images", { pageIds: [pageId] }))
       .images.find((i) => i.pageId === pageId)?.assetId ?? null;
-  const host = new URL(url).host;
+  const host = new URL(pageUrl).host;
   const title = head.title.value || head.ogTitle.value;
   const results = (["desktop", "mobile"] as const).map((device) => ({
     kind: "search-result" as const,
     device,
     siteName: clip(host, 120),
-    displayUrl: displayUrl(url),
+    displayUrl: displayUrl(pageUrl),
     title: clip(
       cutToWidth(title || "(no title)", TITLE_FONT_PX, SERP_LIMITS[device].title).text,
       200,

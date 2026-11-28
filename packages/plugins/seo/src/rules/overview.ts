@@ -109,8 +109,10 @@ export const SEO_OVERVIEW_PANEL: PluginAdminPanel = {
       paging: {
         pageSize: PAGE_SIZE,
         limitArg: "limit",
-        cursor: { arg: "cursor", key: "cursor" },
+        cursor: { arg: "cursor", key: "nextCursor" },
         hasMoreKey: "hasMore",
+        // A filtered page can hold no row while more follow (MAX_HOPS).
+        nextCursorKey: "nextCursor",
       },
       emptyMessage: "No page matches these filters.",
     },
@@ -182,8 +184,9 @@ export async function overviewRows(ctx: PluginContextTier1, rawArgs: unknown) {
     if (rows.length > 0 || next === null) break;
     cursor = next;
   }
-  // The panel pages by the last row's cursor: every row carries it.
-  return { rows: rows.map((r) => ({ ...r, cursor: next })), hasMore: next !== null };
+  // The cursor rides on the answer, not on a row: after MAX_HOPS reads
+  // without a match the page has no row, and the next one must still open.
+  return { rows, hasMore: next !== null, nextCursor: next };
 }
 
 /** `overview_page_types`: the page type filter's options, as the site has them. */

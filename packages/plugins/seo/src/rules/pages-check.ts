@@ -11,7 +11,12 @@
  *   not indexing.
  */
 
-import type { PluginAuditFinding, PluginContextTier1, RobotsRules } from "@caelo-cms/plugin-sdk";
+import type {
+  PluginAuditFinding,
+  PluginAuditPageFacts,
+  PluginContextTier1,
+  RobotsRules,
+} from "@caelo-cms/plugin-sdk";
 import type { SeoAuditRule } from "../checks/index.js";
 import { isNoindex, pageFindings } from "./page-rules.js";
 import { mayFetch } from "./robots-match.js";
@@ -30,6 +35,38 @@ async function robotsRules(ctx: PluginContextTier1): Promise<RobotsRules> {
   return r.robotsRules as RobotsRules;
 }
 
+/**
+ * The style a page is served in, as crawlers request it: with the trailing
+ * slash of a directory-style site (`/private/`), without it on a
+ * no-extension one (`/private`). Facts name pages by their identity path,
+ * so the style is read from a self-canonical page of the batch (every page
+ * of a build shares it). Null when the batch shows none: then only a path
+ * blocked in both spellings counts.
+ */
+export function servedPathStyle(
+  facts: readonly PluginAuditPageFacts[],
+): "directory" | "no-extension" | null {
+  for (const f of facts) {
+    const canonical = f.canonical;
+    if (f.path === "/" || canonical === null || canonical.path !== f.path) continue;
+    if (!URL.canParse(canonical.href)) continue;
+    return new URL(canonical.href).pathname.endsWith("/") ? "directory" : "no-extension";
+  }
+  return null;
+}
+
+/** Whether a search engine may fetch the page at `path`, as it is served. */
+function fetchable(
+  rules: RobotsRules,
+  path: string,
+  style: "directory" | "no-extension" | null,
+): boolean {
+  const withSlash = path === "/" ? path : `${path}/`;
+  if (style === "directory") return mayFetch(rules, SEARCH_CRAWLER, withSlash);
+  if (style === "no-extension") return mayFetch(rules, SEARCH_CRAWLER, path);
+  return mayFetch(rules, SEARCH_CRAWLER, path) || mayFetch(rules, SEARCH_CRAWLER, withSlash);
+}
+
 /** The rule family over the staged pages' facts. */
 export const PAGE_AUDIT_RULE: SeoAuditRule = {
   name: "pages",
@@ -39,8 +76,9 @@ export const PAGE_AUDIT_RULE: SeoAuditRule = {
     const noindex = facts.filter(isNoindex);
     if (noindex.length === 0) return out;
     const rules = await robotsRules(ctx);
+    const style = servedPathStyle(facts);
     for (const f of noindex) {
-      if (mayFetch(rules, SEARCH_CRAWLER, f.path)) continue;
+      if (fetchable(rules, f.path, style)) continue;
       out.push({
         rule: "noindex-blocked",
         severity: "error",

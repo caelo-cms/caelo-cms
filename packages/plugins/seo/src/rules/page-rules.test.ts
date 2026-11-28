@@ -24,7 +24,7 @@ import {
   placeholderFindings,
   shareImageFindings,
 } from "./page-rules.js";
-import { PAGE_AUDIT_RULE } from "./pages-check.js";
+import { PAGE_AUDIT_RULE, servedPathStyle } from "./pages-check.js";
 import { groupAllows } from "./robots-match.js";
 
 const PAGE = "00000000-0000-4000-8000-000000000001";
@@ -227,6 +227,34 @@ describe("noindex pages robots.txt hides", () => {
       auditRunId: undefined,
     });
     expect(rules(open ?? [])).not.toContain("noindex-blocked");
+  });
+
+  it("matches the path a page is served at, in the site's URL style", async () => {
+    const run = async (rules: unknown, served: string) => {
+      const page = facts({
+        path: "/private",
+        robots: "noindex",
+        canonical: { href: `https://example.com${served}`, path: "/private" },
+      });
+      return (
+        (await PAGE_AUDIT_RULE.facts?.(ctxWith(rules), { facts: [page], auditRunId: undefined })) ??
+        []
+      );
+    };
+    const dirOnly = [{ userAgents: ["*"], allow: [], disallow: ["/private/"] }];
+    const exact = [{ userAgents: ["*"], allow: [], disallow: ["/private$"] }];
+    // Served at /private/: a directory rule hides it, an exact /private$ does not.
+    expect(rules(await run(dirOnly, "/private/"))).toContain("noindex-blocked");
+    expect(rules(await run(exact, "/private/"))).not.toContain("noindex-blocked");
+    // Served at /private: the other way round.
+    expect(rules(await run(dirOnly, "/private"))).not.toContain("noindex-blocked");
+    expect(rules(await run(exact, "/private"))).toContain("noindex-blocked");
+    expect(
+      servedPathStyle([
+        facts({ path: "/a", canonical: { href: "https://x.example/a/", path: "/a" } }),
+      ]),
+    ).toBe("directory");
+    expect(servedPathStyle([facts({ path: "/a", canonical: null })])).toBeNull();
   });
 
   it("reads groups as RFC 9309 does", () => {

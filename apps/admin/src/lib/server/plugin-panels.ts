@@ -286,8 +286,11 @@ async function loadTable(
   }
   let nextPageHref: string | null = null;
   if (section.paging && valueAt(r.value, section.paging.hasMoreKey) === true) {
-    const last = rows.at(-1);
-    const next = valueAt(last, section.paging.cursor.key);
+    // The result's own cursor when the panel names one (a filtered page
+    // may hold no row while more follow), else the last row's.
+    const next = section.paging.nextCursorKey
+      ? valueAt(r.value, section.paging.nextCursorKey)
+      : valueAt(rows.at(-1), section.paging.cursor.key);
     if (primitiveValue.safeParse(next).success) {
       nextPageHref = withParams(url, {
         [sectionParam(section.id, CURSOR)]: JSON.stringify(next),
