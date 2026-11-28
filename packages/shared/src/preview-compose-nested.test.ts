@@ -17,7 +17,6 @@ import type {
 } from "./nested-module-render.js";
 import {
   type ComposeDeferral,
-  ComposeError,
   type ComposeModule,
   composePageWithLayout,
 } from "./preview-compose.js";
@@ -69,6 +68,15 @@ function grid(cards: unknown[]): ComposeModule {
     contentValues: { cards },
   };
 }
+
+/** A consent plugin's gate verdict. */
+const gate: ComposeDeferral = {
+  pluginSlug: "consent",
+  reason: "marketing",
+  placeholderModuleSlug: "consent-placeholder",
+  placeholderHtml: "<p>consent</p>",
+  placeholderCss: "",
+};
 
 function compose(m: ComposeModule, nested?: NestedRenderResolver, deferred = {}) {
   return composePageWithLayout({
@@ -137,17 +145,58 @@ describe("composePageWithLayout — nested modules", () => {
     ]);
   });
 
-  it("refuses to render a plugin-withheld module nested inside another module", () => {
-    const deferral: ComposeDeferral = {
-      pluginSlug: "consent",
-      reason: "needs-consent",
-      placeholderModuleSlug: "consent-placeholder",
-      placeholderHtml: "<p>consent</p>",
-      placeholderCss: "",
+  // #1708 — a withheld module can be gated only where it is placed on the
+  // page: nested in a field it would load before consent. It used to throw
+  // a ComposeError, which stopped every Stage of the site. Now it is left
+  // out entirely and reported where it sits, so a Stage records it and
+  // Publish live refuses the build.
+  it("leaves a plugin-withheld module nested inside another module out, and reports it", () => {
+    const tracker: NestedModuleResource = {
+      ...card,
+      html: '<article><iframe src="https://vendor.example/embed"></iframe>{{title}}</article>',
+      css: ".card{background:url(https://vendor.example/bg.png)}",
+      js: "fetch('https://vendor.example/beacon')",
     };
-    expect(() =>
-      compose(grid(refs), resolver([card], instances), { [CARD_MOD]: deferral }),
-    ).toThrow(ComposeError);
+    const out = compose(grid(refs), resolver([tracker], instances), { [CARD_MOD]: gate });
+    const marker = `nested-module-withheld:${CARD_MOD}/consent/marketing`;
+    expect(out.html).toContain(`<!-- caelo:missing reason=${marker} -->`);
+    // Nothing of it reaches the page: no markup, no CSS, no JS, no gate.
+    expect(out.html).not.toContain("vendor.example");
+    expect(out.html).not.toContain("Starter");
+    expect(out.html).not.toContain("data-caelo-deferred");
+    // The parent renders as usual around the gap.
+    expect(out.html).toContain('<div class="grid"');
+    expect(out.moduleFailures).toEqual([
+      {
+        blockName: "content",
+        moduleId: "00000000-0000-0000-0000-0000000e0001",
+        moduleSlug: "card-grid",
+        field: "cards[0]",
+        reason: marker,
+      },
+      {
+        blockName: "content",
+        moduleId: "00000000-0000-0000-0000-0000000e0001",
+        moduleSlug: "card-grid",
+        field: "cards[1]",
+        reason: marker,
+      },
+    ]);
+  });
+
+  it("reports a withheld nested module inside a withheld parent too: one consent cannot release another's", () => {
+    const parent = grid(refs);
+    const statistics: ComposeDeferral = { ...gate, reason: "statistics" };
+    const out = compose(parent, resolver([card], instances), {
+      [parent.moduleId]: gate,
+      [CARD_MOD]: statistics,
+    });
+    expect(out.html).toContain("data-caelo-deferred-content");
+    expect(out.html).not.toContain("Starter");
+    expect(out.moduleFailures.map((f) => f.reason)).toEqual([
+      `nested-module-withheld:${CARD_MOD}/consent/statistics`,
+      `nested-module-withheld:${CARD_MOD}/consent/statistics`,
+    ]);
   });
 
   it("keeps a withheld parent's nested CSS/JS inside its gate, never in the page bundles", () => {

@@ -22,6 +22,7 @@ import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { withheldNestedSuffix } from "../ai/tools/_withheld-nested-guard.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -39,6 +40,9 @@ let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let pageId = "";
 let videoModuleId = "";
+let templateId = "";
+/** The markup the gate was last asked about, per module (#1708). */
+const askedHtml = new Map<string, string>();
 
 /** What the fixture plugin currently withholds. Mutated per test. */
 let verdicts: Record<string, Record<string, unknown>> = {};
@@ -70,6 +74,7 @@ async function cleanup(): Promise<void> {
     await tx.unsafe("DELETE FROM pages WHERE slug LIKE 't450-%'");
     await tx.unsafe("DELETE FROM templates WHERE slug LIKE 't450-%'");
     await tx.unsafe("DELETE FROM modules WHERE slug LIKE 't450-%'");
+    await tx.unsafe("DELETE FROM modules WHERE display_name LIKE 't450 nested %'");
   });
 }
 
@@ -86,7 +91,7 @@ beforeAll(async () => {
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,
   });
   if (!tpl.ok) throw new Error(JSON.stringify(tpl.error));
-  const templateId = (tpl.value as { templateId: string }).templateId;
+  templateId = (tpl.value as { templateId: string }).templateId;
   await execute(registry, adapter, SYS_CTX, "template_blocks.set", {
     templateId,
     blocks: [{ name: "content", displayName: "Content", position: 0 }],
@@ -146,7 +151,11 @@ beforeAll(async () => {
     operations: {
       deferrals: async (_ctx, args) => {
         if (answerAll) return { deferrals: verdicts };
-        const { moduleIds } = args as { moduleIds: string[] };
+        const { moduleIds, modules } = args as {
+          moduleIds: string[];
+          modules: { moduleId: string; html: string }[];
+        };
+        for (const m of modules) askedHtml.set(m.moduleId, m.html);
         const out: Record<string, unknown> = {};
         for (const id of moduleIds) {
           const v = verdicts[id];
@@ -169,6 +178,67 @@ afterAll(async () => {
   await cleanup();
   await adapter.close();
 });
+
+interface NestedFixture {
+  pageId: string;
+  frameModuleId: string;
+  videoModuleId: string;
+  videoInstanceId: string;
+}
+let nestedFixture: NestedFixture | null = null;
+
+/** #1708 — a page whose frame module holds a video module in its `embed` field. */
+async function nestedPage(): Promise<NestedFixture> {
+  if (nestedFixture) return nestedFixture;
+  const r = await execute(registry, adapter, SYS_CTX, "pages.build_page", {
+    page: { slug: "t450-nested", title: "Nested", templateId },
+    modules: [
+      {
+        ref: "video",
+        displayName: "t450 nested video",
+        description: "A product video.",
+        kind: "content",
+        html: '<iframe src="https://www.youtube.com/embed/nested" title="{{video_title}}"></iframe>',
+        fields: [{ name: "video_title", kind: "text", label: "Title" }],
+        content: { source: "inline", values: { video_title: "Tour" } },
+      },
+      {
+        blockName: "content",
+        displayName: "t450 nested frame",
+        description: "A section with a heading and an embedded video.",
+        kind: "content",
+        html: "<section><h2>{{heading}}</h2>{{>embed}}</section>",
+        fields: [
+          { name: "heading", kind: "text", label: "Heading" },
+          { name: "embed", kind: "module", label: "Video" },
+        ],
+        content: {
+          source: "inline",
+          values: { heading: "Watch the tour", embed: { $ref: "video" } },
+        },
+      },
+    ],
+  });
+  if (!r.ok) throw new Error(JSON.stringify(r.error));
+  const v = r.value as {
+    pageId: string;
+    detached: { ref: string; moduleId: string; contentInstanceId: string }[];
+  };
+  const video = v.detached.find((d) => d.ref === "video");
+  if (!video) throw new Error("nested video missing");
+  const frame = await sqlSystem(
+    (tx) => tx`SELECT id::text AS id FROM modules WHERE display_name = 't450 nested frame'`,
+  );
+  const frameId = (frame[0] as { id: string } | undefined)?.id;
+  if (!frameId) throw new Error("frame module missing");
+  nestedFixture = {
+    pageId: v.pageId,
+    frameModuleId: frameId,
+    videoModuleId: video.moduleId,
+    videoInstanceId: video.contentInstanceId,
+  };
+  return nestedFixture;
+}
 
 async function renderPage(): Promise<string> {
   const r = await execute(registry, adapter, SYS_CTX, "pages.render_preview", { pageId });
@@ -360,6 +430,68 @@ describe("#450 — module deferrals through the preview op", () => {
     } finally {
       answerAll = false;
     }
+  });
+
+  // #1708 — a withheld module inside another module's `module` field. The
+  // build used to stop on it (a ComposeError that failed every Stage of the
+  // site) while this preview judged the PARENT on its rendered HTML, embed
+  // included, and withheld the whole section. Now both leave the nested
+  // module out and report it; the parent is judged on what it shows.
+  it("leaves a withheld nested module out of the preview and flags it, and judges the parent without it", async () => {
+    const nested = await nestedPage();
+    verdicts = {
+      [nested.videoModuleId]: { reason: "marketing", placeholderModuleSlug: "t450-placeholder" },
+    };
+    const r = await execute(registry, adapter, SYS_CTX, "pages.render_preview", {
+      pageId: nested.pageId,
+    });
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    const { html, missingSlots } = r.value as { html: string; missingSlots: string[] };
+    const marker = `nested-module-withheld:${nested.videoModuleId}/t450-gate/marketing`;
+    expect(missingSlots).toContain(marker);
+    expect(html).toContain(`<!-- caelo:missing reason=${marker} -->`);
+    // Nothing of the embed reaches the editor's browser either.
+    expect(html).not.toContain("youtube.com");
+    // The frame is not withheld: the visitor sees its text, not a placeholder.
+    expect(html).toContain("Watch the tour");
+    expect(html).not.toContain("data-caelo-deferred");
+    // The plugin was asked about the parent as it shows: without the embed.
+    expect(askedHtml.get(nested.frameModuleId)).not.toContain("youtube.com");
+  });
+
+  it("renders the nested module as usual when the plugin withholds nothing", async () => {
+    const nested = await nestedPage();
+    verdicts = {};
+    const r = await execute(registry, adapter, SYS_CTX, "pages.render_preview", {
+      pageId: nested.pageId,
+    });
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    const { html, missingSlots } = r.value as { html: string; missingSlots: string[] };
+    expect(html).toContain("youtube.com/embed/nested");
+    expect(missingSlots.some((m) => m.startsWith("nested-module-withheld:"))).toBe(false);
+  });
+
+  it("tells the AI at once when a write nests a withheld module (write tools' hint)", async () => {
+    const nested = await nestedPage();
+    const written = [
+      {
+        heading: "Watch the tour",
+        embed: { moduleId: nested.videoModuleId, contentInstanceId: nested.videoInstanceId },
+      },
+    ];
+    verdicts = {
+      [nested.videoModuleId]: { reason: "marketing", placeholderModuleSlug: "t450-placeholder" },
+    };
+    const hint = await withheldNestedSuffix(SYS_CTX, { registry, adapter }, written);
+    expect(hint).toContain(`(${nested.videoModuleId}) is in a field of the module you wrote`);
+    expect(hint).toContain('plugin "t450-gate" withholds it until visitors consent (marketing)');
+    expect(hint).toContain("add_module");
+    // Nothing withheld, or no nested ref: nothing to say.
+    verdicts = {};
+    expect(await withheldNestedSuffix(SYS_CTX, { registry, adapter }, written)).toBe("");
+    expect(
+      await withheldNestedSuffix(SYS_CTX, { registry, adapter }, [{ heading: "Only text" }]),
+    ).toBe("");
   });
 
   it("costs nothing when no plugin declares deferrals", async () => {

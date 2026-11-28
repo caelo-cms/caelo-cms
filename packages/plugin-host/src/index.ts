@@ -135,6 +135,7 @@ export {
   resolveContentVariants,
 } from "./content-variants.js";
 export {
+  hasDeferralContributors,
   type ResolvedDeferral,
   type ResolvedDeferrals,
   resolveModuleDeferrals,
