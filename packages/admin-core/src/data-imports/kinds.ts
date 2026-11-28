@@ -72,11 +72,6 @@ export interface ImportKind {
 
 const CORE_KINDS: readonly ImportKind[] = [redirectsImportKind];
 
-/** Names the core keeps for its own kinds; a plugin cannot declare them. */
-export const CORE_IMPORT_KIND_NAMES: ReadonlySet<string> = new Set(
-  CORE_KINDS.map((k) => k.declaration.kind),
-);
-
 /** Most rows one call of a plugin's apply operation takes. */
 const PLUGIN_WRITE_BATCH = 500;
 
@@ -169,9 +164,4 @@ export function importKinds(): ImportKind[] {
     .sort((a, b) => a.slug.localeCompare(b.slug))
     .flatMap((lp) => (lp.definition.imports ?? []).map((d) => pluginKind(lp.slug, d)));
   return [...CORE_KINDS, ...plugins];
-}
-
-/** The kind named `kind`, or undefined when no active owner declares it. */
-export function importKind(kind: string): ImportKind | undefined {
-  return importKinds().find((k) => k.declaration.kind === kind);
 }

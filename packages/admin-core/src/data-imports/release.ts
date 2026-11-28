@@ -71,18 +71,12 @@ export async function mergeChatImports(
   `);
 }
 
-/** Where an import stands, for people and the AI. */
-export type ImportState =
-  | "draft"
-  | "waiting-for-build"
-  | "staged"
-  | "live"
-  | "undo-pending"
-  | "undone"
-  /** Release `target`: the rows follow the target's own drafts (redirects). */
-  | "written";
-
-/** The columns {@link importStateSql} derives a state from, as one SQL `CASE`. */
+/**
+ * Where an import stands, as one SQL `CASE` over the row aliased `di`:
+ * draft | waiting-for-build | staged | live | undo-pending | undone, and
+ * written for kinds with release `target` (redirects follow their own
+ * drafts).
+ */
 export function importStateSql(): SQL {
   return sql`CASE
     WHEN di.release = 'target' THEN CASE WHEN di.undone_at IS NULL THEN 'written' ELSE 'undone' END
