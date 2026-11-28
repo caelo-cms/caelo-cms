@@ -493,6 +493,20 @@ describe("#1756 the seo plugin on a blog", () => {
     });
   });
 
+  it("names a page with a relative canonical override by its absolute URL, core and plugin alike (Codex on #1797)", async () => {
+    await run("pages_seo.set", { pageId: ids.topic, canonicalUrl: `/${PFX}-canonical-topic` });
+    try {
+      const graph = graphOf(await preview(ids.topic));
+      const canonical = `${BASE}/${PFX}-canonical-topic`;
+      const webPage = node(graph, canonical);
+      expect(webPage?.["@type"]).toBe("CollectionPage");
+      expect(webPage?.mainEntity).toEqual({ "@id": `${canonical}#items` });
+      expect(node(graph, `${canonical}#items`)?.["@type"]).toBe("ItemList");
+    } finally {
+      await run("pages_seo.set", { pageId: ids.topic, canonicalUrl: null });
+    }
+  });
+
   it("the build writes the preview's graph, dated from the live record, and every reference resolves", async () => {
     const built = [ids.article, ids.anna, ids.topic].map((pageId) => ({
       pageId,

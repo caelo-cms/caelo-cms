@@ -5,7 +5,8 @@
  * "SEO Tools") becomes one, in ONE call (CLAUDE.md §11: a multi-step
  * change is one op):
  *
- * 1. every page carrying a merged term carries the kept term instead,
+ * 1. every page carrying a merged term carries the kept term instead, as a
+ *    tag and as the value of a `term` property (an author's expertise),
  * 2. a merged term's overview page (`landing_page`) becomes the kept
  *    term's when it has none, else it is deleted with a 301 to the kept
  *    term's overview page, so its inbound links keep working,
@@ -23,7 +24,7 @@ import { defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { loadListEntityBySlug } from "../../lists/store.js";
+import { loadListEntities, loadListEntityBySlug } from "../../lists/store.js";
 import { deletePagesManyOp, listPagesOp, updatePageOp } from "../content/pages.js";
 import { branchOf, failBatch, handlerError, listTypesBySlug } from "./_shared.js";
 import { patchListItemsManyOp } from "./lists.js";
@@ -163,11 +164,25 @@ export const mergeTermsOp = defineOperation({
       );
     }
 
-    // 1. Re-tag: the pages carrying a merged term, as the caller sees them.
+    // 1. Re-tag: the pages carrying a merged term, as the caller sees them —
+    // as a tag (`page_terms`), or as the value of a `term` property on this
+    // vocabulary (an author's expertise). No index holds property values, so
+    // the second are the pages of the page types that declare such a
+    // property (`pages_page_type_idx`), confirmed on their state below.
     const listId = list.id;
+    const termTypes = (await loadListEntities(tx, "pageType", branchId)).filter(
+      (t) =>
+        t.state.deletedAt === null &&
+        t.state.definition.properties.some((f) => f.type === "term" && f.list === input.list),
+    );
     const candidates = (await tx.execute(sql`
       SELECT DISTINCT page_id::text AS id FROM page_terms
        WHERE list_id = ${listId}::uuid AND item_id = ANY(${uuidArray([...fromAll])})
+      ${
+        termTypes.length > 0
+          ? sql`UNION SELECT id::text FROM pages WHERE deleted_at IS NULL AND page_type_id = ANY(${uuidArray(termTypes.map((t) => t.id))})`
+          : sql``
+      }
       ${branchId ? sql`UNION SELECT entity_id::text FROM draft_pending_entities WHERE chat_branch_id = ${branchId}::uuid AND entity_kind = 'page'` : sql``}
     `)) as unknown as { id: string }[];
     if (candidates.length > MERGE_TERMS_MAX_PAGES) {
@@ -190,14 +205,37 @@ export const mergeTermsOp = defineOperation({
         tx,
       );
       if (!listed.ok) return failBatch(retaggedPages > 0, listed.error);
-      for (const page of listed.value.pages as { id: string; terms: string[] }[]) {
-        if (!page.terms.some((t) => fromRefs.has(t))) continue;
-        const next: string[] = [];
-        for (const t of page.terms) {
-          const kept = fromRefs.get(t) ?? t;
-          if (!next.includes(kept)) next.push(kept);
+      for (const page of listed.value.pages as {
+        id: string;
+        terms: string[];
+        properties: Record<string, unknown>;
+      }[]) {
+        const remap = (refs: readonly string[]): string[] => {
+          const next: string[] = [];
+          for (const t of refs) {
+            const kept = fromRefs.get(t) ?? t;
+            if (!next.includes(kept)) next.push(kept);
+          }
+          return next;
+        };
+        // A `term` property's value is an array of references (fields.ts).
+        const properties: Record<string, unknown> = {};
+        for (const [name, value] of Object.entries(page.properties ?? {})) {
+          if (!Array.isArray(value) || !value.some((v) => typeof v === "string" && fromRefs.has(v)))
+            continue;
+          properties[name] = remap(value as string[]);
         }
-        const r = await updatePageOp.handler(ctx, { pageId: page.id, terms: next }, tx);
+        const retag = page.terms.some((t) => fromRefs.has(t));
+        if (!retag && Object.keys(properties).length === 0) continue;
+        const r = await updatePageOp.handler(
+          ctx,
+          {
+            pageId: page.id,
+            ...(retag ? { terms: remap(page.terms) } : {}),
+            ...(Object.keys(properties).length > 0 ? { properties } : {}),
+          },
+          tx,
+        );
         if (!r.ok) {
           return failBatch(
             true,

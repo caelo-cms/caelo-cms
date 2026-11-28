@@ -165,8 +165,25 @@ function referencesIn(value: unknown, out: string[] = []): string[] {
   return out;
 }
 
+/**
+ * A page URL as the graph names it: absolute, resolved against the site
+ * base URL. A page's canonical may be an override relative to the site
+ * (`/canonical-article`, `pages_seo.set` accepts it); search engines read a
+ * JSON-LD `@id` and `url` as written, so the graph never keeps it relative.
+ * The plugin host resolves the URLs it builds nodes from the same way
+ * (`structured-data.ts`), so both name a page alike.
+ */
+export function absolutePageUrl(url: string, siteBaseUrl: string | null): string {
+  return siteBaseUrl ? new URL(url, siteRoot(siteBaseUrl)).href : url;
+}
+
 /** The core nodes of a page's graph, in their fixed order. */
-function coreNodes(core: CoreGraphInput): { nodes: Record<string, unknown>[]; webPage: number } {
+function coreNodes(input: CoreGraphInput): { nodes: Record<string, unknown>[]; webPage: number } {
+  const core: CoreGraphInput = {
+    ...input,
+    canonical:
+      input.canonical === null ? null : absolutePageUrl(input.canonical, input.siteBaseUrl),
+  };
   const org = core.organization;
   const orgId = siteNodeId(core.siteBaseUrl, "organization");
   const websiteId = siteNodeId(core.siteBaseUrl, "website");

@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  absolutePageUrl,
   buildPageGraph,
   type CoreGraphInput,
   type GraphContribution,
@@ -206,6 +207,21 @@ describe("buildPageGraph (#1753)", () => {
       "/#website",
       "#webpage",
     ]);
+  });
+
+  it("names a page with a relative canonical override by its absolute URL (Codex on #1797)", () => {
+    const { graph } = buildPageGraph(
+      { ...core, canonical: "/canonical-article", breadcrumbs: [] },
+      [],
+      noMedia,
+    );
+    const webPage = graph["@graph"].find((n) => n["@type"] === "WebPage");
+    expect(webPage?.["@id"]).toBe("https://blog.example/canonical-article");
+    expect(webPage?.url).toBe("https://blog.example/canonical-article");
+    expect(absolutePageUrl("/x", "https://blog.example")).toBe("https://blog.example/x");
+    expect(absolutePageUrl("https://other.example/y", "https://blog.example")).toBe(
+      "https://other.example/y",
+    );
   });
 });
 

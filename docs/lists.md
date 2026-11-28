@@ -1025,7 +1025,7 @@ to every role that holds `content.write`.
 | `lists.upsert_many` | `upsert_lists_many` | create or replace; returns `caelo:list/<id>` for binding |
 | `lists.patch_items_many` | `patch_list_items_many` | `add {parentId?, position?, item}`, `update {itemId, values}`, `move {itemId, parentId?, position}`, `remove {itemId}`; always loaded (core tool) |
 | `lists.delete_many` | `delete_lists_many` | refused while bound |
-| `lists.merge_terms` | — (the `seo` plugin's `merge_terms`; human, plugin and system only) | merges terms of one vocabulary in one call (#1759): pages re-tagged, a merged term's overview page becomes the kept term's or is deleted with a 301 to it, the merged terms removed; each step through the op that owns it, so a draft of the caller's branch |
+| `lists.merge_terms` | — (the `seo` plugin's `merge_terms`; human, plugin and system only) | merges terms of one vocabulary in one call (#1759): pages re-tagged, `term` property values on the vocabulary re-pointed (pages of the page types that declare one), a merged term's overview page becomes the kept term's or is deleted with a 301 to it, the merged terms removed; each step through the op that owns it, so a draft of the caller's branch |
 | `lists.promote_local` | `promote_local_list` | module field → shared list + rebind |
 | `lists.preview_source` | `preview_list_source` | what a query / system / plugin source returns for a page (below) |
 | `page_types.list` | `list_page_types` | templates, properties, vocabularies, page count |

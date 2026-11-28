@@ -461,4 +461,61 @@ describe("#1759 lists.merge_terms", () => {
       { from_path: `/${PFX}-topic-second`, to_path: `/${PFX}-topic-first` },
     ]);
   });
+
+  it("re-points a term property's value too, on a page that is not tagged with the term (Codex on #1797)", async () => {
+    const slug = `${PFX}-skills`;
+    await op(SYS, "lists.upsert_many", {
+      lists: [
+        {
+          slug,
+          name: "Skills",
+          purpose: "Subjects an author knows about",
+          type: "categories",
+          items: [
+            { node: "category", values: { name: "SEO Tools", slug: "seo-tools" } },
+            { node: "category", values: { name: "SEO-Tool", slug: "seo-tool" } },
+          ],
+        },
+      ],
+    });
+    const skills = (
+      await op<{ list: { id: string; items: ListItem[] } }>(SYS, "lists.get", { slug })
+    ).list;
+    const [keep, dup] = skills.items as [ListItem, ListItem];
+    const ref = (item: ListItem) => `caelo:term/${skills.id}/${item.id}`;
+    await op(SYS, "page_types.upsert_many", {
+      pageTypes: [
+        {
+          slug: `${PFX}-author`,
+          name: "Author",
+          purpose: "Authors of the blog",
+          collection: true,
+          templates: [templateId],
+          defaultTemplate: templateId,
+          properties: [
+            { name: "expertise", label: "Expertise", type: "term", list: slug, multiple: true },
+          ],
+          vocabularies: [],
+        },
+      ],
+    });
+    const { pageId } = await op<{ pageId: string }>(SYS, "pages.create", {
+      slug: `${PFX}-anna`,
+      title: "Anna",
+      pageType: `${PFX}-author`,
+      properties: { expertise: [ref(dup), ref(keep)] },
+    });
+
+    const r = await op<{ retaggedPages: number }>(SYS, "lists.merge_terms", {
+      list: slug,
+      merges: [{ from: [dup.id], into: keep.id }],
+    });
+    expect(r.retaggedPages).toBe(1);
+    const { pages } = await op<{
+      pages: { properties: Record<string, unknown>; terms: string[] }[];
+    }>(SYS, "pages.list", { includeDeleted: false, pageIds: [pageId] });
+    // The merged term is gone from the vocabulary, and nothing still names it.
+    expect(pages[0]?.properties.expertise).toEqual([ref(keep)]);
+    expect(pages[0]?.terms).toEqual([]);
+  });
 });

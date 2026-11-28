@@ -28,6 +28,7 @@
 
 import { STRUCTURED_DATA_ANSWER_MAX_BYTES, type StructuredDataArgs } from "@caelo-cms/plugin-sdk";
 import {
+  absolutePageUrl,
   type GraphContribution,
   LIVE_PLACEHOLDER_KEY,
   MEDIA_PLACEHOLDER_KEY,
@@ -177,7 +178,11 @@ export async function collectStructuredData(
     }
   }
   const resolved = await resolveTargetUrls([...pageIds], opts);
-  const urls = new Map([...resolved].map(([id, url]) => [id.toLowerCase(), url]));
+  // Absolute as the graph builder makes the page's own (`absolutePageUrl`):
+  // a canonical override may be relative to the site.
+  const urls = new Map(
+    [...resolved].map(([id, url]) => [id.toLowerCase(), absolutePageUrl(url, opts.siteBaseUrl)]),
+  );
   // Media is not branched: a preview and a build see the same facts.
   const facts = await describePluginMedia([...mediaIds]);
   const mediaRules = new Map(
