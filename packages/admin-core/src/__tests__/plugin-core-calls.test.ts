@@ -79,6 +79,13 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     "comment_archive.insert": {
       notBackground: "the moderate / ai_moderate tools write one archived comment each",
     },
+    "comment_archive.import_many": {
+      notBackground:
+        "the import_comments tool's apply operation writes one batch of an import (docs/data-imports.md)",
+    },
+    "comment_archive.remove_import": {
+      notBackground: "undo_data_import's remove operation removes one import's comments",
+    },
   },
   "international-site": {
     "content_instances.get": { measured: ["content_instances.get"] },
