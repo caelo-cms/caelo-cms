@@ -173,6 +173,42 @@ describe("inspect_page_render tool (v0.2.69)", () => {
     expect(mod).toBeDefined();
     expect(mod?.block).toBe("content");
     expect(mod?.cssBytes).toBeGreaterThan(0);
+    // A module that ends in plain content carries no flag (#1787).
+    expect(mod).not.toHaveProperty("endsOutsideContent");
+    expect(summary.template).not.toHaveProperty("endsOutsideContent");
+
+    // 4b. #1787 — a module that does not end in plain content makes the page
+    //     leave every plugin value raw (`context-open-markup`); the summary
+    //     shows the AI the markup to rewrite, the one place that names it.
+    const openR = await execute(registry, adapter, systemCtx, "modules.create", {
+      slug: `${MOD_SLUG}-open`,
+      displayName: "Open Module",
+      html: '<div class="open-marker">{{note}}<svg viewBox="0 0 2 2"><circle r="1"/>',
+      css: "",
+      js: "",
+      fields: [{ name: "note", kind: "text", label: "Note", default: "OPEN_NOTE" }],
+    });
+    if (!openR.ok) throw new Error(`open seed: ${JSON.stringify(openR.error)}`);
+    const openId = (openR.value as { moduleId: string }).moduleId;
+    await execute(registry, adapter, systemCtx, "pages.set_modules", {
+      pageId,
+      blocks: [{ blockName: "content", moduleIds: [moduleId, openId] }],
+    });
+    const openRes = await tools.dispatch("inspect_page_render", { pageId }, aiCtx, {
+      adapter,
+      registry,
+    });
+    expect(openRes.ok).toBe(true);
+    const openSummary = JSON.parse(openRes.content) as {
+      modules: { slug: string; endsOutsideContent?: string }[];
+    };
+    const flagged = openSummary.modules.filter((m) => m.endsOutsideContent !== undefined);
+    expect(flagged.map((m) => m.slug)).toEqual([`${MOD_SLUG}-open`]);
+    expect(flagged[0]?.endsOutsideContent).toContain('<svg viewBox="0 0 2 2">');
+    await execute(registry, adapter, systemCtx, "pages.set_modules", {
+      pageId,
+      blocks: [{ blockName: "content", moduleIds: [moduleId] }],
+    });
 
     // 5. target:"composed" → the full composed HTML.
     const compRes = await tools.dispatch(

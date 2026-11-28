@@ -15,6 +15,7 @@ import { createListRenderContext } from "./lists/resolve.js";
 import type { NestedRenderResolver } from "./nested-module-render.js";
 import {
   frameReading,
+  markupLeavingContent,
   OPEN_MARKUP_RULE,
   SLOT_PLACEMENT_RULE,
   templateEndsInContent,
@@ -94,6 +95,27 @@ describe("slots and the page's open parts (#1732 review, round 3)", () => {
       );
       expect(reasons(out)).toContain(refused(OPEN_MARKUP_RULE));
     }
+  });
+
+  it("#1787: a section around boolean attributes keeps the page's plugin values", () => {
+    // The real-AI cookie banner's shape in the footer: before #1787 its
+    // section counted as markup that may end outside content, and the page
+    // refused every plugin value on it (`context-open-markup`).
+    const banner = {
+      ...notice(owned("<p>Fuß</p>"), "m-banner"),
+      html: '<div>{{body}}<input type="checkbox" {{#required}}checked disabled{{/required}}></div>',
+      fields: [
+        { name: "body", kind: "richtext" as const },
+        { name: "required", kind: "boolean" as const },
+      ],
+      contentValues: { body: owned("<p>Fuß</p>"), required: true },
+    };
+    const out = page(
+      '<main><caelo-slot name="content"></caelo-slot></main><footer><caelo-slot name="foot"></caelo-slot></footer>',
+      [{ blockName: "foot", modules: [banner as unknown as ReturnType<typeof notice>] }],
+    );
+    expect(reasons(out)).toEqual([]);
+    expect(out.html).toContain('<p>Fuß</p><input type="checkbox" checked disabled></div>');
   });
 
   it("4: a module without fields is read too; one its caller rendered is the caller's to place", () => {
@@ -193,6 +215,9 @@ describe("where a module ends (#1732 review, round 4)", () => {
     tableNoTbody: `<table><tr><td>{{a}}</td></tr></table><p>{{b}}</p>`,
     partial: `<div class="wrap">{{>teaser}}</div>`,
     hN: `<h{{n}}>{{x}}</h{{n}}>`,
+    // #1787 — the real AI's always-on checkbox, and the inverted spelling.
+    checkedDisabled: `<ul>{{#cats}}<li><input type="checkbox" data-c="{{key}}" {{#required}}checked disabled{{/required}}>{{label}}</li>{{/cats}}</ul>`,
+    invertedOptional: `<input type="checkbox" {{^required}}data-optional{{/required}}>`,
   };
   // Each ends outside content, in this reading or in a render.
   const outside: Record<string, string> = {
@@ -208,6 +233,9 @@ describe("where a module ends (#1732 review, round 4)", () => {
     unclosedSection: `{{#a}}<p>x</p>`,
     // No tag at all: a browser keeps the `<noscript>` in the `<select>`.
     selectWithoutTags: `<select><div><noscript></select>`,
+    // #1787 — attributes that decide whether what follows is SVG or HTML.
+    fontColorSection: `<svg><font {{#a}} color{{/a}}></font></svg>`,
+    annotationEncoding: `<math><annotation-xml encoding="{{e}}"></annotation-xml></math>`,
   };
 
   it("1: reads every shape real modules use as ending in content", () => {
@@ -218,6 +246,18 @@ describe("where a module ends (#1732 review, round 4)", () => {
   it("1: still reads a module that ends, or may end, outside content as open", () => {
     const wrong = Object.entries(outside).filter(([, html]) => templateEndsInContent(html));
     expect(wrong.map(([name]) => name)).toEqual([]);
+  });
+
+  it("#1787: shows the AI the markup that keeps a module from ending in content", () => {
+    for (const html of Object.values(inContent)) expect(markupLeavingContent(html)).toBeNull();
+    for (const html of Object.values(outside)) expect(markupLeavingContent(html)).not.toBeNull();
+    // From the section that may reshape what follows, or the end left open.
+    expect(markupLeavingContent(outside.sectionLeavesOpen as string)).toBe(
+      "{{#a}}</textarea>{{/a}}",
+    );
+    expect(markupLeavingContent(outside.svgOpen as string)).toBe(outside.svgOpen as string);
+    const long = `<section>${"<p>Text</p>".repeat(20)}<textarea>`;
+    expect(markupLeavingContent(long)).toBe(`…${long.slice(-80)}`);
   });
 
   it("1: an unquoted value refuses its own module's later plugin values, not the page's", () => {
