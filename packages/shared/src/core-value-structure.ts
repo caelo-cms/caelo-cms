@@ -609,16 +609,11 @@ function rawTextProblem(element: string, value: string, near: Neighbours): CoreV
       place: where,
     };
   }
-  // A `<!--` the value writes into a script (a split one is left alone:
-  // only `<!--` with a `<script` after it keeps the end from ending it).
-  if (element === "script") {
-    const read = near.before + value + near.after;
-    const from = near.before.length;
-    for (let at = read.indexOf("<!--"); at !== -1; at = read.indexOf("<!--", at + 1)) {
-      if (at < from + value.length && at + 4 > from) {
-        return { rule: "script-comment", spelling: "<!--", place: where };
-      }
-    }
+  // A `<!--` the value takes part in, in a script (also split with the
+  // template's text or a value next to it): with a `<script` after it, the
+  // module's `</script>` no longer ends the element.
+  if (element === "script" && endTakingPart(["<!--"], value, near) !== null) {
+    return { rule: "script-comment", spelling: "<!--", place: where };
   }
   return null;
 }

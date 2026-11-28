@@ -499,6 +499,92 @@ describe("renderRepairOf — a plugin value the host refused (#1729)", () => {
   });
 });
 
+describe("structured data and news / video sitemap entries a plugin added (#1753, #1761)", () => {
+  it("names the JSON-LD graph and the seo plugin's mapping for a refused node", () => {
+    const r = renderRepairOf({
+      reason: "plugin-value-refused:seo.structured-data.author:ref-unknown",
+      moduleSlug: null,
+    });
+    expect(r.tool).toBe("get_plugin");
+    expect(r.hint).toContain(
+      `The plugin "seo" added structured data (author) that Caelo refuses (ref-unknown); the page's JSON-LD graph leaves that part out.`,
+    );
+    expect(r.hint).toContain("A reference must name a node of this page");
+    expect(r.hint).toContain("get_schema_mapping");
+    expect(r.hint.length).toBeLessThan(500);
+    const other = renderRepairOf({
+      reason: "plugin-value-refused:probe.structured-data.name:text-markup",
+      moduleSlug: null,
+    });
+    expect(other.hint).toContain("submit_plugin");
+    expect(other.hint).not.toContain("A reference must");
+    // The rules the graph builder and the host emit for references and pages.
+    const dangling = renderRepairOf({
+      reason: "plugin-value-refused:seo.structured-data.author:ref-dangling",
+      moduleSlug: null,
+    });
+    expect(dangling.hint).toContain("A reference must name a node of this page");
+    const page = renderRepairOf({
+      reason: "plugin-value-refused:seo.structured-data.url:page-unknown",
+      moduleSlug: null,
+    });
+    expect(page.hint).toContain("must be a published page of this site");
+    expect(page.hint.length).toBeLessThan(500);
+  });
+
+  it("sends a page too large to ask a plugin about to its own properties", () => {
+    for (const point of ["structured-data", "sitemap-entries"]) {
+      const r = renderRepairOf({
+        reason: `plugin-value-refused:seo.${point}.page:record-too-large`,
+        moduleSlug: null,
+      });
+      expect(r.tool).toBe("update_pages_many");
+      expect(r.hint).toContain("more than one plugin call carries");
+      expect(r.hint.length).toBeLessThan(500);
+    }
+  });
+
+  it("sends a news entry without the site name to the site identity", () => {
+    const r = renderRepairOf({
+      reason: "plugin-value-refused:seo.sitemap-entries.news:site-name-unset",
+      moduleSlug: null,
+    });
+    expect(r.tool).toBe("set_site_identity");
+    expect(r.hint).toContain("set_site_identity (siteName)");
+    const video = renderRepairOf({
+      reason: "plugin-value-refused:seo.sitemap-entries.thumbnail:media-id-invalid",
+      moduleSlug: null,
+    });
+    expect(video.tool).toBe("get_plugin");
+    expect(video.hint).toContain("thumbnail sitemap entry Caelo refuses (media-id-invalid)");
+  });
+
+  it("tells the operator in plain words, without markers", () => {
+    const r = stagedRenderReport(
+      [
+        failure({
+          blockName: null,
+          moduleSlug: null,
+          reason: "plugin-value-refused:seo.structured-data.author:ref-unknown",
+        }),
+        failure({
+          blockName: null,
+          moduleSlug: null,
+          reason: "plugin-value-refused:seo.sitemap-entries.news:site-name-unset",
+        }),
+      ],
+      2,
+    );
+    expect(r?.operatorText).toContain(
+      "A plugin added structured data for search engines that Caelo does not allow, so it was left out — on Home (/en)",
+    );
+    expect(r?.operatorText).toContain(
+      "A plugin added a news or video sitemap entry that Caelo does not allow, so it was left out — on Home (/en)",
+    );
+    expect(r?.operatorText).not.toMatch(/structured-data\.|ref-unknown|site-name-unset/);
+  });
+});
+
 describe("a withheld module nested inside another module (#1708)", () => {
   const VIDEO = "00000000-0000-4000-8000-000000001708";
   const nested = failure({

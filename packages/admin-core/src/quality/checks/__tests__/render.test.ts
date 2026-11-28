@@ -164,3 +164,31 @@ describe("renderFindings — reference and share images (#1719)", () => {
     for (const x of f) expect(findingSchema.safeParse(x).success).toBe(true);
   });
 });
+
+describe("renderFindings — a plugin's structured data and sitemap entries (#1753, #1761)", () => {
+  it("names the page's JSON-LD and its sitemap entry as the place", () => {
+    const f = renderFindings(
+      [
+        failure({
+          blockName: null,
+          moduleSlug: null,
+          reason: "plugin-value-refused:seo.structured-data.author:ref-unknown",
+        }),
+        failure({
+          blockName: null,
+          moduleSlug: null,
+          reason: "plugin-value-refused:seo.sitemap-entries.news:site-name-unset",
+        }),
+      ],
+      2,
+      new Set([HOME]),
+    );
+    expect(f.map((x) => x.message.split(" (")[0])).toEqual([
+      `Could not be rendered: the page's structured data`,
+      `Could not be rendered: the page's news or video sitemap entry`,
+    ]);
+    expect(f[0]?.message).toContain('(JSON-LD, plugin "seo")');
+    expect(f[1]?.fix?.tool).toBe("set_site_identity");
+    for (const x of f) expect(findingSchema.safeParse(x).success).toBe(true);
+  });
+});

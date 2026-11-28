@@ -561,3 +561,33 @@ describe("#1748 review, round 8", () => {
     }
   });
 });
+
+describe("#1748 review, round 9: delimiters the template splits around a placeholder", () => {
+  it("checks an empty value too, at render and at write: it can join the template's halves", () => {
+    const html = "<textarea></text{{body}}area>hidden</textarea>";
+    const fields: TemplateField[] = [{ name: "body", kind: "text" }];
+    expect(coreValueProblemAt(html, html.indexOf("{{body}}"), "")?.rule).toBe("ends-textarea");
+    expect(renderTemplate({ html, fields, contentValues: { body: "" } }).missingSlots).toEqual([
+      "value-breaks-markup:body:ends-textarea",
+    ]);
+    expect(moduleValueProblems(html, fields, { body: "" }).map((p) => p.problem.rule)).toEqual([
+      "ends-textarea",
+    ]);
+    // An empty value in plain content changes nothing.
+    expect(
+      renderTemplate({ html: "<p>{{body}}</p>", fields, contentValues: { body: "" } }).missingSlots,
+    ).toEqual([]);
+  });
+
+  it("refuses a script comment opener split over two values next to each other", () => {
+    const html = "<script>{{a}}{{x}}</script><footer>F</footer>";
+    const a = (v: string) => coreValueProblemAt(html, html.indexOf("{{a}}"), v)?.rule ?? null;
+    const b = (v: string) => coreValueProblemAt(html, html.indexOf("{{x}}"), v)?.rule ?? null;
+    expect(a("<!")).toBe("script-comment");
+    expect(b("--<script>")).toBe("script-comment");
+    expect(a("var x = 1;")).toBeNull();
+    // The template's own `<!-` before an empty value and another value.
+    const split = "<script><!-{{a}}{{x}}-></script>";
+    expect(coreValueProblemAt(split, split.indexOf("{{a}}"), "")?.rule).toBe("script-comment");
+  });
+});

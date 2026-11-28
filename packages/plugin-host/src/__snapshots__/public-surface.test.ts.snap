@@ -1381,3 +1381,13 @@ exports[`shipped plugins' public surface (#1332) site-assistant: matches the rev
   },
 }
 `;
+
+exports[`shipped plugins' public surface (#1332) seo: matches the reviewed surface 1`] = `
+{
+  "mailTemplates": {},
+  "mailUnsubscribe": null,
+  "publicOperations": [],
+  "requires": [],
+  "tables": {},
+}
+`;

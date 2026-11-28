@@ -9,6 +9,7 @@
 
 import { z } from "zod";
 import { blankNonMarkup } from "./html-blank.js";
+import { type JsonLdGraph, renderJsonLdScript } from "./json-ld.js";
 import { robotsRulesSchema } from "./robots-rules.js";
 import {
   type ArticleTimes,
@@ -393,7 +394,6 @@ export interface SeoMetaInput {
    */
   canonical: string | null;
   ogImageUrl: string | null;
-  organization: SiteSeoSettings["organization"];
   /**
    * The site's Atom feed (`<link rel="alternate" type="application/atom+xml">`),
    * or null when the site has none ({@link siteFeedUrl}). Every page links it,
@@ -401,12 +401,12 @@ export interface SeoMetaInput {
    */
   feed: { readonly url: string; readonly title: string } | null;
   /**
-   * #1142 — the breadcrumb trail the page SHOWS (home → current), as
-   * built by {@link breadcrumbJsonLdItems}; null or empty = the page shows
-   * none and gets no `BreadcrumbList`, so structured data never claims a
-   * trail a visitor cannot see.
+   * #1753 — the page's one JSON-LD graph ({@link buildPageGraph}): the
+   * Organization, WebSite, WebPage and BreadcrumbList with fixed `@id`s and
+   * what plugins add. The caller builds it, so it can report what the
+   * builder refused; the head writes it as one script.
    */
-  breadcrumbs?: readonly BreadcrumbJsonLdItem[] | null;
+  jsonLd: JsonLdGraph;
 }
 
 /** One crumb of a `BreadcrumbList`: the page's short title and public URL. */
@@ -492,44 +492,8 @@ export function renderSeoHead(input: SeoMetaInput): string {
   lines.push(
     `<meta name="twitter:card" content="${input.ogImageUrl ? "summary_large_image" : "summary"}" />`,
   );
-  // JSON-LD WebPage block referencing the Organization (when set).
-  const ld: Record<string, unknown> = {
-    "@context": "https://schema.org",
-    "@type": "WebPage",
-    name: input.pageTitle,
-    ...(input.canonical ? { url: input.canonical } : {}),
-  };
-  if (description) ld.description = description;
-  if (input.ogImageUrl) ld.image = input.ogImageUrl;
-  if (input.organization.name) {
-    ld.publisher = {
-      "@type": "Organization",
-      name: input.organization.name,
-      ...(input.organization.url ? { url: input.organization.url } : {}),
-      ...(input.organization.logo
-        ? { logo: { "@type": "ImageObject", url: input.organization.logo } }
-        : {}),
-      ...(input.organization.sameAs?.length ? { sameAs: input.organization.sameAs } : {}),
-    };
-  }
-  lines.push(
-    `<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, "\\u003c")}</script>`,
-  );
-  if (input.breadcrumbs && input.breadcrumbs.length > 0) {
-    const list = {
-      "@context": "https://schema.org",
-      "@type": "BreadcrumbList",
-      itemListElement: input.breadcrumbs.map((b, i) => ({
-        "@type": "ListItem",
-        position: i + 1,
-        name: b.name,
-        item: b.url,
-      })),
-    };
-    lines.push(
-      `<script type="application/ld+json">${JSON.stringify(list).replace(/</g, "\\u003c")}</script>`,
-    );
-  }
+  // #1753 — one graph per page, every `<` written `\u003c`.
+  lines.push(renderJsonLdScript(input.jsonLd));
   return lines.join("\n");
 }
 

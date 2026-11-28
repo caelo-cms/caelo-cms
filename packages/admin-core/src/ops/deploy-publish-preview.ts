@@ -10,10 +10,11 @@
  * Read from what the builds already record (deploy/publish-preview.ts):
  * the two builds' render fingerprints, and the snapshot headers staged
  * between them (`site_snapshots.staged_at`, indexed by migration 0705).
- * "The live build" is the staging run the live production run was
+ * "The live build" is the staging run the live production site build was
  * promoted from (deploy.promote stamps its id into the production run's
  * `build_id`), so after a rollback the review compares with the build
- * that is live again.
+ * that is live again; a plugin-data build on top of it changes nothing
+ * here (deploy/release-runs.ts).
  *
  * A section design or a section's content counts where it shows on main
  * (what the last Stage merged): on one published page as a change of that
@@ -43,12 +44,17 @@ import {
   type StagedEntity,
   splitFingerprintKey,
 } from "../deploy/publish-preview.js";
+import {
+  DEFAULT_PRODUCTION_TARGET,
+  DEFAULT_STAGING_TARGET,
+  liveSiteBuild,
+  liveSourceBuild,
+  newestStagedBuild,
+} from "../deploy/release-runs.js";
 import { SITE_WIDE_WHAT } from "./chat/draft-summary.js";
 import { loadPartPlacements, partKey, placementOf } from "./content/part-placement.js";
 import { wherePartShows } from "./content/part-where.js";
 import { renderedSettingLabel } from "./quality/render-fingerprint.js";
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const pageItemSchema = z
   .object({ pageId: z.string(), title: z.string(), path: z.string().nullable() })
@@ -107,14 +113,6 @@ const outputSchema = z.object({
 /** What `deploy.publish_preview` returns. */
 export type PublishPreview = z.infer<typeof outputSchema>;
 
-type RunRow = {
-  id: string;
-  build_id: string | null;
-  started_at: string | Date;
-  finished_at: string | Date | null;
-  has_fingerprint: boolean;
-};
-
 const iso = (v: string | Date) => (v instanceof Date ? v.toISOString() : String(v));
 const isoOrNull = (v: string | Date | null) => (v === null ? null : iso(v));
 const emptyGroup = () => ({ total: 0, items: [] as z.infer<typeof pageItemSchema>[] });
@@ -129,8 +127,8 @@ export const publishPreviewOp = defineOperation({
   database: "cms_admin",
   input: z
     .object({
-      fromTarget: z.string().min(1).max(80).default("staging"),
-      toTarget: z.string().min(1).max(80).default("production"),
+      fromTarget: z.string().min(1).max(80).default(DEFAULT_STAGING_TARGET),
+      toTarget: z.string().min(1).max(80).default(DEFAULT_PRODUCTION_TARGET),
       /** Pages listed per group at most (new, changed, removed); the totals are exact. */
       limit: z.number().int().min(1).max(1000).default(200),
     })
@@ -150,8 +148,8 @@ export const publishPreviewOp = defineOperation({
       });
     }
 
-    const staged = await newestSucceeded(tx, from.id);
-    const live = await newestSucceeded(tx, to.id);
+    const staged = await newestStagedBuild(tx, from.id);
+    const live = await liveSiteBuild(tx, to.id);
     const base = {
       staged: staged
         ? {
@@ -191,16 +189,7 @@ export const publishPreviewOp = defineOperation({
     }
 
     // The staging run live was promoted from (its id is the production run's build id).
-    const source =
-      live.build_id && UUID_RE.test(live.build_id)
-        ? (
-            (await tx.execute(sql`
-              SELECT id::text AS id, build_id, started_at, finished_at,
-                     render_fingerprint IS NOT NULL AS has_fingerprint
-                FROM deploy_runs WHERE id = ${live.build_id}::uuid AND target_id = ${from.id}::uuid
-            `)) as unknown as RunRow[]
-          )[0]
-        : undefined;
+    const source = await liveSourceBuild(tx, live, from.id);
     if (base.live && source) base.live.stagedRunId = source.id;
     if (!source) {
       return only(
@@ -277,21 +266,6 @@ export const publishPreviewOp = defineOperation({
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-/** The newest succeeded build of a target. */
-async function newestSucceeded(
-  tx: TransactionRunner,
-  targetId: string,
-): Promise<RunRow | undefined> {
-  const rows = (await tx.execute(sql`
-    SELECT id::text AS id, build_id, started_at, finished_at,
-           render_fingerprint IS NOT NULL AS has_fingerprint
-      FROM deploy_runs
-     WHERE target_id = ${targetId}::uuid AND status = 'succeeded' AND build_id IS NOT NULL
-     ORDER BY started_at DESC LIMIT 1
-  `)) as unknown as RunRow[];
-  return rows[0];
 }
 
 /** Fingerprint keys whose hash differs between the staged and the live build's source run. */

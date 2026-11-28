@@ -215,9 +215,13 @@ export const revertSiteOp = defineOperation({
 
     for (const r of parsedModules) {
       const t = r.state;
+      // #1746 — a snapshot without description / kind leaves them as they are.
       await tx.execute(sql`
         UPDATE modules SET
-          slug = ${t.slug}, display_name = ${t.displayName}, type = ${t.type}, html = ${t.html},
+          slug = ${t.slug}, display_name = ${t.displayName},
+          description = COALESCE(${t.description ?? null}::text, description),
+          kind = COALESCE(${t.kind ?? null}::text, kind),
+          type = ${t.type}, html = ${t.html},
           css = ${t.css}, js = ${t.js}, deleted_at = ${t.deletedAt}, updated_at = now()
         WHERE id = ${r.entity_id}::uuid
       `);

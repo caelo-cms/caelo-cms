@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { buildPageGraph, LIVE_PLACEHOLDER_KEY } from "./json-ld.js";
 import { markNosnippet } from "./module-id-tag.js";
 import { renderSeoHead } from "./seo.js";
 import {
@@ -215,14 +216,45 @@ describe("completeSeoOrigins", () => {
 
 describe("renderSeoHead (#1752)", () => {
   const head = (o: Parameters<typeof source>[0] = {}) => resolvePageSeoHead(source(o));
+  /** #1753 — the page's graph, with its live dates when it has them. */
+  const graph = (liveDates: { published: string; modified: string } | null = null) =>
+    buildPageGraph(
+      {
+        siteBaseUrl: "https://acme.example",
+        canonical: "https://acme.example/pricing/",
+        siteName: "Acme",
+        siteLanguage: "en",
+        pageLanguage: "en",
+        pageTitle: "Pricing",
+        description: "",
+        imageUrl: null,
+        organization: {},
+        breadcrumbs: [],
+        liveDates,
+      },
+      [
+        {
+          plugin: "seo",
+          webPage: {},
+          nodes: [
+            {
+              "@type": "Article",
+              "@id": "https://acme.example/pricing/#article",
+              dateModified: { [LIVE_PLACEHOLDER_KEY]: "modified" },
+            },
+          ],
+        },
+      ],
+      () => null,
+    ).graph;
   const input = {
     pageTitle: "Pricing",
     siteName: "Acme",
     article: null,
     canonical: "https://acme.example/pricing/",
     ogImageUrl: null,
-    organization: {},
     feed: null,
+    jsonLd: graph(),
   };
 
   it("renders the resolved title, og overrides, og:site_name and the page title as JSON-LD name", () => {
@@ -259,6 +291,66 @@ describe("renderSeoHead (#1752)", () => {
       '<meta property="article:modified_time" content="2026-03-04T05:06:07.000Z" />',
     );
     expect(setArticleModifiedTime("<html></html>", "x")).toBe("<html></html>");
+  });
+
+  it("keeps the graph's publication date when it equals the modified date it re-dates (#1753)", () => {
+    // Right after the first publish both dates are the same instant.
+    const first = "2026-01-02T00:00:00.000Z";
+    const html = renderSeoHead({
+      ...input,
+      head: head({ pageTypeSeo: { ogType: "article" } }),
+      article: { publishedTime: first, modifiedTime: first },
+      jsonLd: graph({ published: first, modified: first }),
+    });
+    const dated = setArticleModifiedTime(html, "2026-03-04T05:06:07.000Z");
+    const nodes = (
+      JSON.parse(
+        /<script type="application\/ld\+json">(.*?)<\/script>/.exec(dated)?.[1] ?? "{}",
+      ) as { "@graph": Record<string, unknown>[] }
+    )["@graph"];
+    const dated2 = nodes.filter((n) => n.dateModified !== undefined);
+    expect(dated2.length).toBeGreaterThan(0);
+    for (const n of dated2) {
+      expect(n.dateModified).toBe("2026-03-04T05:06:07.000Z");
+      if (n.datePublished !== undefined) expect(n.datePublished).toBe(first);
+    }
+    expect(dated).toContain(`<meta property="article:published_time" content="${first}" />`);
+  });
+
+  it("dates the JSON-LD graph's live modified date with the article's, and again later (#1753)", () => {
+    const html = renderSeoHead({
+      ...input,
+      head: head({ pageTypeSeo: { ogType: "article" } }),
+      article: {
+        publishedTime: "2026-01-02T00:00:00.000Z",
+        modifiedTime: ARTICLE_MODIFIED_TIME_PENDING,
+      },
+      jsonLd: graph({
+        published: "2026-01-02T00:00:00.000Z",
+        modified: ARTICLE_MODIFIED_TIME_PENDING,
+      }),
+    });
+    expect(html.match(new RegExp(ARTICLE_MODIFIED_TIME_PENDING, "g"))).toHaveLength(3);
+    const dated = setArticleModifiedTime(html, "2026-03-04T05:06:07.000Z");
+    expect(dated).not.toContain(ARTICLE_MODIFIED_TIME_PENDING);
+    // The WebPage's and the plugin node's dateModified, and the meta.
+    expect(dated.match(/2026-03-04T05:06:07\.000Z/g)).toHaveLength(3);
+    // A plugin-data build moves the date again: the graph follows.
+    const again = setArticleModifiedTime(dated, "2026-05-06T07:08:09.000Z");
+    expect(again).not.toContain("2026-03-04T05:06:07.000Z");
+    expect(again.match(/2026-05-06T07:08:09\.000Z/g)).toHaveLength(3);
+    // A page without article meta (og:type website) still gets its graph dated.
+    const website = renderSeoHead({
+      ...input,
+      head: head(),
+      jsonLd: graph({
+        published: "2026-01-02T00:00:00.000Z",
+        modified: ARTICLE_MODIFIED_TIME_PENDING,
+      }),
+    });
+    const websiteDated = setArticleModifiedTime(website, "2026-03-04T05:06:07.000Z");
+    expect(websiteDated).not.toContain(ARTICLE_MODIFIED_TIME_PENDING);
+    expect(websiteDated.match(/2026-03-04T05:06:07\.000Z/g)).toHaveLength(2);
   });
 });
 

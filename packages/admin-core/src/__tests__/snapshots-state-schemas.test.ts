@@ -53,6 +53,25 @@ describe("parseAndUpgradeModuleState", () => {
     expect(r.type).toBe("button");
   });
 
+  it("carries description and kind (#1746), absent on older snapshots", () => {
+    const base = {
+      schemaVersion: 1,
+      slug: "steps",
+      displayName: "Steps",
+      html: "<ol></ol>",
+      css: "",
+      js: "",
+      deletedAt: null,
+    };
+    const r = parseAndUpgradeModuleState({ ...base, description: "Numbered steps", kind: "cta" });
+    expect([r.description, r.kind]).toEqual(["Numbered steps", "cta"]);
+    const older = parseAndUpgradeModuleState(base);
+    expect([older.description, older.kind]).toEqual([undefined, undefined]);
+    expect(() => parseAndUpgradeModuleState({ ...base, kind: "banner" })).toThrow(
+      SnapshotSchemaError,
+    );
+  });
+
   it("throws SnapshotSchemaError when a required field is missing", () => {
     expect(() =>
       parseAndUpgradeModuleState({

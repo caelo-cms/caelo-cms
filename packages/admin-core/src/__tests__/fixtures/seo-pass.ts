@@ -43,7 +43,11 @@ export async function runSeoPass(args: {
   feed?: { readonly url: string; readonly title: string } | null;
   /** `report` builds as a Stage does (#1719); default `refuse`, as every other build. */
   unresolved?: "refuse" | "report";
-}): Promise<{ sitemapEmitted: boolean; renderFailures: readonly RenderFailure[] }> {
+}): Promise<{
+  sitemapEmitted: boolean;
+  extraSitemaps: string[];
+  renderFailures: readonly RenderFailure[];
+}> {
   const media = new MediaPass({
     tx: args.tx,
     buildDir: args.buildDir,
@@ -73,14 +77,21 @@ export async function runSeoPass(args: {
     pageTitle: p.pageTitle ?? p.pageSlug,
     bodyDigest: bodyContentDigest(p.html),
   }));
-  await seo.apply(pages);
+  // #1753 — what the batch's structured data could not carry as given.
+  const batchFailures = await seo.apply(pages);
   seo.recordStates(pages);
   pages.forEach((p, i) => {
     const original = args.pages[i];
     if (original) original.html = p.html;
   });
-  const sitemapEmitted = await seo.writeSitemap((rel, content) =>
-    writeFile(join(args.buildDir, rel), content, "utf8"),
-  );
-  return { sitemapEmitted, renderFailures: seo.renderFailures };
+  const write = (rel: string, content: string) =>
+    writeFile(join(args.buildDir, rel), content, "utf8");
+  const sitemapEmitted = await seo.writeSitemap(write);
+  // #1761 — the news and video sitemaps, as the generator writes them.
+  const extraSitemaps = await seo.writeExtraSitemaps(write);
+  return {
+    sitemapEmitted,
+    extraSitemaps,
+    renderFailures: [...seo.renderFailures, ...batchFailures],
+  };
 }

@@ -294,9 +294,13 @@ class SectionRenderer {
     });
   }
 
-  /** #1748 — hand a core value this pass substitutes to the engine's structure check. */
+  /**
+   * #1748 — hand a core value this pass substitutes to the engine's
+   * structure check. An empty one too: it can join halves of an end the
+   * template splits around it (`</text{{x}}area>`).
+   */
   private coreValue(start: number, value: string, field: string): void {
-    if (value.length > 0) this.env.coreValue?.(start, value, field);
+    this.env.coreValue?.(start, value, field);
   }
 
   /**

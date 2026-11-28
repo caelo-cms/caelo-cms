@@ -903,11 +903,14 @@ export async function mergeWindowToMain(
         );
       }
       // v0.9.0 — also clears chat_branch_id so branched-create
-      // modules graduate to main on merge.
+      // modules graduate to main on merge. #1746 — a snapshot from before
+      // description / kind were captured leaves them as they are.
       await tx.execute(sql`
         UPDATE modules
         SET slug = ${e.state.slug},
             display_name = ${e.state.displayName},
+            description = COALESCE(${e.state.description ?? null}::text, description),
+            kind = COALESCE(${e.state.kind ?? null}::text, kind),
             type = ${e.state.type},
             html = ${e.state.html},
             css = ${e.state.css},
