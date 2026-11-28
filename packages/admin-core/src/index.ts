@@ -77,6 +77,11 @@ export { stagingCaptureAccess } from "./capture/staging-access.js";
 // P11.5 audit fix #3 — exposed for plugin-host's PluginHostInfra DI.
 export { sweepChatImagesOnce } from "./chat-image-gc-worker.js";
 export * from "./csrf.js";
+export {
+  type DataImportReport,
+  runDataImport,
+  undoDataImport,
+} from "./data-imports/run.js";
 // #1008 — the Stage warning for a build made while active plugins did not run.
 export {
   type DeployPluginProblem,

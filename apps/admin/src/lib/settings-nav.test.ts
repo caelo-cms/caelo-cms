@@ -103,6 +103,7 @@ describe("visibleSettingsGroups", () => {
     );
     expect(hrefs).toEqual([
       "/settings/redirects",
+      "/settings/data-imports",
       "/settings/quality/pending",
       "/settings/templates/pending",
     ]);

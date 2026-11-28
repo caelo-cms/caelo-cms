@@ -89,9 +89,60 @@ interface AggregateRow {
   average: number;
 }
 
+/** One imported total (`rating_totals`), checked by `check_rating_totals`. */
+interface ImportedTotal {
+  pageId: string;
+  votes: number;
+  starSum: number;
+}
+
+/** Every imported total this call's database shows (`ctx.imports`, paged by row id). */
+async function importedTotals(ctx: PluginContextTier1): Promise<ImportedTotal[]> {
+  if (!ctx.imports)
+    throw new Error("ratings: the host gave no ctx.imports for the declared import kind");
+  const out: ImportedTotal[] = [];
+  let afterRowId: string | undefined;
+  for (;;) {
+    const rows = await ctx.imports.rows("rating_totals", {
+      limit: QUERY_LIST_CAP,
+      ...(afterRowId ? { afterRowId } : {}),
+    });
+    for (const r of rows) {
+      if (r.pageId === null) continue;
+      out.push({
+        pageId: r.pageId,
+        votes: Number(r.values.votes),
+        starSum: Number(r.values.starSum),
+      });
+    }
+    if (rows.length < QUERY_LIST_CAP) return out;
+    afterRowId = rows[rows.length - 1]?.rowId;
+  }
+}
+
+const checkTotalsInput = z
+  .object({
+    importId: z.string().uuid(),
+    rows: z.array(
+      z
+        .object({
+          rowId: z.string().uuid(),
+          sourceKey: z.string(),
+          parentRowId: z.null(),
+          pageId: z.string().uuid().nullable(),
+          values: z
+            .object({ page: z.string().nullable(), votes: z.number(), starSum: z.number() })
+            .strict(),
+          update: z.boolean(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
 export default definePlugin<PluginContextTier1>({
   slug: "ratings",
-  version: "1.1.0",
+  version: "1.2.0",
   tier: 1,
   schema: {
     ratings: {
@@ -186,7 +237,44 @@ export default definePlugin<PluginContextTier1>({
    * read them (`published`).
    */
   tableKinds: { ratings: "inbox", rating_aggregates: "published" },
+  imports: [
+    {
+      kind: "rating_totals",
+      label: "Rating totals",
+      description:
+        "The star ratings a page collected on another site, as totals: how many votes and the sum of their stars (1 to 5 each). They count on top of the votes the page gets here; one row per page.",
+      sources:
+        "WordPress: WP-PostRatings keeps post meta ratings_users (votes) and ratings_score (sum of stars); other rating plugins keep similar per-post totals. On a scale other than 1-5, convert the sum first.",
+      release: "stage",
+      fields: {
+        page: { type: "pageRef" },
+        votes: { type: "int", min: 1, max: 10_000_000 },
+        starSum: {
+          type: "int",
+          min: 1,
+          max: 50_000_000,
+          description: "The sum of all votes' stars.",
+        },
+      },
+      apply: "check_rating_totals",
+    },
+  ],
   operations: {
+    /**
+     * Data imports — every vote is 1 to 5 stars, so a total's star sum lies
+     * between its vote count and five times it. Stores nothing: core keeps
+     * the rows and `_refresh` reads them through `ctx.imports`.
+     */
+    check_rating_totals: async (_ctx, args) => {
+      const input = checkTotalsInput.parse(args);
+      const refused = input.rows
+        .filter((r) => r.values.starSum < r.values.votes || r.values.starSum > r.values.votes * 5)
+        .map((r) => ({
+          rowId: r.rowId,
+          detail: `starSum ${r.values.starSum} is not between votes (${r.values.votes}) and 5 x votes (${r.values.votes * 5}): convert the scale to 1-5 stars`,
+        }));
+      return { refused };
+    },
     /** The averages for the admin panel and the AI tool (the visitor read is declared). */
     panel_aggregates: async (ctx, args) => {
       const input = listAggregatesInput.parse(args ?? {});
@@ -263,6 +351,14 @@ export default definePlugin<PluginContextTier1>({
         b.count += 1;
         b.sum += v.score;
         buckets.set(v.page_id, b);
+      }
+      // Data imports: the totals another site collected, as this database's
+      // release shows them, count on top of the votes cast here.
+      for (const t of await importedTotals(ctx)) {
+        const b = buckets.get(t.pageId) ?? { page_id: t.pageId, count: 0, sum: 0 };
+        b.count += t.votes;
+        b.sum += t.starSum;
+        buckets.set(t.pageId, b);
       }
       // Upsert per page instead of wipe + reinsert: a refresh that overlaps
       // another (the worker and an on-demand refresh) then never leaves a

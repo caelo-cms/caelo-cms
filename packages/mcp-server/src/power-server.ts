@@ -35,6 +35,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { type ApprovalOutcome, resolveApprovalWaitMs } from "./approval-wait.js";
+import { uploadDataFile } from "./data-upload.js";
 import { postAdmin, resolveTimeoutMs } from "./http.js";
 import { uploadImages } from "./image-upload.js";
 import {
@@ -170,6 +171,7 @@ export async function startPowerMcpServer(opts: StartPowerOpts): Promise<void> {
           timeoutMs: resolveTimeoutMs(30_000),
         }),
       uploadImages: (args) => uploadImages(target, args),
+      uploadData: (args) => uploadDataFile(target, args),
       // #1122 — re-read now; refreshCatalogue notifies over stdio itself
       // when the list changed, so the surface sends nothing more.
       catalogueMayHaveChanged: async () => {

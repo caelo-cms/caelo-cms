@@ -184,6 +184,14 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
           },
         ],
       },
+      {
+        href: "/settings/data-imports",
+        label: "Data imports",
+        description: "Comments, ratings, redirects and other data taken over from another system.",
+        permission: "content.write",
+        icon: "download",
+        keywords: ["csv", "wordpress", "comments", "ratings", "migrate", "upload"],
+      },
     ],
   },
   {
@@ -624,6 +632,12 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
 export const SETTINGS_SUB_PAGES: readonly SettingsSubPage[] = [
   { route: "/settings/layouts/[id]", parent: "/settings/layouts", permission: "roles.manage" },
   { route: "/settings/import/[runId]", parent: "/settings/import", permission: "settings.write" },
+  // Data imports — the upload page an agent's link opens (request_data_upload).
+  {
+    route: "/settings/data-imports/upload/[uploadId]",
+    parent: "/settings/data-imports",
+    permission: "content.write",
+  },
   { route: "/settings/audit/[requestId]", parent: SETTINGS_ROOT, permission: "settings.read" },
   // #1645 — one plugin's settings, opened from the list of plugins with settings.
   {

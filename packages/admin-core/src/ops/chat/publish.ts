@@ -31,6 +31,7 @@ import { chatPublishInput, err, ok } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { mergeChatImports } from "../../data-imports/release.js";
 import { pendingSnapshotSql } from "../../draft.js";
 import { replacePageTerms } from "../../lists/page-terms.js";
 import { applyListEntityRow } from "../../lists/store.js";
@@ -1352,6 +1353,8 @@ export const mergeChatToMainOp = defineOperation({
     // #1550 — an isolated branch's pending redirect changes join the shared
     // draft with its Stage merge: the Staged ones reach staging from now on.
     await mergeBranchRedirectChanges(tx, merged.value.session.chat_branch_id);
+    // Data imports: this chat's imports (and undos) ship with this Stage.
+    await mergeChatImports(tx, [input.chatSessionId]);
 
     // Merge-time boundary for the pending-changes filters. Emitted as a
     // deterministic ISO string (not a driver-dependent Date/text row) so

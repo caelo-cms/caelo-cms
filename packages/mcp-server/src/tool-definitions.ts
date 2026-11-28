@@ -44,6 +44,36 @@ export const POWER_MCP_INSTRUCTIONS = [
   "Tool errors name the next step to take; follow them instead of retrying unchanged.",
 ].join("\n");
 
+// ─── caelo_upload_data (stdio Power shim only) ──────────────────────────
+
+/** Largest data file one upload takes (the admin's MAX_DATA_FILE_BYTES). */
+export const MAX_DATA_FILE_BYTES = 10 * 1024 * 1024;
+
+export const uploadDataInput = z.object({ filePath: z.string().min(1).max(4096) }).strict();
+
+/**
+ * Data imports (docs/data-imports.md): the shim reads the file from the
+ * agent's disk and posts it to `/api/mcp/data-uploads`, so the rows never pass
+ * through the model. Remote surfaces cannot read the disk and do not list
+ * it; their agents ask for an upload link (request_data_upload).
+ */
+export const UPLOAD_DATA_TOOL = {
+  name: "caelo_upload_data",
+  description:
+    "Upload a local data file for an import_<kind> tool: CSV with a header row of field names, JSON Lines, or a JSON array; UTF-8; at most 10 MB (split bigger files). The file goes from disk to Caelo, never through you. Returns uploadId, columns and row count; kept 7 days.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["filePath"],
+    properties: {
+      filePath: {
+        type: "string",
+        description: "Absolute path of the file; its name ends in .csv, .jsonl or .json.",
+      },
+    },
+  },
+} as const;
+
 // ─── caelo_upload_images (both surfaces) ────────────────────────────────
 
 /** Per-image size cap (matches the admin's chat-attachment cap). */
@@ -302,6 +332,7 @@ export const CHAT_TOOLS = [UPLOAD_IMAGES_TOOL, CHAT_AWAIT_APPROVAL_TOOL, CAELO_C
  */
 export const POWER_LOCAL_TOOLS = [
   UPLOAD_IMAGES_TOOL,
+  UPLOAD_DATA_TOOL,
   OPEN_SESSION_TOOL,
   GET_CONTEXT_TOOL,
   POWER_AWAIT_APPROVAL_TOOL,

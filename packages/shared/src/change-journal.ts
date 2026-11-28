@@ -373,6 +373,12 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
     "#1574: what a build carrier's request builds and how it ended, read by the request that waits for it; the deploy run is the build's record",
 
   import_runs: "site-import runs; reach editors as the op-classified `crawl` topic",
+  data_imports:
+    "data import runs (docs/data-imports.md); read by id or list on the editor's own actions, their release follows the deploy runs",
+  data_import_items:
+    "the rows of a data import, read through the import's ops by kind or import; nothing is derived from them",
+  data_uploads:
+    "files handed over for a data import, kept 7 days; read by the import that names them",
   import_pages: "crawled pages of a site import, before they become pages",
   import_run_links: "links found by a site import",
   quality_audit_runs: "quality audits; reach editors as the op-classified `quality` topic",

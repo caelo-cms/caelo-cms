@@ -42,6 +42,13 @@ import {
 import { createContentInstancesTool } from "./create-content-instances.js";
 import { createLayoutTool } from "./create-layout.js";
 import { createTemplateTool } from "./create-template.js";
+import {
+  getDataImportTool,
+  importKindTools,
+  listDataImportsTool,
+  requestDataUploadTool,
+  undoDataImportTool,
+} from "./data-import-tools.js";
 import { deleteContentInstancesTool } from "./delete-content-instances.js";
 import { deleteMediaManyTool } from "./delete-media-many.js";
 import { deleteModulesManyTool } from "./delete-modules-many.js";
@@ -655,6 +662,13 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeRotateStagingCredentialsTool);
   registry.register(proposeSetStagingHostTool);
   // Issue #1461 — static files on the site's domain.
+  // Data imports (docs/data-imports.md): the shared tools, and one
+  // `import_<kind>` per kind that can be imported now.
+  registry.register(listDataImportsTool);
+  registry.register(getDataImportTool);
+  registry.register(undoDataImportTool);
+  registry.register(requestDataUploadTool);
+  registry.provide(importKindTools);
   registry.register(listStaticFilesTool);
   registry.register(getSecurityHeadersTool);
   registry.register(proposeSetSecurityHeadersTool);

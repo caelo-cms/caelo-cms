@@ -43,6 +43,7 @@ import {
 import { sweepChangeJournal } from "../change-journal-gc-worker.js";
 import { sweepChatImagesOnce } from "../chat-image-gc-worker.js";
 import { runCollectionsGc } from "../collections/gc.js";
+import { sweepExpiredDataUploads } from "../data-imports/uploads-gc.js";
 import { describeDrain, drainPublicOutboxes } from "../email/outbox.js";
 import { type AutoUpdateSchedulerOpts, runAutoUpdateTick } from "../platform-updates/scheduler.js";
 import { runPluginDataBuildIfDue } from "../plugin-data/worker.js";
@@ -199,6 +200,11 @@ export function coreScheduledTasks(deps: CoreTaskDeps): ScheduledTask[] {
       return r.totalMarked + r.deletedObjects > 0
         ? `${r.totalMarked} proposal(s) superseded, ${r.deletedObjects} staging object(s) deleted`
         : undefined;
+    }),
+    // Data imports — uploaded files past their 7 days.
+    task("data-upload-gc", 24 * HOUR, async () => {
+      const r = await sweepExpiredDataUploads({ adapter, registry });
+      return r.deleted > 0 ? `${r.deleted} upload(s) deleted` : undefined;
     }),
     task("chat-image-gc", 24 * HOUR, async () => {
       const r = await sweepChatImagesOnce({ adapter });

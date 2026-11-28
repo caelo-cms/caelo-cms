@@ -79,6 +79,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
 import { afterFailedStage, afterStageBuild } from "../collections/stage.js";
+import { stampImportsForRun } from "../data-imports/release.js";
 import {
   buildDirOf,
   mediaDeliveryFor,
@@ -547,6 +548,9 @@ export const startTriggerOp = defineOperation({
     // Publish live releases exactly it; an Owner's production build
     // releases it at once.
     if (target.env === "staging" || target.env === "production") {
+      // Data imports: the build carries every import merged so far (and
+      // every undo); stamped with this run, in its transaction.
+      await stampImportsForRun(tx, input.runId);
       try {
         await freezeRelease(tx, {
           runId: input.runId,

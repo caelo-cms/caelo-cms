@@ -74,6 +74,13 @@ export interface ExecutionContext {
    */
   readonly renderLiveUrls?: LiveBuildUrls;
   /**
+   * Set on a build's render: which imported rows core operations show
+   * (docs/data-imports.md). `build`: what the build being made carries;
+   * `live`: what the live release shows. Unset: the editors' draft. Set by
+   * the plugin host only.
+   */
+  readonly renderImportView?: "build" | "live";
+  /**
    * P10.5: parent attribution for subagent invocations. When the
    * `spawn_subagent` tool calls runChatTurn for the child, it carries
    * these fields so the existing ai_calls + audit_events writers

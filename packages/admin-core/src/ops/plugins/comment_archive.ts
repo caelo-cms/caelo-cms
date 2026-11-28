@@ -40,7 +40,8 @@
  * input)`.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { importedCommentsClause } from "@caelo-cms/plugin-host";
+import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -130,7 +131,7 @@ export const commentArchiveStatsManyOp = defineOperation({
       }),
     ),
   }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT page_id::text AS page_id, count(*)::int AS approved,
              max(archived_at)::text AS last_archived_at,
@@ -138,6 +139,7 @@ export const commentArchiveStatsManyOp = defineOperation({
       FROM comment_archive
       WHERE page_id IN (SELECT jsonb_array_elements_text(${jsonbParam(input.pageIds)})::uuid)
         AND status = 'approved'
+        ${importedCommentsClause(ctx.renderImportView)}
       GROUP BY page_id
     `)) as unknown as {
       page_id: string;
@@ -153,6 +155,135 @@ export const commentArchiveStatsManyOp = defineOperation({
         fingerprint: r.fingerprint,
       })),
     });
+  },
+});
+
+/** Most comments one `comment_archive.import_many` call writes. */
+const MAX_IMPORT_COMMENTS = 500;
+
+const importManyInput = z
+  .object({
+    importId: z.string().uuid(),
+    comments: z
+      .array(
+        z
+          .object({
+            /** The import row's id (data-imports/ids.ts): the archive row's id and public id. */
+            id: z.string().uuid(),
+            pageId: z.string().uuid(),
+            parentId: z.string().uuid().nullable(),
+            authorName: z.string().min(1).max(256),
+            content: z.string().min(1).max(50_000),
+            submittedAt: z.string().datetime(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(MAX_IMPORT_COMMENTS),
+  })
+  .strict();
+
+/** The import, when the calling plugin owns it and it is still open; else the refusal. */
+async function ownImport(
+  tx: TransactionRunner,
+  ctx: { pluginId?: string },
+  importId: string,
+  op: string,
+  needUndone: boolean,
+): Promise<string | null> {
+  const rows = (await tx.execute(sql`
+    SELECT di.undone_at IS NOT NULL AS undone, p.slug
+    FROM data_imports di LEFT JOIN plugins p ON p.id = ${ctx.pluginId ?? null}::uuid
+    WHERE di.id = ${importId}::uuid AND di.owner = 'comments' AND di.kind = 'comments'
+  `)) as unknown as { undone: boolean; slug: string | null }[];
+  const row = rows[0];
+  if (!row) return `${op}: ${importId} is not an import of comments`;
+  if (row.slug !== "comments") return `${op}: only the comments plugin writes its imports`;
+  if (row.undone !== needUndone)
+    return `${op}: import ${importId} ${needUndone ? "is not undone" : "was undone"}`;
+  return null;
+}
+
+/**
+ * Data imports (docs/data-imports.md) — the comments plugin's apply
+ * operation stores an import's comments here: approved, with their
+ * original date as the thread position (`archived_at`), tagged with the
+ * import so every read shows them only where the import is released. A
+ * retried call overwrites the rows it wrote (same ids).
+ */
+export const commentArchiveImportManyOp = defineOperation({
+  name: "comment_archive.import_many",
+  pluginAccess: "write",
+  readScope: "request",
+  // Why human-only: only the comments plugin's import apply operation
+  // writes imported comments (import_comments runs it); people and the AI
+  // import through that tool, never straight into the archive.
+  actorScope: ["plugin", "system"],
+  database: "cms_admin",
+  input: importManyInput,
+  output: z.object({ written: z.number().int() }),
+  handler: async (ctx, input, tx) => {
+    const op = "comment_archive.import_many";
+    const refusal = await ownImport(tx, ctx, input.importId, op, false);
+    if (refusal) return err({ kind: "HandlerError", operation: op, message: refusal });
+    const rows = (await tx.execute(sql`
+      INSERT INTO comment_archive (
+        id, public_row_id, page_id, parent_id, author_name, content, status, submitted_at,
+        archived_at, data_import_id
+      )
+      SELECT c.id, c.id, c."pageId", c."parentId", c."authorName", c.content, 'approved',
+             c."submittedAt", c."submittedAt", ${input.importId}::uuid
+      FROM jsonb_to_recordset(${jsonbParam(input.comments)}) AS c(
+        id uuid, "pageId" uuid, "parentId" uuid, "authorName" text, content text,
+        "submittedAt" timestamptz)
+      ON CONFLICT (id) DO UPDATE SET
+        page_id = EXCLUDED.page_id, parent_id = EXCLUDED.parent_id,
+        author_name = EXCLUDED.author_name, content = EXCLUDED.content,
+        submitted_at = EXCLUDED.submitted_at, archived_at = EXCLUDED.archived_at
+      WHERE comment_archive.data_import_id = EXCLUDED.data_import_id
+      RETURNING 1
+    `)) as unknown as unknown[];
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: op,
+      input: { importId: input.importId, count: input.comments.length },
+      succeeded: true,
+      entityId: input.importId,
+      resultSummary: `${rows.length} imported comments`,
+    });
+    return ok({ written: rows.length });
+  },
+});
+
+/** Data imports — an undone import's comments, removed while no build carried them. */
+export const commentArchiveRemoveImportOp = defineOperation({
+  name: "comment_archive.remove_import",
+  pluginAccess: "write",
+  readScope: "request",
+  // Why human-only: the comments plugin's import remove operation runs it
+  // from undo_data_import; nobody deletes archive rows by import directly.
+  actorScope: ["plugin", "system"],
+  database: "cms_admin",
+  input: z.object({ importId: z.string().uuid() }).strict(),
+  output: z.object({ removed: z.number().int() }),
+  handler: async (ctx, input, tx) => {
+    const op = "comment_archive.remove_import";
+    const refusal = await ownImport(tx, ctx, input.importId, op, true);
+    if (refusal) return err({ kind: "HandlerError", operation: op, message: refusal });
+    const rows = (await tx.execute(sql`
+      DELETE FROM comment_archive WHERE data_import_id = ${input.importId}::uuid RETURNING 1
+    `)) as unknown as unknown[];
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: op,
+      input,
+      succeeded: true,
+      entityId: input.importId,
+      resultSummary: `${rows.length} imported comments removed`,
+    });
+    return ok({ removed: rows.length });
   },
 });
 

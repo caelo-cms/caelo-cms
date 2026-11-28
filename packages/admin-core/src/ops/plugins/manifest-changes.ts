@@ -76,6 +76,7 @@ const AREAS: Readonly<Record<Exclude<keyof PluginManifest, NotCompared>, string>
   aiChatOperations: "What visitors can ask its AI, and which searches it may use to answer",
   pageOutputObserver: "What it reads from your pages at each Stage",
   batchOperations: "Long-running tasks it runs",
+  imports: "Data it can import from another system",
 };
 
 /** Stable JSON: two values compare equal whatever their key order in jsonb. */

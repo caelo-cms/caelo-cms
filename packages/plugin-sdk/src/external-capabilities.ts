@@ -128,6 +128,14 @@ export const EXTERNAL_UNAVAILABLE_DECLARATIONS: Readonly<
     refusal:
       "a static render (`hasStaticRender`) is not available to runtime-installed plugins yet (#1737): the static build bakes only release-signed plugins' static renders, so this one would never reach a published page. Remove `hasStaticRender` and the definition's `staticRender`, and render the widget in the browser from the plugin's Web Component (`component`) and its public operations.",
   }),
+  // Data imports read through `ctx.imports`, which the sandbox broker does
+  // not carry yet, and an import's apply operation would run as an author
+  // write the installation's grants do not name.
+  imports: Object.freeze({
+    issue: 1810,
+    refusal:
+      "import kinds (`imports`) are not available to runtime-installed plugins yet (#1810): the sandbox has no `ctx.imports` and no grant names an import's writes. Remove `imports`; the data can be imported into a release-signed plugin's kind or with the plugin's own tools.",
+  }),
 });
 
 /** The declarations of `manifest` a runtime-installed plugin cannot make yet, as refusals. */

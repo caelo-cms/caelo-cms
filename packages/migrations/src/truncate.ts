@@ -124,6 +124,10 @@ const ADMIN_TABLES = [
   "plugin_batch_runs",
   "redirect_pending_actions",
   "static_files",
+  // Data imports (docs/data-imports.md): items cascade with their import.
+  "data_import_items",
+  "data_imports",
+  "data_uploads",
 
   // Media
   "media_asset_usages",

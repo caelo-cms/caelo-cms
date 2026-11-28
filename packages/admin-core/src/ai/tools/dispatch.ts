@@ -850,20 +850,51 @@ const MAX_ARG_ISSUES_SHOWN = 20;
 
 export class ToolRegistry {
   readonly #tools = new Map<string, RegisteredTool>();
+  /**
+   * Sources of tools that come and go at runtime (data import kinds follow
+   * their plugin, docs/data-imports.md). Read on every lookup, so a tool is
+   * absent the moment its source drops it.
+   */
+  readonly #sources: Array<() => readonly ToolDefinitionWithHandler<unknown>[]> = [];
+  readonly #compiled = new WeakMap<ToolDefinitionWithHandler<unknown>, RegisteredTool>();
 
   register<I>(tool: ToolDefinitionWithHandler<I>): void {
-    // issue #251 (WS5) — resolve the provider-facing inputSchema once, at
-    // registration: use the hand-written value when present, otherwise
-    // derive it from the Zod `schema`. This makes the Zod schema the single
-    // source of truth for the common case while leaving an escape hatch.
-    // Both then go through the model-facing compaction (flattened unions,
-    // no Zod artifacts): a wider, smaller schema for the provider, while
-    // the Zod parse at dispatch keeps validating exactly as strictly.
+    this.#tools.set(tool.name, this.#compile(tool as ToolDefinitionWithHandler<unknown>));
+  }
+
+  /**
+   * Add a source of runtime tools. A source must return the same object for
+   * an unchanged tool (memoise it), so its compiled schema is reused and the
+   * catalogue stays byte-identical across turns. A runtime tool never
+   * replaces a registered one of the same name.
+   */
+  provide(source: () => readonly ToolDefinitionWithHandler<unknown>[]): void {
+    this.#sources.push(source);
+  }
+
+  // issue #251 (WS5) — resolve the provider-facing inputSchema once: use
+  // the hand-written value when present, otherwise derive it from the Zod
+  // `schema`. This makes the Zod schema the single source of truth for the
+  // common case while leaving an escape hatch. Both then go through the
+  // model-facing compaction (flattened unions, no Zod artifacts): a wider,
+  // smaller schema for the provider, while the Zod parse at dispatch keeps
+  // validating exactly as strictly.
+  #compile(tool: ToolDefinitionWithHandler<unknown>): RegisteredTool {
+    const done = this.#compiled.get(tool);
+    if (done) return done;
     const inputSchema = compactInputSchema(tool.inputSchema ?? generateInputSchema(tool.schema));
-    this.#tools.set(tool.name, {
-      ...(tool as ToolDefinitionWithHandler<unknown>),
-      inputSchema,
-    });
+    const registered: RegisteredTool = { ...tool, inputSchema };
+    this.#compiled.set(tool, registered);
+    return registered;
+  }
+
+  /** Registered tools, then the runtime tools the sources hold now. */
+  #all(): Map<string, RegisteredTool> {
+    if (this.#sources.length === 0) return this.#tools;
+    const all = new Map(this.#tools);
+    for (const source of this.#sources)
+      for (const tool of source()) if (!all.has(tool.name)) all.set(tool.name, this.#compile(tool));
+    return all;
   }
 
   /**
@@ -874,12 +905,13 @@ export class ToolRegistry {
    * {@link list} or {@link catalogue}.
    */
   get(name: string): RegisteredTool | undefined {
-    const exact = this.#tools.get(name);
+    const tools = this.#all();
+    const exact = tools.get(name);
     if (exact) return exact;
     const live = liveToolNameFor(name);
     if (live === name) return undefined;
     console.warn(`[tool.alias-used] ${name} -> ${live} (lookup)`);
-    return this.#tools.get(live);
+    return tools.get(live);
   }
 
   /**
@@ -889,7 +921,7 @@ export class ToolRegistry {
    * projection `catalogue` returns.
    */
   list(): readonly RegisteredTool[] {
-    return [...this.#tools.values()];
+    return [...this.#all().values()];
   }
 
   /**
@@ -904,7 +936,7 @@ export class ToolRegistry {
     approvalMode?: "user-approval";
     gated?: GatedToolSpec;
   }[] {
-    return [...this.#tools.values()].map((t) => ({
+    return [...this.#all().values()].map((t) => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
@@ -926,8 +958,9 @@ export class ToolRegistry {
     // live tool and its current argument shape, logged, before anything
     // else — so every caller (chat, Power-MCP, subagents, approval
     // re-dispatch) gets the same answer for an old-name call.
-    const resolved = resolveToolCall(requestedName, rawArgs, (n) => this.#tools.has(n), "dispatch");
-    const tool = resolved ? this.#tools.get(resolved.name) : undefined;
+    const tools = this.#all();
+    const resolved = resolveToolCall(requestedName, rawArgs, (n) => tools.has(n), "dispatch");
+    const tool = resolved ? tools.get(resolved.name) : undefined;
     if (!resolved || !tool) {
       return { ok: false, content: `unknown tool: ${requestedName}`, failureKind: "UnknownTool" };
     }

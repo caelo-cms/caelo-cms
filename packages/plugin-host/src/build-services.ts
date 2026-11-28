@@ -45,6 +45,7 @@ import {
   isPluginDisabled,
   loadedPlugins,
   MAIN_RENDER,
+  type RenderScope,
   renderInvocation,
   runPluginMetaSignature,
   runPluginMetaSignatureBatch,
@@ -172,6 +173,12 @@ export interface StaticRenderContext extends PublicUrlContext {
   readonly lang: string;
 }
 
+/**
+ * A build's bake renders: main, and the imported rows the build carries
+ * (docs/data-imports.md), never the editors' draft imports.
+ */
+const BUILD_RENDER: RenderScope = Object.freeze({ ...MAIN_RENDER, importView: "build" });
+
 /** The plugin host of THIS process — the admin's, where plugins run. */
 export const localBuildPluginServices: BuildPluginServices = {
   resolveListSources: (pageIds, urlContext) =>
@@ -207,12 +214,16 @@ export const localBuildPluginServices: BuildPluginServices = {
       .filter((lp) => lp.tier === 1 && typeof lp.definition.staticRender === "function")
       .map((lp) => ({ id: lp.pluginId, slug: lp.slug, version: lp.version })),
   metaSignatureBatch: (pluginSlug, pageIds) =>
-    runPluginMetaSignatureBatch({ invocation: renderInvocation(MAIN_RENDER), pluginSlug, pageIds }),
+    runPluginMetaSignatureBatch({
+      invocation: renderInvocation(BUILD_RENDER),
+      pluginSlug,
+      pageIds,
+    }),
   metaSignature: (pluginSlug, pageId) =>
-    runPluginMetaSignature({ invocation: renderInvocation(MAIN_RENDER), pluginSlug, pageId }),
+    runPluginMetaSignature({ invocation: renderInvocation(BUILD_RENDER), pluginSlug, pageId }),
   staticRender: async (pluginSlug, pageId, context) =>
     (await runPluginStaticRender({
-      invocation: renderInvocation({ ...MAIN_RENDER, siteBaseUrl: context.siteBaseUrl }),
+      invocation: renderInvocation({ ...BUILD_RENDER, siteBaseUrl: context.siteBaseUrl }),
       pluginSlug,
       pageId,
       pageUrlStyle: context.pageUrlStyle,
@@ -250,7 +261,8 @@ export async function renderPluginOnLiveBuild(
     readonly lang: string;
   },
 ): Promise<string | null> {
-  const scope = live.siteBaseUrl ? { ...MAIN_RENDER, siteBaseUrl: live.siteBaseUrl } : MAIN_RENDER;
+  const onLive: RenderScope = { ...MAIN_RENDER, importView: "live" };
+  const scope = live.siteBaseUrl ? { ...onLive, siteBaseUrl: live.siteBaseUrl } : onLive;
   let html = "";
   try {
     html =

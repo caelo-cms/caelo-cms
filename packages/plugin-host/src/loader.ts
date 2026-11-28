@@ -1560,6 +1560,29 @@ function preflightRegistration(
       `plugin "${def.slug}" declares batch operations without the batch_jobs capability — registration refused`,
     );
   }
+  // Data imports (docs/data-imports.md): every kind is an AI tool
+  // (`import_<kind>`), and one kind name names one tool.
+  if ((def.imports?.length ?? 0) > 0 && !grantedCaps.has("chat_runner_tools")) {
+    throw new Error(
+      `plugin "${def.slug}" declares import kinds without the chat_runner_tools capability — registration refused`,
+    );
+  }
+  for (const k of def.imports ?? []) {
+    const other = loadedPlugins
+      .all()
+      .find(
+        (lp) =>
+          lp.slug !== def.slug && (lp.definition.imports ?? []).some((x) => x.kind === k.kind),
+      );
+    if (other)
+      throw new Error(
+        `plugin "${def.slug}" declares the import kind "${k.kind}", which plugin "${other.slug}" declares already — registration refused`,
+      );
+    if (pluginToolsRegistry.resolve(`import_${k.kind}`))
+      throw new Error(
+        `plugin "${def.slug}" declares the import kind "${k.kind}", but a plugin tool is named import_${k.kind} — registration refused`,
+      );
+  }
   // #1729 — head and sitemap entries and default share images change every
   // affected page's head: they need the grant, and each names an operation
   // (for a runtime-installed plugin, its reserved entry).

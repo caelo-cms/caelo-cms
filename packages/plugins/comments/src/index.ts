@@ -20,6 +20,12 @@
  * comment while threads are not shown. Threads come later as a feature
  * of their own; the archive keeps every `parent_id` it already holds.
  *
+ * Data imports (docs/data-imports.md) — the kind `comments` takes the
+ * approved comments of another site (WordPress, Disqus) through core's
+ * import pipeline; `apply_comment_import` writes them to the archive,
+ * tagged with the import, so every read shows them only where the import
+ * is released.
+ *
  * Schema (cms_public.plugin_comments.*):
  *   comments — page_id + author + content + status (`parent_id` is set
  *              only on rows a version before 1.3.0 stored)
@@ -68,6 +74,32 @@ const moderateInput = z
 const MAX_BULK_MODERATE = 200;
 
 /** `bulk_moderate`: many comments, one decision (the panel's bulk actions and `bulk_moderate_comments`). */
+/** One checked import row (`PluginImportRow`), as core hands it to `apply_comment_import`. */
+const importRow = z
+  .object({
+    rowId: z.string().uuid(),
+    sourceKey: z.string(),
+    parentRowId: z.string().uuid().nullable(),
+    pageId: z.string().uuid().nullable(),
+    values: z
+      .object({
+        page: z.string().nullable(),
+        authorName: z.string(),
+        content: z.string(),
+        submittedAt: z.string(),
+      })
+      .strict(),
+    update: z.boolean(),
+  })
+  .strict();
+
+const applyImportInput = z
+  .object({ importId: z.string().uuid(), rows: z.array(importRow).max(500) })
+  .strict();
+
+/** Markup in imported text: shown as text, it would read as tags on the page. */
+const MARKUP = /<\/?[a-z][a-z0-9]*(?:\s[^<>]*)?\/?>/i;
+
 const bulkModerateInput = z
   .object({
     commentIds: z.array(z.string().uuid()).min(1).max(MAX_BULK_MODERATE),
@@ -313,7 +345,7 @@ function bakedPage(decision: ModerationDecision, pageId: string | null): { pageI
 
 export default definePlugin<PluginContextTier1>({
   slug: "comments",
-  version: "1.4.0",
+  version: "1.5.0",
   tier: 1,
   schema: {
     comments: {
@@ -412,7 +444,78 @@ export default definePlugin<PluginContextTier1>({
       { operation: "ai_moderate", pageIds: { from: "result", key: "pageId" } },
     ],
   },
+  imports: [
+    {
+      kind: "comments",
+      label: "Comments",
+      description:
+        "Approved comments of another site or comment system, each on the page it belongs to, with its author and original date; replies keep their parent.",
+      sources:
+        "WordPress: Tools -> Export (WXR: the wp:comment items of each post), the REST API /wp-json/wp/v2/comments (approved comments are public), or table wp_comments (comment_approved = '1', comment_parent). Disqus: its XML export. Take approved comments only; convert HTML to plain text.",
+      release: "stage",
+      parents: true,
+      fields: {
+        page: { type: "pageRef" },
+        // The archive's limits, not a visitor's: an old site's long comment
+        // is kept whole.
+        authorName: { type: "string", maxLength: 256 },
+        content: {
+          type: "text",
+          maxLength: 50_000,
+          description: "Plain text, paragraphs separated by a blank line; no HTML.",
+        },
+        submittedAt: { type: "datetime" },
+      },
+      apply: "apply_comment_import",
+      remove: "remove_comment_import",
+    },
+  ],
   operations: {
+    /**
+     * Data imports — store one batch of an import's comments in the
+     * archive (`comment_archive.import_many`). A comment whose text still
+     * holds HTML is refused: the thread shows text, tags would show.
+     */
+    apply_comment_import: async (ctx, args) => {
+      const input = applyImportInput.parse(args);
+      if (!ctx.cms)
+        throw new Error("comments.apply_comment_import: the cms_admin grant is required");
+      const refused: { rowId: string; detail: string }[] = [];
+      const comments = [];
+      for (const row of input.rows) {
+        if (!row.pageId) {
+          refused.push({ rowId: row.rowId, detail: "a comment needs its page" });
+          continue;
+        }
+        if (MARKUP.test(row.values.content) || MARKUP.test(row.values.authorName)) {
+          refused.push({
+            rowId: row.rowId,
+            detail: "the text holds HTML tags: convert it to plain text (keep line breaks)",
+          });
+          continue;
+        }
+        comments.push({
+          id: row.rowId,
+          pageId: row.pageId,
+          parentId: row.parentRowId,
+          authorName: row.values.authorName,
+          content: row.values.content,
+          submittedAt: row.values.submittedAt,
+        });
+      }
+      if (comments.length > 0)
+        await ctx.cms.call("comment_archive.import_many", { importId: input.importId, comments });
+      return { refused };
+    },
+
+    /** Data imports — an undone import's comments leave the archive. */
+    remove_comment_import: async (ctx, args) => {
+      const input = z.object({ importId: z.string().uuid() }).strict().parse(args);
+      if (!ctx.cms)
+        throw new Error("comments.remove_comment_import: the cms_admin grant is required");
+      return ctx.cms.call("comment_archive.remove_import", { importId: input.importId });
+    },
+
     list_pending: async (ctx, _args) => {
       const rows = await ctx.query.list<"comments", CommentRow>("comments", {
         status: "pending",

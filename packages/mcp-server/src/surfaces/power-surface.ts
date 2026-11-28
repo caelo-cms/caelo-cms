@@ -42,6 +42,7 @@ import {
   POWER_LOCAL_TOOLS,
   POWER_MCP_INSTRUCTIONS,
   powerAwaitApprovalInput,
+  UPLOAD_DATA_TOOL,
   UPLOAD_IMAGES_TOOL,
   WORK_SESSION_ARG,
   WORK_SESSION_PROPERTY,
@@ -127,6 +128,11 @@ export interface PowerSurfaceBackend {
    */
   catalogueMayHaveChanged(): Promise<boolean>;
   uploadImages(args: unknown): Promise<CallToolResult>;
+  /**
+   * caelo_upload_data: only a surface that can read the agent's disk (the
+   * stdio shim) has it; without it the tool is not listed.
+   */
+  uploadData?(args: unknown): Promise<CallToolResult>;
 }
 
 export interface AdminSurfaceOptions {
@@ -274,7 +280,9 @@ export function createPowerMcpServer(
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
-      ...POWER_LOCAL_TOOLS.map((t) => (t === UPLOAD_IMAGES_TOOL ? uploadTool : t)),
+      ...POWER_LOCAL_TOOLS.filter((t) => t !== UPLOAD_DATA_TOOL || backend.uploadData).map((t) =>
+        t === UPLOAD_IMAGES_TOOL ? uploadTool : t,
+      ),
       ...(await backend.listCatalogue()).map((t) => ({
         name: t.name,
         description: t.description,
@@ -324,6 +332,8 @@ export function createPowerMcpServer(
         return outcomeResult(outcome);
       }
       if (name === uploadTool.name) return await backend.uploadImages(req.params.arguments);
+      if (name === UPLOAD_DATA_TOOL.name && backend.uploadData)
+        return await backend.uploadData(req.params.arguments);
       if (name === OPEN_SESSION_TOOL.name) {
         const parsed = openSessionInput.safeParse(req.params.arguments ?? {});
         if (!parsed.success) {

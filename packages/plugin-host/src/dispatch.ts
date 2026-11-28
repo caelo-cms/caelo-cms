@@ -521,6 +521,12 @@ export interface RenderScope {
    * builds URLs on the stored site base URL.
    */
   readonly siteBaseUrl?: string;
+  /**
+   * Which imported rows the render shows (`PluginInvocation.importView`,
+   * docs/data-imports.md): `build` for a build, `live` for a plugin-data
+   * build. Unset outside a build.
+   */
+  readonly importView?: "build" | "live";
 }
 
 /** A render of the deployed site / live state: no branch. */
@@ -534,6 +540,7 @@ export function renderInvocation(scope: RenderScope): PluginInvocation {
     ...(scope.chatBranchId ? { chatBranchId: scope.chatBranchId } : {}),
     ...(scope.renderId ? { renderId: scope.renderId } : {}),
     ...(scope.siteBaseUrl ? { siteBaseUrl: scope.siteBaseUrl } : {}),
+    ...(scope.importView ? { importView: scope.importView } : {}),
   };
 }
 

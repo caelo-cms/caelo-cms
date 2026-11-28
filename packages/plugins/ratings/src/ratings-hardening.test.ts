@@ -102,12 +102,84 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
           deleted.push(`${table}:${id}`);
         },
       }),
+      imports: { rows: async () => [] },
     } as unknown as PluginContextTier1;
 
     const r = await ratingsPlugin.operations._refresh(ctx, {});
     expect(insertedAggs).toEqual([{ page_id: "p1", count: 2, sum: 8, average: 400 }]);
     expect(deleted).toEqual(["ratings:a"]);
     expect(r).toEqual({ refreshed: 1, pruned: 1 });
+  });
+
+  test("ratings._refresh adds imported totals to the votes (data imports)", async () => {
+    const insertedAggs: Array<Record<string, unknown>> = [];
+    const ctx = {
+      query: indexCheckedQuery(ratingsPlugin, "schema", {
+        list: async (table: string) =>
+          table === "ratings"
+            ? [
+                {
+                  id: "a",
+                  page_id: "p1",
+                  visitor_id: null,
+                  score: 5,
+                  created_at: "2026-11-01T10:00:00Z",
+                },
+              ]
+            : [],
+        insert: async (_t: string, row: Record<string, unknown>) => {
+          insertedAggs.push(row);
+          return { id: "agg" };
+        },
+        update: async () => {},
+        delete: async () => {},
+      }),
+      imports: {
+        rows: async (kind: string) =>
+          kind === "rating_totals"
+            ? [
+                {
+                  rowId: "r1",
+                  sourceKey: "wp:1",
+                  parentRowId: null,
+                  pageId: "p1",
+                  values: { votes: 9, starSum: 36 },
+                },
+                {
+                  rowId: "r2",
+                  sourceKey: "wp:2",
+                  parentRowId: null,
+                  pageId: "p2",
+                  values: { votes: 2, starSum: 10 },
+                },
+              ]
+            : [],
+      },
+    } as unknown as PluginContextTier1;
+    await ratingsPlugin.operations._refresh(ctx, {});
+    expect(insertedAggs).toEqual([
+      { page_id: "p1", count: 10, sum: 41, average: 410 },
+      { page_id: "p2", count: 2, sum: 10, average: 500 },
+    ]);
+  });
+
+  test("check_rating_totals refuses a star sum no 1-5 votes can make", async () => {
+    const row = (votes: number, starSum: number) => ({
+      rowId: `11111111-1111-4111-8111-11111111111${votes}`,
+      sourceKey: `k${votes}`,
+      parentRowId: null,
+      pageId: null,
+      values: { page: "/x", votes, starSum },
+      update: false,
+    });
+    const r = (await ratingsPlugin.operations.check_rating_totals({} as PluginContextTier1, {
+      importId: "00000000-0000-0000-0000-000000000000",
+      rows: [row(2, 10), row(3, 2), row(4, 21)],
+    })) as { refused: { rowId: string }[] };
+    expect(r.refused.map((x) => x.rowId)).toEqual([
+      "11111111-1111-4111-8111-111111111113",
+      "11111111-1111-4111-8111-111111111114",
+    ]);
   });
 
   test("the recompute runs once per public database (#1333)", () => {
