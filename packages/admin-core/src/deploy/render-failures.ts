@@ -43,6 +43,8 @@ import {
   PAGE_VALUE_PATHS,
   PLUGIN_HEAD_POINT,
   PLUGIN_SHARE_IMAGES_POINT,
+  PLUGIN_SITEMAP_ENTRIES_POINT,
+  PLUGIN_STRUCTURED_DATA_POINT,
   PLUGIN_VALUE_REFUSED,
   parseMediaFailureMarker,
   parseMediaReferenceMarker,
@@ -51,6 +53,7 @@ import {
   parsePagePathUnknown,
   parsePluginValueRefused,
   parseSeoTitleVariableMarker,
+  RECORD_TOO_LARGE_RULE,
   renderFailureKind,
   renderFailureMarker,
   replacementMediaUrls,
@@ -138,6 +141,8 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   // #1729 — what a plugin added to a page's head, or its share image.
   const pluginHeadPages = new Set<string>();
   const pluginShareImagePages = new Set<string>();
+  const pluginStructuredDataPages = new Set<string>();
+  const pluginSitemapPages = new Set<string>();
   // #1708 — a consent-gated embed nested inside another module.
   const withheldNestedPages = new Set<string>();
   for (const f of failures) {
@@ -155,6 +160,10 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
       pluginHeadPages.add(page);
     } else if (refusedSource === PLUGIN_SHARE_IMAGES_POINT) {
       pluginShareImagePages.add(page);
+    } else if (refusedSource === PLUGIN_STRUCTURED_DATA_POINT) {
+      pluginStructuredDataPages.add(page);
+    } else if (refusedSource === PLUGIN_SITEMAP_ENTRIES_POINT) {
+      pluginSitemapPages.add(page);
     } else if (parseNestedModuleWithheldMarker(f.reason) !== null) {
       withheldNestedPages.add(page);
     } else if (parseMediaFailureMarker(f.reason) !== null) {
@@ -208,6 +217,14 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   onPages(
     "A plugin's default image for when the page is shared is not a published library image, so the page has none",
     pluginShareImagePages,
+  );
+  onPages(
+    "A plugin added structured data for search engines that Caelo does not allow, so it was left out",
+    pluginStructuredDataPages,
+  );
+  onPages(
+    "A plugin added a news or video sitemap entry that Caelo does not allow, so it was left out",
+    pluginSitemapPages,
   );
   onPages(
     "Something that waits for visitors' consent (a video, a map, a booking widget) sits inside another section, where it cannot wait, so it was left out",
@@ -373,6 +390,51 @@ export function pluginValueRefusedHint(body: string, mod = "a module on this pag
       "Set another with the plugin's tool (get_plugin lists them), or give the page its own image with set_page_seo_many (ogImageAssetId from find_media). Tell the operator."
     );
   }
+  // #1753, #1761 — the page's own record is too large to ask any plugin about.
+  if (
+    rule === RECORD_TOO_LARGE_RULE &&
+    (source === PLUGIN_STRUCTURED_DATA_POINT || source === PLUGIN_SITEMAP_ENTRIES_POINT)
+  ) {
+    const what =
+      source === PLUGIN_STRUCTURED_DATA_POINT
+        ? "its structured data"
+        : "its news or video sitemap entry";
+    return (
+      `The page's data (its properties and the pages they name) is more than one plugin call carries (about 1 MB), so the plugin "${plugin}" was not asked about it and ${what} is missing. ` +
+      "Shorten its longest property values (update_pages_many). Tell the operator."
+    );
+  }
+  // #1753 — the page's JSON-LD graph: typed nodes, never free JSON.
+  if (source === PLUGIN_STRUCTURED_DATA_POINT) {
+    const refs = /^(ref-unknown|ref-dangling|id-taken|id-reserved)$/.test(rule)
+      ? " A reference must name a node of this page, a core node (organization, website, webpage, breadcrumb) or a node of a page the answer names; one node per @id."
+      : rule === "page-unknown"
+        ? " A page it names must be a published page of this site: a draft or deleted page has no address."
+        : "";
+    return (
+      `The plugin "${plugin}" added structured data (${field}) that Caelo refuses (${rule}); the page's JSON-LD graph leaves that part out.${refs} ` +
+      pluginDataFix(
+        plugin,
+        "the page type's schema mapping (seo's get_schema_mapping) and the page properties it reads",
+      )
+    );
+  }
+  // #1761 — news and video sitemap entries.
+  if (source === PLUGIN_SITEMAP_ENTRIES_POINT) {
+    if (rule === "site-name-unset") {
+      return (
+        `The plugin "${plugin}" lists this page in the news sitemap, which names the publication, but the site has no name. ` +
+        "Set it with set_site_identity (siteName). Tell the operator."
+      );
+    }
+    return (
+      `The plugin "${plugin}" gave the page a ${field} sitemap entry Caelo refuses (${rule}): addresses must be https or http on another site, thumbnails library images, titles and descriptions plain text. The sitemap leaves the entry out. ` +
+      pluginDataFix(
+        plugin,
+        "the page properties its video mapping reads (seo's get_schema_mapping)",
+      )
+    );
+  }
   const where =
     source === "list-resolve"
       ? `the translated value at ${field} (its list-resolve overlay)`
@@ -389,6 +451,13 @@ export function pluginValueRefusedHint(body: string, mod = "a module on this pag
     "richtext may hold only prose (p, a, strong, em, lists, h2-h6, blockquote, code, br, span; no on* or style), links only https, http, mailto, tel or a page, media only library images. " +
     fix
   );
+}
+
+/** The fix for a part a plugin derives from the site's data: the shipped seo plugin reads the page, any other is its author's to fix. */
+function pluginDataFix(plugin: string, seoReads: string): string {
+  return plugin === "seo"
+    ? `Check ${seoReads}; bug_report when they are right. Tell the operator.`
+    : "Fix the plugin (submit_plugin), or bug_report for one shipped with Caelo. Tell the operator.";
 }
 
 /** What the value at `page.<path>` of type `type` answers, for {@link pageMarkerHint}. */
@@ -489,13 +558,19 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
     case PAGE_KEY_UNKNOWN:
     case PAGE_PATH_UNKNOWN:
       return { tool: "update_modules_many", hint: pageMarkerHint(marker, mod) as string };
-    case PLUGIN_VALUE_REFUSED:
-      return (
-        placementRefusalRepair(path, mod) ?? {
-          tool: "get_plugin",
-          hint: pluginValueRefusedHint(path, mod),
-        }
-      );
+    case PLUGIN_VALUE_REFUSED: {
+      const placement = placementRefusalRepair(path, mod);
+      if (placement) return placement;
+      const { source, rule } = parsePluginValueRefused(path);
+      // #1761 — the one refusal the site's own settings repair, not the plugin.
+      const tool =
+        source === PLUGIN_SITEMAP_ENTRIES_POINT && rule === "site-name-unset"
+          ? "set_site_identity"
+          : rule === RECORD_TOO_LARGE_RULE
+            ? "update_pages_many"
+            : "get_plugin";
+      return { tool, hint: pluginValueRefusedHint(path, mod) };
+    }
     default:
       return { tool: "set_content_instance_values_many", hint: `${REFERENCE_REPAIR}.` };
   }

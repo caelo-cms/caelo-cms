@@ -192,6 +192,30 @@ export const embeddedModuleValueSchema = z
 const MEDIA_REF_RE = /^caelo:media\/[0-9a-f-]{36}(?:\/[a-z0-9-]+)?$/;
 /** `caelo:term/<listId>/<itemId>` */
 export const TERM_REF_RE = /^caelo:term\/([0-9a-f-]{36})\/([0-9a-f-]{36})$/;
+
+/**
+ * #1753 — the terms a page's `term` properties name: every
+ * `caelo:term/<list>/<item>` value of `properties`, a property's array
+ * included, each once, in property order.
+ */
+export function propertyTermRefs(
+  properties: Readonly<Record<string, unknown>>,
+): { readonly listId: string; readonly itemId: string }[] {
+  const out: { listId: string; itemId: string }[] = [];
+  const seen = new Set<string>();
+  const visit = (v: unknown) => {
+    if (Array.isArray(v)) {
+      for (const e of v) visit(e);
+      return;
+    }
+    const m = typeof v === "string" ? TERM_REF_RE.exec(v) : null;
+    if (!m || seen.has(v as string)) return;
+    seen.add(v as string);
+    out.push({ listId: m[1] as string, itemId: m[2] as string });
+  };
+  for (const value of Object.values(properties)) visit(value);
+  return out;
+}
 /** `caelo:page/<pageId>` with nothing after it: the value of a `page` field (#1754). */
 export const PAGE_REF_RE = /^caelo:page\/([0-9a-f-]{36})$/;
 /** Pages one `page` field may name. */

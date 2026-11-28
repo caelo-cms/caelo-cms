@@ -17,6 +17,9 @@
     },
     {
       "path": "../../packages/plugin-host"
+    },
+    {
+      "path": "../../packages/plugin-sdk"
     }
   ],
   "exclude": ["**/*.test.ts", "**/dist", "**/node_modules"]

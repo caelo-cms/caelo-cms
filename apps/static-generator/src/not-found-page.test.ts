@@ -7,7 +7,12 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { PAGE_SEO_HEAD_DEFAULTS, renderSeoHead, resolvePageSeoHead } from "@caelo-cms/shared";
+import {
+  buildPageGraph,
+  PAGE_SEO_HEAD_DEFAULTS,
+  renderSeoHead,
+  resolvePageSeoHead,
+} from "@caelo-cms/shared";
 import { builtPageOutputPath } from "./generate.js";
 import { NOT_FOUND_PAGE_FILE, notFoundPageBuildError } from "./not-found-page.js";
 import { isSitemapEntry, notFoundPageSeo } from "./seo-pass.js";
@@ -77,14 +82,37 @@ describe("404 page SEO", () => {
       siteName: null,
       article: null,
       ogImageUrl: null,
-      organization: {},
       feed: null,
       canonical: seo.canonical,
+      // As the SEO pass builds it for the 404 page: no canonical, no trail.
+      jsonLd: buildPageGraph(
+        {
+          siteBaseUrl: "https://example.com",
+          canonical: seo.canonical,
+          siteName: null,
+          siteLanguage: "en",
+          pageLanguage: "en",
+          pageTitle: "Page not found",
+          description: "",
+          imageUrl: null,
+          organization: {},
+          breadcrumbs: [],
+          liveDates: null,
+        },
+        [],
+        () => null,
+      ).graph,
     });
     expect(head).toContain('<meta name="robots" content="noindex, max-image-preview:large" />');
     expect(head).not.toContain('rel="canonical"');
     expect(head).not.toContain("og:url");
-    expect(head).not.toContain('"url"');
+    // #1753 — its WebPage node names no URL: it answers every unknown one.
+    const graph = JSON.parse(
+      /<script type="application\/ld\+json">(.*?)<\/script>/.exec(head)?.[1] ?? "{}",
+    ) as { "@graph": Record<string, unknown>[] };
+    const webPage = graph["@graph"].find((n) => n["@type"] === "WebPage");
+    expect(webPage?.url).toBeUndefined();
+    expect(webPage?.["@id"]).toBe("#webpage");
   });
 
   it("keeps the 404 page out of the sitemap, and noindex pages too", () => {

@@ -131,6 +131,21 @@ Every same-site URL a staged page references must be served by that build. Code:
 
 **Relation to reference integrity.** Page references (`caelo:page/<id>`, #724) render to plain URLs in the build, so `links` needs no change for them. A rendered link to an unpublished page is skipped here only when the `references` check reports that stored link (`LinkSources.reportedDraftLinks`: same target, same page, same module / plugin / chrome origin): it is reported at the place it is stored. Any other link that ends at a draft page (plugin output, a legacy literal whose redirect chain ends at a draft) stays `links/broken-internal`, because nothing else blocks on it. A `references` issue stored on a draft page is a site-scoped finding: the staged build has no such page. See below for the split.
 
+## Core check: `structured-data` (#1753)
+
+Every staged page's JSON-LD, read as ONE graph per page (a search engine resolves `@id`s across all of a page's blocks; `checks/structured-data.ts`, the rules in `jsonLdIntegrityProblems`, `packages/shared/src/json-ld.ts`). Core writes that graph itself with fixed `@id`s (Organization `<site>/#organization`, WebSite `<site>/#website`, WebPage `<page URL>`, BreadcrumbList `<page URL>#breadcrumb`) and refuses a plugin's dangling or duplicate node while it builds it, so what the check finds on core's own output is a Caelo fault. What it mostly finds is JSON-LD a module's markup carries next to core's graph. It reads the HTML Publish live would ship, so a broken graph cannot slip through. How the graph is built and what plugins may add: [Structured data](./dev/structured-data.md).
+
+| Rule | Severity | What it means |
+|---|---|---|
+| `structured-data/invalid-json` | error | A JSON-LD block a JSON parser refuses; search engines ignore the whole block. The finding names the module that carries it. |
+| `structured-data/graph-missing` | error | No block of the page holds core's `@graph`. Core writes it into every page, so this is a Caelo fault: the finding asks for a `bug_report`. |
+| `structured-data/dangling-id` | error | An `{"@id": …}` reference that names no node of the page, for example a module's own `Article` whose author points at a person nothing defines. Remove the module's block (the page's structured data comes from core and the plugins) or point the reference at a node of the graph. |
+| `structured-data/duplicate-id` | error | Two nodes with one `@id`, for example a module's own `WebSite` next to core's. |
+| `structured-data/extra-block` | warning | More blocks than core's one: hand-written blocks duplicate or contradict the graph. |
+| `structured-data/not-checked` | warning | The page's JSON-LD is larger than the audit reads (the page-facts JSON-LD budget); the rest is not checked. |
+
+The rules are objective only (epic #1751): whether a node has every property a rich result needs, or whether a value matches the visible text, is a rule of the `seo` plugin, which files its own findings.
+
 ## Core check: `references` (#724 rollout F)
 
 Internal links are stored as references (`caelo:page/<id>[#anchor]`, `caelo:media/<id>`), resolved at render time per rendering page (rollout D maps a target to the rendering page's language). Reference integrity checks the stored links, where they live. Code: `links/reference-sources.ts` (what is read), `links/reference-integrity.ts` (pure check), `links/reference-fix.ts` (messages and fixing tools), `ops/content/link-integrity.ts` (Stage gate and the `links.check_references` op), `checks/references.ts` (the quality check).

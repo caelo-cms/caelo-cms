@@ -65,6 +65,16 @@ export const RENDER_POINT_ENTRIES = Object.freeze({
   $deferrals: { definitionKey: "deferralsOperation", announcedBy: "hasDeferrals" },
   /** §6.7 — `buildDataOperation`, announced by `hasBuildData`. */
   $buildData: { definitionKey: "buildDataOperation", announcedBy: "hasBuildData" },
+  /** #1753 — `structuredDataOperation`, announced by `hasStructuredData`. */
+  $structuredData: {
+    definitionKey: "structuredDataOperation",
+    announcedBy: "hasStructuredData",
+  },
+  /** #1761 — `sitemapEntriesOperation`, announced by `hasSitemapEntries`. */
+  $sitemapEntries: {
+    definitionKey: "sitemapEntriesOperation",
+    announcedBy: "hasSitemapEntries",
+  },
 } satisfies Record<string, RenderPointEntry>);
 
 /** The name of a reserved entry. */

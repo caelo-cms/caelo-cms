@@ -228,6 +228,8 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       `${SHARED}/css-*.ts`,
       `${SHARED}/font*.ts`,
       `${SHARED}/seo{,-head}.ts`,
+      // #1753, #1761 — every built page's JSON-LD graph and the news and video sitemaps.
+      `${SHARED}/{json-ld,schema-org-types,sitemap-extras}.ts`,
       `${SHARED}/url.ts`,
       `${SHARED}/link-refs.ts`,
       `${SHARED}/edit-markers.ts`,

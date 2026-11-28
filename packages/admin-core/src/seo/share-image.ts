@@ -77,8 +77,8 @@ async function loadSiteShareImageAssetId(tx: TransactionRunner): Promise<string 
   return rows[0]?.asset_id ?? null;
 }
 
-/** Each live asset's best social-size rendition, the same order the build picks in. */
-async function loadShareImageUrls(
+/** Each live asset's best social-size rendition, the same order the build picks in (#1753: also the structured data's images). */
+export async function loadShareImageUrls(
   tx: TransactionRunner,
   assetIds: readonly string[],
 ): Promise<Map<string, string>> {

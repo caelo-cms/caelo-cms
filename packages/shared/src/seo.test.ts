@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { buildPageGraph } from "./json-ld.js";
 import {
+  type BreadcrumbJsonLdItem,
   breadcrumbJsonLdItems,
   checkPublicSiteBaseUrl,
   injectSeoIntoHead,
@@ -9,6 +11,7 @@ import {
   renderSeoHead,
   resolveCanonicalUrl,
   type SeoMetaInput,
+  type SiteSeoSettings,
   seoAutofillInputSchema,
   seoOptimizeInputSchema,
   seoSetInputSchema,
@@ -19,13 +22,41 @@ import { PAGE_SEO_HEAD_DEFAULTS, resolvePageSeoHead } from "./seo-head.js";
 
 /** A head input for a page with this title and description and no other SEO of its own. */
 function headInput(
-  o: Partial<Omit<SeoMetaInput, "head" | "pageTitle">> & {
+  o: Partial<Omit<SeoMetaInput, "head" | "pageTitle" | "jsonLd">> & {
     title?: string;
     metaDescription?: string;
     noindex?: boolean;
+    /** #1753 — what the page's JSON-LD graph is built from. */
+    organization?: SiteSeoSettings["organization"];
+    breadcrumbs?: readonly BreadcrumbJsonLdItem[];
   } = {},
 ): SeoMetaInput {
-  const { title = "Welcome", metaDescription = "A sample description.", noindex, ...rest } = o;
+  const {
+    title = "Welcome",
+    metaDescription = "A sample description.",
+    noindex,
+    organization = {},
+    breadcrumbs = [],
+    ...rest
+  } = o;
+  const canonical = rest.canonical === undefined ? "https://example.com/" : rest.canonical;
+  const jsonLd = buildPageGraph(
+    {
+      siteBaseUrl: canonical === null ? null : "https://example.com",
+      canonical,
+      siteName: null,
+      siteLanguage: "en",
+      pageLanguage: "en",
+      pageTitle: title,
+      description: metaDescription,
+      imageUrl: rest.ogImageUrl ?? null,
+      organization,
+      breadcrumbs,
+      liveDates: null,
+    },
+    [],
+    () => null,
+  ).graph;
   return {
     head: resolvePageSeoHead({
       pageTitle: title,
@@ -44,9 +75,9 @@ function headInput(
     article: null,
     canonical: "https://example.com/",
     ogImageUrl: null,
-    organization: {},
     feed: null,
     ...rest,
+    jsonLd,
   };
 }
 
@@ -201,7 +232,7 @@ describe("renderSeoHead", () => {
     expect(head).toContain('<meta name="twitter:card" content="summary_large_image" />');
   });
 
-  it("emits a JSON-LD WebPage block; encodes the < character to avoid script-tag breaks", () => {
+  it("emits the JSON-LD graph; encodes the < character to avoid script-tag breaks", () => {
     const head = renderSeoHead(
       headInput({
         title: "Tag <foo>",
@@ -446,30 +477,33 @@ describe("checkPublicSiteBaseUrl", () => {
   });
 });
 
-describe("BreadcrumbList JSON-LD (#1142)", () => {
-  const base = headInput({
-    title: "Team",
-    metaDescription: "",
-    canonical: "https://example.com/about/team/",
-  });
-  const ldBlocks = (head: string): unknown[] =>
-    [...head.matchAll(/<script type="application\/ld\+json">(.*?)<\/script>/g)].map((m) =>
-      JSON.parse(m[1] as string),
+describe("BreadcrumbList JSON-LD (#1142, one graph since #1753)", () => {
+  const input = (breadcrumbs: readonly BreadcrumbJsonLdItem[]) =>
+    headInput({
+      title: "Team",
+      metaDescription: "",
+      canonical: "https://example.com/about/team/",
+      breadcrumbs,
+    });
+  /** The nodes of the page's JSON-LD blocks. */
+  const nodesOf = (head: string): Record<string, unknown>[] =>
+    [...head.matchAll(/<script type="application\/ld\+json">(.*?)<\/script>/g)].flatMap(
+      (m) => (JSON.parse(m[1] as string) as { "@graph": Record<string, unknown>[] })["@graph"],
     );
 
-  it("lists the trail with positions, short titles and public URLs", () => {
-    const head = renderSeoHead({
-      ...base,
-      breadcrumbs: [
+  it("lists the trail with positions, short titles and public URLs, in the one graph", () => {
+    const head = renderSeoHead(
+      input([
         { name: "Start", url: "https://example.com/" },
         { name: "About </script>", url: "https://example.com/about/" },
         { name: "Team", url: "https://example.com/about/team/" },
-      ],
-    });
+      ]),
+    );
     expect(head).not.toContain("About </script>");
-    expect(ldBlocks(head)[1]).toEqual({
-      "@context": "https://schema.org",
+    expect(head.match(/application\/ld\+json/g)).toHaveLength(1);
+    expect(nodesOf(head).find((n) => n["@type"] === "BreadcrumbList")).toEqual({
       "@type": "BreadcrumbList",
+      "@id": "https://example.com/about/team/#breadcrumb",
       itemListElement: [
         { "@type": "ListItem", position: 1, name: "Start", item: "https://example.com/" },
         {
@@ -484,8 +518,10 @@ describe("BreadcrumbList JSON-LD (#1142)", () => {
   });
 
   it("emits no BreadcrumbList without a trail", () => {
-    expect(ldBlocks(renderSeoHead(base))).toHaveLength(1);
-    expect(ldBlocks(renderSeoHead({ ...base, breadcrumbs: [] }))).toHaveLength(1);
+    expect(nodesOf(renderSeoHead(input([]))).map((n) => n["@type"])).toEqual([
+      "WebSite",
+      "WebPage",
+    ]);
   });
 
   it("builds items from the trail, leaving out pages without a public URL", () => {

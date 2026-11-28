@@ -1582,6 +1582,34 @@ function preflightRegistration(
       );
     }
   }
+  // #1753 — structured data adds nodes to every affected page's JSON-LD:
+  // the grant, and an operation that exists (an installed plugin's is its
+  // reserved entry).
+  if (def.structuredDataOperation !== undefined) {
+    if (!grantedCaps.has("structured_data")) {
+      throw new Error(
+        `plugin "${def.slug}" contributes structured data without the structured_data capability — registration refused`,
+      );
+    }
+    if (!def.operations[def.structuredDataOperation]) {
+      throw new Error(
+        `plugin "${def.slug}" names structuredDataOperation "${def.structuredDataOperation}", which is not one of its operations`,
+      );
+    }
+  }
+  // #1761 — entries of the news and video sitemaps core writes.
+  if (def.sitemapEntriesOperation !== undefined) {
+    if (!grantedCaps.has("sitemap_entries")) {
+      throw new Error(
+        `plugin "${def.slug}" contributes sitemap entries without the sitemap_entries capability — registration refused`,
+      );
+    }
+    if (!def.operations[def.sitemapEntriesOperation]) {
+      throw new Error(
+        `plugin "${def.slug}" names sitemapEntriesOperation "${def.sitemapEntriesOperation}", which is not one of its operations`,
+      );
+    }
+  }
   if ((def.listTypes?.length ?? 0) > 0 && !grantedCaps.has("list_types")) {
     throw new Error(
       `plugin "${def.slug}" declares listTypes without the list_types capability — registration refused`,

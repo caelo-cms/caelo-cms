@@ -19,6 +19,7 @@ import {
   patchListItemsManyOp,
   upsertListsManyOp,
 } from "./lists.js";
+import { mergeTermsOp } from "./merge-terms.js";
 import {
   deletePageTypesManyOp,
   getPageTypeOp,
@@ -42,6 +43,7 @@ export function registerListOps(registry: OperationRegistry): void {
   registry.register(upsertListsManyOp);
   registry.register(patchListItemsManyOp);
   registry.register(deleteListsManyOp);
+  registry.register(mergeTermsOp);
   registry.register(promoteLocalListOp);
   registry.register(previewListSourceOp);
   registry.register(pluginSourceTextsOp);
@@ -61,6 +63,7 @@ export {
   listListsOp,
   listListTypesOp,
   listPageTypesOp,
+  mergeTermsOp,
   patchListItemsManyOp,
   pluginSourceTextsOp,
   previewListSourceOp,
