@@ -33,7 +33,7 @@ import {
   joinHeldTransaction,
   type OperationRegistry,
 } from "@caelo-cms/query-api";
-import type { LiveBuildUrls } from "@caelo-cms/shared";
+import type { LiveBuildUrls, RenderImportView } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { bakedDataPageIds, bakedDataTrigger } from "./baked-data-pages.js";
@@ -523,10 +523,10 @@ export interface RenderScope {
   readonly siteBaseUrl?: string;
   /**
    * Which imported rows the render shows (`PluginInvocation.importView`,
-   * docs/data-imports.md): `build` for a build, `live` for a plugin-data
+   * docs/data-imports.md): a build's own run, or `live` for a plugin-data
    * build. Unset outside a build.
    */
-  readonly importView?: "build" | "live";
+  readonly importView?: RenderImportView;
 }
 
 /** A render of the deployed site / live state: no branch. */

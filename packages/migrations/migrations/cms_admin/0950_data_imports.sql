@@ -82,6 +82,11 @@ CREATE TABLE data_imports (
   undo_merged_at        timestamptz NULL,
   undo_staged_run_id    uuid NULL REFERENCES deploy_runs(id),
   undo_staged_since     timestamptz NULL,
+  -- Undone, and the kind still has to remove the rows it stored (it was
+  -- never shipped, or its storage has drafts of its own); an undo repeats
+  -- the removal until it succeeds.
+  removal_pending       boolean NOT NULL DEFAULT false,
+  CHECK (NOT removal_pending OR undone_at IS NOT NULL),
   CHECK ((staged_run_id IS NULL) = (staged_since IS NULL)),
   CHECK ((undo_staged_run_id IS NULL) = (undo_staged_since IS NULL)),
   CHECK (staged_since IS NULL OR merged_at IS NOT NULL),
@@ -89,8 +94,9 @@ CREATE TABLE data_imports (
   CHECK (undo_staged_since IS NULL OR (undo_merged_at IS NOT NULL AND staged_since IS NOT NULL)),
   CHECK (release = 'stage' OR (merged_at IS NULL AND undo_merged_at IS NULL))
 );
-CREATE INDEX data_imports_kind_idx ON data_imports (kind, created_at DESC);
-CREATE INDEX data_imports_created_idx ON data_imports (created_at DESC);
+-- The list pages newest first by (created_at, id), with or without a kind.
+CREATE INDEX data_imports_kind_idx ON data_imports (kind, created_at DESC, id DESC);
+CREATE INDEX data_imports_created_idx ON data_imports (created_at DESC, id DESC);
 CREATE INDEX data_imports_chat_session_idx ON data_imports (chat_session_id);
 CREATE INDEX data_imports_undo_chat_session_idx ON data_imports (undo_chat_session_id);
 CREATE INDEX data_imports_staged_run_idx ON data_imports (staged_run_id);

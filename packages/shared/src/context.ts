@@ -34,6 +34,14 @@ export interface LiveBuildUrls {
 /** Starts the message of a {@link LiveBuildUrls} refusal; the host marks those errors by it. */
 export const LIVE_BUILD_REFUSAL = "LiveBuildPageRefused:";
 
+/**
+ * Which imported rows a render shows (docs/data-imports.md): the ones the
+ * build of run `runId` carries, or the ones the live release shows.
+ */
+export type RenderImportView =
+  | { readonly kind: "build"; readonly runId: string }
+  | { readonly kind: "live" };
+
 export interface ExecutionContext {
   readonly actorId: string;
   readonly actorKind: ActorKind;
@@ -75,11 +83,11 @@ export interface ExecutionContext {
   readonly renderLiveUrls?: LiveBuildUrls;
   /**
    * Set on a build's render: which imported rows core operations show
-   * (docs/data-imports.md). `build`: what the build being made carries;
-   * `live`: what the live release shows. Unset: the editors' draft. Set by
-   * the plugin host only.
+   * (docs/data-imports.md). A build shows what its own run carries; a
+   * plugin-data build what the live release shows. Unset: the editors'
+   * draft. Set by the plugin host only.
    */
-  readonly renderImportView?: "build" | "live";
+  readonly renderImportView?: RenderImportView;
   /**
    * P10.5: parent attribution for subagent invocations. When the
    * `spawn_subagent` tool calls runChatTurn for the child, it carries

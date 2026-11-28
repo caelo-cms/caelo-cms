@@ -438,6 +438,10 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     kind: "internal",
     reason: "the commit step of undo_data_import",
   },
+  "data_imports.finish_removal": {
+    kind: "internal",
+    reason: "the last step of undo_data_import, after the kind removed its rows",
+  },
   "data_uploads.get": {
     kind: "internal",
     reason: "the import pipeline reads the uploads import_<kind> names",

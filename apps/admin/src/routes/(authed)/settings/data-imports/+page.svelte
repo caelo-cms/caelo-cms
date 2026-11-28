@@ -37,6 +37,7 @@
     live: "Live",
     "undo-pending": "Undo waits for Stage and Publish live",
     undone: "Undone",
+    "removal-pending": "Undo did not finish: undo again",
     written: "Saved as pending changes",
   };
 </script>

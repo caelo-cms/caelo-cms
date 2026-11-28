@@ -4,6 +4,7 @@
 
 import {
   dataImportItemRefsOp,
+  finishDataImportRemovalOp,
   getDataImportOp,
   listDataImportsOp,
   lookupDataImportOp,
@@ -26,6 +27,7 @@ export const DATA_IMPORT_OPS = [
   getDataImportOp,
   dataImportItemRefsOp,
   markDataImportUndoneOp,
+  finishDataImportRemovalOp,
   createDataUploadSlotOp,
   recordDataUploadOp,
   getDataUploadOp,

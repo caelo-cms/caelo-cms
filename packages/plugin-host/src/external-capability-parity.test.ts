@@ -561,8 +561,23 @@ describe("#1729 — every capability is brokered for external plugins or tracked
   });
 
   it("a declaration no installed plugin can make is refused at submission and review, with its issue (#1737)", () => {
+    // A well-formed value per declaration: the refusal must come from the
+    // record, not from a manifest that fails its shape.
+    const sample: Readonly<Record<string, unknown>> = {
+      hasStaticRender: true,
+      imports: [
+        {
+          kind: "probe_rows",
+          label: "Probe rows",
+          description: "Rows of another system.",
+          release: "stage",
+          fields: { text: { type: "text", maxLength: 10 } },
+        },
+      ],
+    };
     for (const [field, declaration] of Object.entries(EXTERNAL_UNAVAILABLE_DECLARATIONS)) {
-      const manifest = { ...probe, [field]: true } as PluginManifest;
+      expect(sample[field]).toBeDefined();
+      const manifest = { ...probe, [field]: sample[field] } as PluginManifest;
       expect(() => validateInstallationPolicy(manifest)).toThrow(`(#${declaration?.issue})`);
       // `plugins.submit` / `plugins.revalidate`: a tier-2 submission without grants.
       const hints = validateManifest(manifest).failures.map((f) => f.hint);

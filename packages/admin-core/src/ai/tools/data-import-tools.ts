@@ -224,14 +224,15 @@ export function importKindTools(): ToolDefinitionWithHandler<unknown>[] {
 const listInput = z
   .object({
     kind: z.string().min(1).max(40).optional(),
-    before: z.string().datetime().optional(),
+    /** The `nextCursor` of the previous call. */
+    cursor: z.object({ createdAt: z.string(), importId: z.string().uuid() }).strict().optional(),
   })
   .strict();
 
 export const listDataImportsTool: ToolDefinitionWithHandler<z.infer<typeof listInput>> = {
   name: "list_data_imports",
   description:
-    "List data imports, newest first: kind, source, how many rows, where each stands (draft | waiting-for-build | staged | live | undo-pending | undone | written). Then get_data_import for one report.",
+    "List data imports, newest first: kind, source, how many rows, where each stands (draft | waiting-for-build | staged | live | undo-pending | removal-pending | undone | written). Then get_data_import for one report.",
   schema: listInput,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "data_imports.list", {
@@ -239,22 +240,21 @@ export const listDataImportsTool: ToolDefinitionWithHandler<z.infer<typeof listI
       limit: 25,
     });
     if (!r.ok) return toolError(r.error, `data_imports.list failed: ${describeError(r.error)}`);
-    const list = (
-      r.value as {
-        imports: {
-          importId: string;
-          kind: string;
-          sourceLabel: string;
-          state: string;
-          itemCount: number;
-          createdAt: string;
-        }[];
-      }
-    ).imports;
-    const lines = list.map(
-      (i) =>
-        `- ${i.importId} ${i.kind} from ${i.sourceLabel}: ${i.itemCount} rows, ${i.state} (${i.createdAt})`,
+    const v = r.value as {
+      imports: {
+        importId: string;
+        kind: string;
+        sourceLabel: string;
+        state: string;
+        itemCount: number;
+        createdAt: string;
+      }[];
+      nextCursor: { createdAt: string; importId: string } | null;
+    };
+    const lines = v.imports.map(
+      (i) => `- ${i.importId} ${i.kind} from ${i.sourceLabel}: ${i.itemCount} rows, ${i.state} (${i.createdAt})`,
     );
+    if (v.nextCursor) lines.push(`More: call again with cursor ${JSON.stringify(v.nextCursor)}.`);
     return {
       ok: true,
       content: lines.length > 0 ? lines.join("\n") : "No data imports yet.",

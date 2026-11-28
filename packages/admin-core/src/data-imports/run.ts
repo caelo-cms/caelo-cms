@@ -441,15 +441,32 @@ export async function runDataImport(
     targetRef: string | null;
   }[] = [];
   let writeError: string | null = null;
+  // Rows of this call the kind did not store (refused, or not written): a
+  // deeper level's child of one of them would point at nothing.
+  const notStored = new Set<string>();
   outer: for (const level of levels) {
     const writes: (ImportWriteRow & { digest: string })[] = [];
     for (const p of level) {
       if (!ok(p) || (p.held !== null && !isOwn(p))) continue;
+      const parent = p.parentInCall && p.checked.parentKey ? inCall.get(p.checked.parentKey) : undefined;
+      if (parent && notStored.has(parent.checked.sourceKey)) {
+        notStored.add(p.checked.sourceKey);
+        problems.add("parent-not-found", `${p.index}`, {
+          sourceKey: p.checked.sourceKey,
+          at: p.at,
+          detail: `its parent ${parent.checked.sourceKey} was refused`,
+        });
+        continue;
+      }
       const rowId = importRowId(importId, p.checked.sourceKey);
-      const parentRowId =
-        p.parentInCall && p.checked.parentKey
-          ? importRowId(importId, p.checked.parentKey)
-          : p.parentRowId;
+      // A parent in this input that another import holds keeps that
+      // import's row; every other parent here is (or becomes) this
+      // import's row.
+      const parentRowId = parent
+        ? parent.held !== null && !isOwn(parent)
+          ? parent.held.rowId
+          : importRowId(importId, parent.checked.sourceKey)
+        : p.parentRowId;
       const digest = importRowDigest({ parentRowId, pageId: p.pageId, values: p.checked.values });
       if (p.held !== null && (mode === "skip" || p.held.digest === digest)) {
         unchanged += 1;
@@ -485,6 +502,7 @@ export async function runDataImport(
       for (const row of batch) {
         const refusal = refusedIds.get(row.rowId);
         if (refusal !== undefined) {
+          notStored.add(row.sourceKey);
           problems.add("refused", `w${row.rowId}`, {
             sourceKey: row.sourceKey,
             at: "",
@@ -492,7 +510,10 @@ export async function runDataImport(
           });
           continue;
         }
-        if (!w.written.has(row.rowId)) continue;
+        if (!w.written.has(row.rowId)) {
+          notStored.add(row.sourceKey);
+          continue;
+        }
         if (row.update) updated += 1;
         else imported += 1;
         items.push({
@@ -577,21 +598,68 @@ export interface DataImportUndo {
   readonly message: string;
 }
 
+/** Reads what the kind stored per row of an import, every page of it. */
+async function storedRefs(
+  deps: DataImportDeps,
+  ctx: ExecutionContext,
+  importId: string,
+): Promise<{ ok: true; refs: (string | null)[] } | { ok: false; message: string }> {
+  const refs: (string | null)[] = [];
+  let after: string | undefined;
+  for (;;) {
+    const page = await execute(deps.registry, deps.adapter, ctx, "data_imports.item_refs", {
+      importId,
+      ...(after ? { afterRowId: after } : {}),
+    });
+    if (!page.ok) return { ok: false, message: describeError(page.error) };
+    const got = (page.value as { refs: { rowId: string; targetRef: string | null }[] }).refs;
+    for (const r of got) refs.push(r.targetRef);
+    if (got.length === 0) return { ok: true, refs };
+    after = got[got.length - 1]?.rowId;
+  }
+}
+
+/** Lets the kind remove an undone import's rows, then forgets them. Repeatable until it succeeds. */
+async function removeStoredRows(
+  deps: DataImportDeps,
+  caller: DataImportCaller,
+  kind: ImportKind,
+  importId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const refs = await storedRefs(deps, caller.ctx, importId);
+  if (!refs.ok) return refs;
+  try {
+    await kind.remove(
+      { registry: deps.registry, adapter: deps.adapter, ctx: caller.ctx, invocation: caller.invocation },
+      importId,
+      refs.refs,
+    );
+  } catch (e) {
+    return {
+      ok: false,
+      message: `the import is undone, but removing its rows failed: ${e instanceof Error ? e.message : String(e)}. Call undo_data_import again to repeat the removal`,
+    };
+  }
+  const done = await execute(deps.registry, deps.adapter, caller.ctx, "data_imports.finish_removal", {
+    importId,
+  });
+  return done.ok ? { ok: true } : { ok: false, message: describeError(done.error) };
+}
+
 /**
  * Undoes an import. Before any build carried it, and always for kinds with
  * release `target`, the kind removes its rows now. Otherwise the rows stay
  * until the undo ships: staging drops them with the next Stage, the live
  * site with Publish live (and a rollback past it brings them back, like any
- * other change of that release).
+ * other change of that release). An undo whose removal failed is repeated
+ * by calling it again.
  */
 export async function undoDataImport(
   deps: DataImportDeps,
   caller: DataImportCaller,
   importId: string,
 ): Promise<{ ok: true; undo: DataImportUndo } | { ok: false; message: string }> {
-  const got = await execute(deps.registry, deps.adapter, caller.ctx, "data_imports.get", {
-    importId,
-  });
+  const got = await execute(deps.registry, deps.adapter, caller.ctx, "data_imports.get", { importId });
   if (!got.ok) return { ok: false, message: describeError(got.error) };
   const imp = got.value as {
     kind: string;
@@ -599,62 +667,33 @@ export async function undoDataImport(
     release: "stage" | "target";
     stamped: boolean;
     undoneAt: string | null;
+    removalPending: boolean;
   };
-  if (imp.undoneAt !== null) return { ok: false, message: `import ${importId} was already undone` };
-  const removeNow = imp.release === "target" || !imp.stamped;
+  const removeNow = imp.removalPending || (imp.undoneAt === null && (imp.release === "target" || !imp.stamped));
+  if (imp.undoneAt !== null && !imp.removalPending)
+    return { ok: false, message: `import ${importId} was already undone` };
   const kind = kindNamed(deps, imp.kind);
   if (removeNow && (!kind || kind.owner !== imp.owner))
     return {
       ok: false,
       message: `the ${imp.kind} kind is not available (its plugin is not active): activate ${imp.owner} to undo this import`,
     };
-  // What the kind stored, read before the undo forgets the rows.
-  const refs: (string | null)[] = [];
-  if (removeNow) {
-    let after: string | undefined;
-    for (;;) {
-      const page = await execute(
-        deps.registry,
-        deps.adapter,
-        caller.ctx,
-        "data_imports.item_refs",
-        {
-          importId,
-          ...(after ? { afterRowId: after } : {}),
-        },
-      );
-      if (!page.ok) return { ok: false, message: describeError(page.error) };
-      const got = (page.value as { refs: { rowId: string; targetRef: string | null }[] }).refs;
-      for (const r of got) refs.push(r.targetRef);
-      if (got.length === 0) break;
-      after = got[got.length - 1]?.rowId;
-    }
-  }
-  const marked = await execute(
-    deps.registry,
-    deps.adapter,
-    caller.ctx,
-    "data_imports.mark_undone",
-    {
+  let state = "undone";
+  if (imp.undoneAt === null) {
+    // Marked first: a build that starts now no longer takes the import.
+    const marked = await execute(deps.registry, deps.adapter, caller.ctx, "data_imports.mark_undone", {
       importId,
-      rowsRemoved: removeNow,
+      removeRows: removeNow,
       ...(caller.chatSessionId ? { chatSessionId: caller.chatSessionId } : {}),
-    },
-  );
-  if (!marked.ok) return { ok: false, message: describeError(marked.error) };
-  // Marked first: a build that starts now no longer takes the import.
-  if (removeNow && kind)
-    await kind.remove(
-      {
-        registry: deps.registry,
-        adapter: deps.adapter,
-        ctx: caller.ctx,
-        invocation: caller.invocation,
-      },
-      importId,
-      refs,
-    );
-  const state = (marked.value as { state: string }).state;
+    });
+    if (!marked.ok) return { ok: false, message: describeError(marked.error) };
+    state = (marked.value as { state: string }).state;
+  }
+  if (removeNow && kind) {
+    const removed = await removeStoredRows(deps, caller, kind, importId);
+    if (!removed.ok) return removed;
+    state = "undone";
+  }
   return {
     ok: true,
     undo: {

@@ -189,11 +189,18 @@ async function published(url: string): Promise<string[]> {
   );
 }
 
-async function archived(view?: "build" | "live"): Promise<string[]> {
+/** The page's comments as a read shows them: a build of `run`, the live release, or the draft. */
+async function archived(view?: { build: string } | "live"): Promise<string[]> {
+  const renderImportView =
+    view === undefined
+      ? undefined
+      : view === "live"
+        ? ({ kind: "live" } as const)
+        : ({ kind: "build", runId: view.build } as const);
   const r = await execute(
     registry,
     adapter,
-    { ...SYSTEM, ...(view ? { renderImportView: view } : {}) },
+    { ...SYSTEM, ...(renderImportView ? { renderImportView } : {}) },
     "comment_archive.list_for_page",
     { pageId, limit: 500 },
   );
@@ -418,7 +425,8 @@ describe("importing comments from a file", () => {
   });
 
   it("is a draft: no build, staging or live database shows it", async () => {
-    expect(await archived("build")).toEqual([]);
+    const earlier = await run("2026-09-01T10:00:00Z");
+    expect(await archived({ build: earlier })).toEqual([]);
     expect(await archived("live")).toEqual([]);
     await drainProjectionOnce(adapter, staging);
     expect(await published(STAGING_URL as string)).toEqual([]);
@@ -429,7 +437,7 @@ describe("importing comments from a file", () => {
   it("goes to staging with the Stage build that stamps it, and live with the Publish live of that run", async () => {
     r1 = await run("2026-11-01T10:00:00Z");
     await stamp(r1);
-    expect(await archived("build")).toEqual(["Anna", "Ben"]);
+    expect(await archived({ build: r1 })).toEqual(["Anna", "Ben"]);
     expect(await archived("live")).toEqual([]);
     await point("staging", r1);
     expect(await published(STAGING_URL as string)).toEqual(["Anna", "Ben"]);
@@ -453,10 +461,11 @@ describe("importing comments from a file", () => {
     expect(undo.ok).toBe(true);
     expect(undo.ok && undo.undo.state).toBe("undo-pending");
     expect(await archived()).toEqual([]);
-    expect(await archived("build")).toEqual(["Anna", "Ben"]);
     const r2 = await run("2026-11-02T10:00:00Z");
     await stamp(r2);
-    expect(await archived("build")).toEqual([]);
+    expect(await archived({ build: r2 })).toEqual([]);
+    // A build that started before the undo was stamped still carries them.
+    expect(await archived({ build: r1 })).toEqual(["Anna", "Ben"]);
     await point("staging", r2);
     expect(await published(STAGING_URL as string)).toEqual([]);
     expect(await published(PUBLIC_URL as string)).toEqual(["Anna", "Ben"]);
@@ -523,12 +532,137 @@ describe("a chat's import", () => {
     if (!r.ok) throw new Error(r.message);
     const r3 = await run("2026-11-03T10:00:00Z");
     await stamp(r3);
-    expect(await archived("build")).not.toContain("Chatty");
+    expect(await archived({ build: r3 })).not.toContain("Chatty");
     await adapter.withAdminTransaction(SYSTEM, (tx) => mergeChatImports(tx, [chat]));
     const r4 = await run("2026-11-04T10:00:00Z");
     await stamp(r4);
-    expect(await archived("build")).toContain("Chatty");
+    expect(await archived({ build: r4 })).toContain("Chatty");
+    // Codex review: a later Stage's stamp never reaches an earlier build.
+    expect(await archived({ build: r3 })).not.toContain("Chatty");
     await undoDataImport(deps(), CALLER, r.report.importId ?? "");
+  });
+});
+
+describe("review findings", () => {
+  it("a reply in a new import keeps the parent an earlier import holds", async () => {
+    const first = await importOk({
+      kind: "comments",
+      rows: [{ sourceKey: "p:1", page: `/${P}-page`, authorName: "Parent", content: "p", submittedAt: "2019-05-04T10:00:00Z" }],
+      sourceLabel: "first",
+    });
+    const second = await importOk({
+      kind: "comments",
+      rows: [
+        { sourceKey: "p:1", page: `/${P}-page`, authorName: "Parent", content: "p", submittedAt: "2019-05-04T10:00:00Z" },
+        { sourceKey: "p:2", parentKey: "p:1", page: `/${P}-page`, authorName: "Child", content: "c", submittedAt: "2019-05-04T11:00:00Z" },
+      ],
+      sourceLabel: "second",
+    });
+    expect(second.counts).toMatchObject({ imported: 1, unchanged: 1 });
+    const [parent] = (await admin((tx) => tx`SELECT id::text AS id FROM comment_archive WHERE data_import_id = ${first.importId}::uuid`)) as { id: string }[];
+    const [child] = (await admin((tx) => tx`SELECT parent_id::text AS parent_id FROM comment_archive WHERE data_import_id = ${second.importId}::uuid`)) as { parent_id: string }[];
+    expect(child?.parent_id).toBe(parent?.id ?? "");
+    await undoDataImport(deps(), CALLER, second.importId ?? "");
+    await undoDataImport(deps(), CALLER, first.importId ?? "");
+  });
+
+  it("a reply whose parent the plugin refused is not written either", async () => {
+    const report = await importOk({
+      kind: "comments",
+      rows: [
+        { sourceKey: "r:1", page: `/${P}-page`, authorName: "R1", content: "<b>tag</b>", submittedAt: "2019-05-04T10:00:00Z" },
+        { sourceKey: "r:2", parentKey: "r:1", page: `/${P}-page`, authorName: "R2", content: "reply", submittedAt: "2019-05-04T11:00:00Z" },
+      ],
+      sourceLabel: "refused parent",
+      skipInvalid: true,
+    });
+    expect(report.counts.imported).toBe(0);
+    expect(report.problems.map((p) => [p.reason, p.count])).toEqual([
+      ["parent-not-found", 1],
+      ["refused", 1],
+    ]);
+    await undoDataImport(deps(), CALLER, report.importId ?? "");
+  });
+
+  it("an undo whose removal failed can be repeated", async () => {
+    let fail = true;
+    const flaky: ImportKind = {
+      ...commentsKind(),
+      remove: async (w, importId, refs) => {
+        if (fail) throw new Error("storage away");
+        await commentsKind().remove(w, importId, refs);
+      },
+    };
+    const d: DataImportDeps = { ...deps(), kinds: () => [flaky, redirectsImportKind] };
+    const report = await importOk({
+      kind: "comments",
+      rows: [{ sourceKey: "u:1", page: `/${P}-page`, authorName: "U", content: "u", submittedAt: "2019-05-04T10:00:00Z" }],
+      sourceLabel: "flaky undo",
+    });
+    const first = await undoDataImport(d, CALLER, report.importId ?? "");
+    expect(first.ok).toBe(false);
+    const got = await execute(registry, adapter, HUMAN, "data_imports.get", { importId: report.importId });
+    expect(got.ok && (got.value as { state: string }).state).toBe("removal-pending");
+    fail = false;
+    const again = await undoDataImport(d, CALLER, report.importId ?? "");
+    expect(again.ok && again.undo.state).toBe("undone");
+    const left = await admin((tx) => tx`SELECT 1 FROM comment_archive WHERE data_import_id = ${report.importId}::uuid`);
+    expect(left).toHaveLength(0);
+  });
+
+  it("a chat whose only change is an import is an open change", async () => {
+    const chat = await admin(async (tx) => {
+      const [s] = (await tx`
+        INSERT INTO chat_sessions (created_by, title, chat_branch_id, branch_kind)
+        VALUES (${HUMAN.actorId}::uuid, 'tdi open', gen_random_uuid(), 'draft')
+        RETURNING id::text AS id`) as { id: string }[];
+      return s?.id ?? "";
+    });
+    const r = await runDataImport(deps(), { ...CALLER, chatSessionId: chat }, {
+      kind: "comments",
+      rows: [{ sourceKey: "o:1", page: `/${P}-page`, authorName: "O", content: "o", submittedAt: "2019-05-04T10:00:00Z" }],
+      sourceLabel: "open change",
+    });
+    if (!r.ok) throw new Error(r.message);
+    const open = await execute(registry, adapter, HUMAN, "chat.list_open_changes", { mineOnly: true });
+    if (!open.ok) throw new Error(JSON.stringify(open.error));
+    const mine = (open.value as { chats: { chatSessionId: string; pendingCount: number; pendingImports: number }[] }).chats.find(
+      (c) => c.chatSessionId === chat,
+    );
+    expect(mine).toMatchObject({ pendingImports: 1, pendingCount: 1 });
+    await undoDataImport(deps(), CALLER, r.report.importId ?? "");
+  });
+
+  it("pages the list by exact time and id", async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const r = await execute(registry, adapter, HUMAN, "data_imports.open", {
+        owner: "core",
+        kind: "redirects",
+        release: "target",
+        sourceLabel: `page ${i}`,
+      });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      ids.push((r.value as { importId: string }).importId);
+    }
+    // One instant for all three: only the id tells them apart.
+    await admin((tx) => tx`UPDATE data_imports SET created_at = '2026-11-20T10:00:00.123456Z' WHERE id = ANY(${ids}::uuid[])`);
+    const seen: string[] = [];
+    let cursor: unknown;
+    for (let i = 0; i < 100; i++) {
+      const r = await execute(registry, adapter, HUMAN, "data_imports.list", {
+        kind: "redirects",
+        limit: 1,
+        ...(cursor ? { cursor } : {}),
+      });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      const v = r.value as { imports: { importId: string }[]; nextCursor: unknown };
+      seen.push(...v.imports.map((x) => x.importId).filter((x) => ids.includes(x)));
+      if (!v.nextCursor) break;
+      cursor = v.nextCursor;
+    }
+    expect(new Set(seen)).toEqual(new Set(ids));
+    expect(seen).toHaveLength(3);
   });
 });
 

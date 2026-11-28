@@ -13,7 +13,7 @@
 
 import type { PluginImportedRow, PluginImports, PluginInvocation } from "@caelo-cms/plugin-sdk";
 import { defineOperation, execute, type OperationRegistry, uuidArray } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import { err, ok, type RenderImportView } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 
@@ -21,13 +21,11 @@ import { z } from "zod";
 export type ImportView =
   /** Everything not undone: the editors' shared draft. */
   | "draft"
-  /** What a build being made now carries: stamped, undo not stamped. */
-  | "build"
   /** What an environment's release pointer shows. */
   | "staging"
-  | "live";
-
-export const IMPORT_VIEWS = ["draft", "build", "staging", "live"] as const;
+  | "live"
+  /** What the build of this run carries (the run that stamped it, or a later one). */
+  | { readonly buildRunId: string };
 
 /** The start of the run an environment's release pointer names, as SQL. */
 function pointerStart(env: "staging" | "live"): SQL {
@@ -37,22 +35,26 @@ function pointerStart(env: "staging" | "live"): SQL {
 
 /**
  * A boolean SQL expression: the import aliased `di` is shown in `view`.
- * Callers join `data_imports di` themselves. With no pointer yet (nothing
- * staged or published), `staging` and `live` show nothing.
+ * Callers join `data_imports di` themselves. An import is in the release
+ * of every run that started at or after the run that stamped it, until the
+ * run that stamped its undo: a build reads its own run's start, an
+ * environment the start of the run its pointer names. With no pointer yet
+ * (nothing staged or published), `staging` and `live` show nothing.
  */
 export function importShownSql(view: ImportView): SQL {
-  switch (view) {
-    case "draft":
-      return sql`di.undone_at IS NULL`;
-    case "build":
-      return sql`(di.staged_since IS NOT NULL AND di.undo_staged_since IS NULL)`;
-    case "staging":
-    case "live": {
-      const start = pointerStart(view);
-      return sql`(di.staged_since <= ${start}
-                  AND (di.undo_staged_since IS NULL OR di.undo_staged_since > ${start}))`;
-    }
-  }
+  if (view === "draft") return sql`di.undone_at IS NULL`;
+  const start =
+    typeof view === "string"
+      ? pointerStart(view)
+      : sql`(SELECT r.started_at FROM deploy_runs r WHERE r.id = ${view.buildRunId}::uuid)`;
+  return sql`(di.staged_since <= ${start}
+              AND (di.undo_staged_since IS NULL OR di.undo_staged_since > ${start}))`;
+}
+
+/** The view a render's import view names. */
+export function importViewOfRender(view: RenderImportView | undefined): ImportView {
+  if (view === undefined) return "draft";
+  return view.kind === "live" ? "live" : { buildRunId: view.runId };
 }
 
 /**
@@ -68,7 +70,8 @@ export function importViewOf(
   publicTarget: "live" | "staging" | undefined,
 ): ImportView {
   if (publicTarget === "staging") return "staging";
-  if (invocation.origin === "render" && invocation.importView) return invocation.importView;
+  if (invocation.origin === "render" && invocation.importView)
+    return importViewOfRender(invocation.importView);
   return "live";
 }
 
@@ -77,7 +80,10 @@ const MAX_ROWS = 1000;
 const pluginRowsInput = z
   .object({
     kind: z.string().min(1).max(40),
-    view: z.enum(IMPORT_VIEWS),
+    view: z.union([
+      z.enum(["draft", "staging", "live"]),
+      z.object({ buildRunId: z.string().uuid() }).strict(),
+    ]),
     pageIds: z.array(z.string().uuid()).min(1).max(MAX_ROWS).optional(),
     afterRowId: z.string().uuid().optional(),
     limit: z.number().int().min(1).max(MAX_ROWS).optional(),

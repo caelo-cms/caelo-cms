@@ -22,10 +22,10 @@
  */
 
 import { defineOperation, type OperationRegistry } from "@caelo-cms/query-api";
-import { ok } from "@caelo-cms/shared";
+import { ok, type RenderImportView } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
-import { importShownSql } from "./import-rows.js";
+import { importShownSql, importViewOfRender } from "./import-rows.js";
 
 /**
  * Which imported comments an admin read shows (docs/data-imports.md): a
@@ -33,10 +33,10 @@ import { importShownSql } from "./import-rows.js";
  * the live release shows, any other read the editors' draft. Comments not
  * from an import always count.
  */
-export function importedCommentsClause(view: "build" | "live" | undefined): SQL {
+export function importedCommentsClause(view: RenderImportView | undefined): SQL {
   return sql`AND (comment_archive.data_import_id IS NULL OR EXISTS (
     SELECT 1 FROM data_imports di
-    WHERE di.id = comment_archive.data_import_id AND ${importShownSql(view ?? "draft")}))`;
+    WHERE di.id = comment_archive.data_import_id AND ${importShownSql(importViewOfRender(view))}))`;
 }
 
 /**

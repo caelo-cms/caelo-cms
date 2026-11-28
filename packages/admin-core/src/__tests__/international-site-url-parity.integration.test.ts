@@ -358,7 +358,7 @@ describe("#590 — canonical, sitemap, hreflang and switcher share one URL build
     const selector = await localBuildPluginServices.staticRender(
       "international-site",
       pages[1]?.id ?? "",
-      { ...urlContext, lang: "de" },
+      { ...urlContext, lang: "de", runId: crypto.randomUUID() },
     );
     for (const href of Object.values(expected)) expect(selector).toContain(`<a href="${href}"`);
     expect(selector).not.toContain(`href="${BASE}/`);

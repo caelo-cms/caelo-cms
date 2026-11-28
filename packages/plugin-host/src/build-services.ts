@@ -142,8 +142,13 @@ export interface BuildPluginServices {
   ): Promise<Map<string, string>>;
   collectBuildAssets(): Promise<PluginClientAsset[]>;
   staticRenderPlugins(): Promise<StaticRenderPlugin[]>;
-  metaSignatureBatch(pluginSlug: string, pageIds: string[]): Promise<ReadonlyMap<string, string>>;
-  metaSignature(pluginSlug: string, pageId: string): Promise<string>;
+  /** `runId`: the build's run, whose imported rows the signature covers (docs/data-imports.md). */
+  metaSignatureBatch(
+    pluginSlug: string,
+    pageIds: string[],
+    runId: string,
+  ): Promise<ReadonlyMap<string, string>>;
+  metaSignature(pluginSlug: string, pageId: string, runId: string): Promise<string>;
   /**
    * One placeholder's markup, its page links on the build's origin (#650),
    * its dates and numbers in the page's language (#1511).
@@ -171,13 +176,18 @@ export interface BuildPluginServices {
 export interface StaticRenderContext extends PublicUrlContext {
   /** The page's document language, as its `<html lang>` carries it. */
   readonly lang: string;
+  /** The build's run: the render shows the imported rows it carries (docs/data-imports.md). */
+  readonly runId: string;
 }
 
 /**
- * A build's bake renders: main, and the imported rows the build carries
- * (docs/data-imports.md), never the editors' draft imports.
+ * A build's bake renders: main, and the imported rows the build of `runId`
+ * carries (docs/data-imports.md), never the editors' draft imports and
+ * never those a later Stage stamped while this build still renders.
  */
-const BUILD_RENDER: RenderScope = Object.freeze({ ...MAIN_RENDER, importView: "build" });
+function buildRender(runId: string): RenderScope {
+  return { ...MAIN_RENDER, importView: { kind: "build", runId } };
+}
 
 /** The plugin host of THIS process — the admin's, where plugins run. */
 export const localBuildPluginServices: BuildPluginServices = {
@@ -213,17 +223,17 @@ export const localBuildPluginServices: BuildPluginServices = {
       .filter((lp) => !isPluginDisabled(lp.slug))
       .filter((lp) => lp.tier === 1 && typeof lp.definition.staticRender === "function")
       .map((lp) => ({ id: lp.pluginId, slug: lp.slug, version: lp.version })),
-  metaSignatureBatch: (pluginSlug, pageIds) =>
+  metaSignatureBatch: (pluginSlug, pageIds, runId) =>
     runPluginMetaSignatureBatch({
-      invocation: renderInvocation(BUILD_RENDER),
+      invocation: renderInvocation(buildRender(runId)),
       pluginSlug,
       pageIds,
     }),
-  metaSignature: (pluginSlug, pageId) =>
-    runPluginMetaSignature({ invocation: renderInvocation(BUILD_RENDER), pluginSlug, pageId }),
+  metaSignature: (pluginSlug, pageId, runId) =>
+    runPluginMetaSignature({ invocation: renderInvocation(buildRender(runId)), pluginSlug, pageId }),
   staticRender: async (pluginSlug, pageId, context) =>
     (await runPluginStaticRender({
-      invocation: renderInvocation({ ...BUILD_RENDER, siteBaseUrl: context.siteBaseUrl }),
+      invocation: renderInvocation({ ...buildRender(context.runId), siteBaseUrl: context.siteBaseUrl }),
       pluginSlug,
       pageId,
       pageUrlStyle: context.pageUrlStyle,
@@ -261,7 +271,7 @@ export async function renderPluginOnLiveBuild(
     readonly lang: string;
   },
 ): Promise<string | null> {
-  const onLive: RenderScope = { ...MAIN_RENDER, importView: "live" };
+  const onLive: RenderScope = { ...MAIN_RENDER, importView: { kind: "live" } };
   const scope = live.siteBaseUrl ? { ...onLive, siteBaseUrl: live.siteBaseUrl } : onLive;
   let html = "";
   try {

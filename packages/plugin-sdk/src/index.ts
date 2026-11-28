@@ -26,7 +26,7 @@
  * module and ONLY this module — the validator enforces it.
  */
 
-import type { FontMetadata, FontRef, PageUrlStyle } from "@caelo-cms/shared";
+import type { FontMetadata, FontRef, PageUrlStyle, RenderImportView } from "@caelo-cms/shared";
 // The list model only (Zod underneath): the SDK is bundled into the
 // plugin sandbox with everything it imports at runtime.
 import {
@@ -2475,13 +2475,13 @@ export interface PluginInvocation {
   readonly siteBaseUrl?: string;
   /**
    * Set for origin `render` by a build: which imported rows the render may
-   * show (docs/data-imports.md). `build`: what the build being made
-   * carries (a Stage, an Owner's production build); `live`: what the live
-   * release shows (a plugin-data build re-rendering the live site). Core
-   * operations the plugin calls read it from the call; a plugin never
-   * chooses it.
+   * show (docs/data-imports.md). `build`: what that run's build carries (a
+   * Stage, an Owner's production build), bound to the run so a later
+   * Stage's imports never reach an earlier build; `live`: what the live
+   * release shows (a plugin-data build). Core operations the plugin calls
+   * read it from the call; a plugin never chooses it.
    */
-  readonly importView?: "build" | "live";
+  readonly importView?: RenderImportView;
   /**
    * #1647 / #1648 — set for origin `observer`: the Stage's deploy run whose
    * output the call reads. Collection writes of the call belong to that

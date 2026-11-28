@@ -11,7 +11,9 @@
  *   data_imports.record        keep the rows a kind stored, and the report
  *   data_imports.list / .get   imports with where they stand
  *   data_imports.item_refs     what a kind stored per row, for an undo
- *   data_imports.mark_undone   end an import (after its kind removed rows)
+ *   data_imports.mark_undone   end an import; its kind removes rows now or
+ *                              they leave with the undo's release
+ *   data_imports.finish_removal the kind removed them: forget the rows
  */
 
 import {
@@ -407,7 +409,7 @@ const importSummary = z.object({
 const SUMMARY_COLUMNS = sql`
   di.id::text AS import_id, di.owner, di.kind, di.source_label, di.item_count,
   ${importStateSql()} AS state,
-  to_char(di.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at,
+  to_char(di.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,
   a.display_name AS created_by, di.chat_session_id::text AS chat_session_id,
   to_char(di.undone_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS undone_at`;
 
@@ -439,6 +441,11 @@ function summaryOf(r: SummaryRow): z.infer<typeof importSummary> {
   };
 }
 
+/** Where a list page ends: the last import's exact creation time and id. */
+const listCursor = z
+  .object({ createdAt: z.string().datetime({ precision: 6 }), importId: z.string().uuid() })
+  .strict();
+
 export const listDataImportsOp = defineOperation({
   name: "data_imports.list",
   readScope: "request",
@@ -448,23 +455,35 @@ export const listDataImportsOp = defineOperation({
     .object({
       kind: kindSchema.optional(),
       limit: z.number().int().min(1).max(100).optional(),
-      /** `createdAt` of the last import a previous call returned: the next ones are older. */
-      before: z.string().datetime().optional(),
+      /** The `nextCursor` a previous call returned: the next, older imports. */
+      cursor: listCursor.optional(),
     })
     .strict(),
-  output: z.object({ imports: z.array(importSummary) }),
+  output: z.object({ imports: z.array(importSummary), nextCursor: listCursor.nullable() }),
   handler: async (_ctx, input, tx) => {
+    const limit = input.limit ?? 25;
     const filters: SQL[] = [];
     if (input.kind) filters.push(sql`di.kind = ${input.kind}`);
-    if (input.before) filters.push(sql`di.created_at < ${input.before}::timestamptz`);
+    // Keyset on (created_at, id): imports of one microsecond are neither
+    // skipped nor repeated between pages.
+    if (input.cursor)
+      filters.push(
+        sql`(di.created_at, di.id) < (${input.cursor.createdAt}::timestamptz, ${input.cursor.importId}::uuid)`,
+      );
     const rows = (await tx.execute(sql`
       SELECT ${SUMMARY_COLUMNS}
       FROM data_imports di LEFT JOIN actors a ON a.id = di.created_by
       ${filters.length > 0 ? sql`WHERE ${sql.join(filters, sql` AND `)}` : sql``}
-      ORDER BY di.created_at DESC
-      LIMIT ${input.limit ?? 25}
+      ORDER BY di.created_at DESC, di.id DESC
+      LIMIT ${limit + 1}
     `)) as unknown as SummaryRow[];
-    return ok({ imports: rows.map(summaryOf) });
+    const page = rows.slice(0, limit);
+    const last = page[page.length - 1];
+    return ok({
+      imports: page.map(summaryOf),
+      nextCursor:
+        rows.length > limit && last ? { createdAt: last.created_at, importId: last.import_id } : null,
+    });
   },
 });
 
@@ -478,18 +497,20 @@ export const getDataImportOp = defineOperation({
     release: z.enum(IMPORT_RELEASE_MODES),
     merged: z.boolean(),
     stamped: z.boolean(),
+    removalPending: z.boolean(),
     lastReport: reportSchema.nullable(),
   }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT ${SUMMARY_COLUMNS}, di.release, di.merged_at IS NOT NULL AS merged,
-             di.staged_since IS NOT NULL AS stamped, di.last_report
+             di.staged_since IS NOT NULL AS stamped, di.removal_pending, di.last_report
       FROM data_imports di LEFT JOIN actors a ON a.id = di.created_by
       WHERE di.id = ${input.importId}::uuid
     `)) as unknown as (SummaryRow & {
       release: "stage" | "target";
       merged: boolean;
       stamped: boolean;
+      removal_pending: boolean;
       last_report: z.infer<typeof reportSchema> | null;
     })[];
     const row = rows[0];
@@ -504,6 +525,7 @@ export const getDataImportOp = defineOperation({
       release: row.release,
       merged: row.merged,
       stamped: row.stamped,
+      removalPending: row.removal_pending,
       lastReport: row.last_report,
     });
   },
@@ -543,8 +565,11 @@ export const markDataImportUndoneOp = defineOperation({
     .object({
       importId: z.string().uuid(),
       chatSessionId: z.string().uuid().optional(),
-      /** The kind removed the import's rows (never staged, or release `target`): forget them too. */
-      rowsRemoved: z.boolean(),
+      /**
+       * The kind removes the import's rows now (never shipped, or release
+       * `target`); `data_imports.finish_removal` forgets them once it did.
+       */
+      removeRows: z.boolean(),
     })
     .strict(),
   output: z.object({ state: z.string() }),
@@ -552,10 +577,11 @@ export const markDataImportUndoneOp = defineOperation({
     const op = "data_imports.mark_undone";
     const rows = (await tx.execute(sql`
       UPDATE data_imports SET undone_at = now(), undone_by = ${ctx.actorId}::uuid,
-        undo_chat_session_id = ${input.chatSessionId ?? null}::uuid, updated_at = now()
+        undo_chat_session_id = ${input.chatSessionId ?? null}::uuid,
+        removal_pending = ${input.removeRows}, updated_at = now()
       WHERE id = ${input.importId}::uuid AND undone_at IS NULL
         -- Removing the rows is right only while no build carries them.
-        AND (${!input.rowsRemoved} OR release = 'target' OR staged_since IS NULL)
+        AND (${!input.removeRows} OR release = 'target' OR staged_since IS NULL)
       RETURNING id
     `)) as unknown as unknown[];
     if (rows.length === 0)
@@ -564,21 +590,12 @@ export const markDataImportUndoneOp = defineOperation({
         operation: op,
         message: `import ${input.importId} does not exist, was already undone, or a build took it meanwhile: call undo_data_import again`,
       });
-    if (input.rowsRemoved) {
-      await tx.execute(
-        sql`DELETE FROM data_import_items WHERE import_id = ${input.importId}::uuid`,
-      );
-      await tx.execute(
-        sql`UPDATE data_imports SET item_count = 0 WHERE id = ${input.importId}::uuid`,
-      );
-    } else {
-      // The rows stay for the environments that still show them; the keys
-      // are free for a new import.
-      await tx.execute(sql`
-        UPDATE data_import_items SET active = false, updated_at = now()
-        WHERE import_id = ${input.importId}::uuid
-      `);
-    }
+    // The rows stay until the kind removed them, or for the environments
+    // that still show them; the keys are free for a new import now.
+    await tx.execute(sql`
+      UPDATE data_import_items SET active = false, updated_at = now()
+      WHERE import_id = ${input.importId}::uuid
+    `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -586,13 +603,47 @@ export const markDataImportUndoneOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.importId,
-      resultSummary: input.rowsRemoved
-        ? "rows removed"
+      resultSummary: input.removeRows
+        ? "rows to be removed now"
         : "rows withdrawn with the next Stage and Publish live",
     });
     const state = (await tx.execute(sql`
       SELECT ${importStateSql()} AS state FROM data_imports di WHERE di.id = ${input.importId}::uuid
     `)) as unknown as { state: string }[];
     return ok({ state: state[0]?.state ?? "undone" });
+  },
+});
+
+export const finishDataImportRemovalOp = defineOperation({
+  name: "data_imports.finish_removal",
+  readScope: "request",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ importId: z.string().uuid() }).strict(),
+  output: z.object({ state: z.string() }),
+  handler: async (ctx, input, tx) => {
+    const op = "data_imports.finish_removal";
+    const rows = (await tx.execute(sql`
+      UPDATE data_imports SET removal_pending = false, item_count = 0, updated_at = now()
+      WHERE id = ${input.importId}::uuid AND removal_pending
+      RETURNING id
+    `)) as unknown as unknown[];
+    if (rows.length === 0)
+      return err({
+        kind: "HandlerError",
+        operation: op,
+        message: `import ${input.importId} has no removal waiting`,
+      });
+    await tx.execute(sql`DELETE FROM data_import_items WHERE import_id = ${input.importId}::uuid`);
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: op,
+      input,
+      succeeded: true,
+      entityId: input.importId,
+      resultSummary: "rows removed",
+    });
+    return ok({ state: "undone" });
   },
 });

@@ -24,6 +24,7 @@ import { defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { chatHasPendingImportsSql, pendingImportCounts } from "../../data-imports/release.js";
 import { type BranchKind, sessionHasPendingSql } from "../../draft.js";
 import { drainTakeoverNotices } from "../../lock-takeover.js";
 import { loadPartPlacements, partKey, placementOf } from "../content/part-placement.js";
@@ -50,8 +51,10 @@ const openChatSchema = z
     anchorPagePath: z.string().nullable(),
     lastActiveAt: z.string(),
     lastStagedAt: z.string().nullable(),
-    /** Distinct entities changed since the last Stage (the pending refs). */
+    /** Distinct entities changed since the last Stage (the pending refs), data imports included. */
     pendingCount: z.number().int().nonnegative(),
+    /** Data imports and their undos that wait for this chat's Stage (docs/data-imports.md). */
+    pendingImports: z.number().int().nonnegative(),
     changes: pendingChangesSchema,
     /** The changes in the operator's words: pages new / changed / removed, site-wide parts. */
     summary: draftSummarySchema,
@@ -152,6 +155,7 @@ export const listOpenChangesOp = defineOperation({
         -- chat with unstaged work must not fall off behind newer idle ones.
         AND (
           ${sessionHasPendingSql("cs")}
+          OR ${chatHasPendingImportsSql("cs")}
           OR EXISTS (SELECT 1 FROM chat_entity_locks l WHERE l.chat_session_id = cs.id)
         )
       ORDER BY cs.last_active_at DESC, cs.id DESC
@@ -174,6 +178,10 @@ export const listOpenChangesOp = defineOperation({
     if (page.length === 0) return ok({ chats: [], nextCursor });
     const ids = uuidArray(page.map((s) => s.id));
 
+    const importsByChat = await pendingImportCounts(
+      tx,
+      page.map((s) => s.id),
+    );
     const changesByChat = await loadPendingChangesFor(
       tx,
       page.map((s) => ({ chatSessionId: s.id, branchId: s.chat_branch_id, kind: s.branch_kind })),
@@ -257,10 +265,12 @@ export const listOpenChangesOp = defineOperation({
       if (!changes) continue;
       // The pill's count (#1268): every pending entity, picked for publish
       // or not — an isolated chat's 'staged' marks are still unstaged here.
-      const pendingCount = [changes.pending, changes.staged].reduce(
-        (n, g) => n + g.pages.length + g.globals.length + g.lists.length,
-        0,
-      );
+      const pendingImports = importsByChat.get(s.id) ?? 0;
+      const pendingCount =
+        [changes.pending, changes.staged].reduce(
+          (n, g) => n + g.pages.length + g.globals.length + g.lists.length,
+          0,
+        ) + pendingImports;
       const own = locks.filter((l) => l.chat === s.id);
       chats.push({
         chatSessionId: s.id,
@@ -272,6 +282,7 @@ export const listOpenChangesOp = defineOperation({
         lastActiveAt: s.last_active_at,
         lastStagedAt: iso(s.last_staged_at),
         pendingCount,
+        pendingImports,
         changes,
         summary: summarizeDraftChanges(changes, whereOf(whereByBranch, s.chat_branch_id)),
         locks: own.map((l) => ({

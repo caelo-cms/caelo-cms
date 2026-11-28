@@ -73,12 +73,13 @@ export async function mergeChatImports(
 
 /**
  * Where an import stands, as one SQL `CASE` over the row aliased `di`:
- * draft | waiting-for-build | staged | live | undo-pending | undone, and
+ * draft | waiting-for-build | staged | live | undo-pending | undone,
  * written for kinds with release `target` (redirects follow their own
- * drafts).
+ * drafts), and removal-pending for an undo whose removal did not finish.
  */
 export function importStateSql(): SQL {
   return sql`CASE
+    WHEN di.removal_pending THEN 'removal-pending'
     WHEN di.release = 'target' THEN CASE WHEN di.undone_at IS NULL THEN 'written' ELSE 'undone' END
     WHEN di.undone_at IS NOT NULL AND di.staged_since IS NULL THEN 'undone'
     WHEN di.undone_at IS NOT NULL THEN
@@ -88,4 +89,41 @@ export function importStateSql(): SQL {
     WHEN ${importShownSql("staging")} THEN 'staged'
     WHEN di.staged_since IS NOT NULL OR di.merged_at IS NOT NULL THEN 'waiting-for-build'
     ELSE 'draft' END`;
+}
+
+/**
+ * SQL predicate: the chat under `csAlias` has an import or an undo that
+ * waits for its Stage. Open changes list such a chat, and "Stage all my
+ * chats" stages it, like a chat with unstaged edits.
+ */
+export function chatHasPendingImportsSql(csAlias = "cs"): SQL {
+  const cs = sql.raw(csAlias);
+  return sql`(EXISTS (SELECT 1 FROM data_imports di
+                      WHERE di.chat_session_id = ${cs}.id AND di.release = 'stage'
+                        AND di.merged_at IS NULL AND di.undone_at IS NULL)
+          OR EXISTS (SELECT 1 FROM data_imports di
+                      WHERE di.undo_chat_session_id = ${cs}.id AND di.release = 'stage'
+                        AND di.undo_merged_at IS NULL AND di.staged_since IS NOT NULL))`;
+}
+
+/** How many imports and undos wait for each chat's Stage. */
+export async function pendingImportCounts(
+  tx: TransactionRunner,
+  chatSessionIds: readonly string[],
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (chatSessionIds.length === 0) return out;
+  const rows = (await tx.execute(sql`
+    SELECT chat::text AS chat, count(*)::int AS n FROM (
+      SELECT chat_session_id AS chat FROM data_imports
+      WHERE chat_session_id = ANY(${uuidArray(chatSessionIds)}) AND release = 'stage'
+        AND merged_at IS NULL AND undone_at IS NULL
+      UNION ALL
+      SELECT undo_chat_session_id FROM data_imports
+      WHERE undo_chat_session_id = ANY(${uuidArray(chatSessionIds)}) AND release = 'stage'
+        AND undo_merged_at IS NULL AND staged_since IS NOT NULL
+    ) w GROUP BY chat
+  `)) as unknown as { chat: string; n: number }[];
+  for (const r of rows) out.set(r.chat, r.n);
+  return out;
 }
