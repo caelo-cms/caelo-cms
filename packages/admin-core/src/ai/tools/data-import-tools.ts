@@ -252,7 +252,8 @@ export const listDataImportsTool: ToolDefinitionWithHandler<z.infer<typeof listI
       nextCursor: { createdAt: string; importId: string } | null;
     };
     const lines = v.imports.map(
-      (i) => `- ${i.importId} ${i.kind} from ${i.sourceLabel}: ${i.itemCount} rows, ${i.state} (${i.createdAt})`,
+      (i) =>
+        `- ${i.importId} ${i.kind} from ${i.sourceLabel}: ${i.itemCount} rows, ${i.state} (${i.createdAt})`,
     );
     if (v.nextCursor) lines.push(`More: call again with cursor ${JSON.stringify(v.nextCursor)}.`);
     return {

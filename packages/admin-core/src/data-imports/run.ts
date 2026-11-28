@@ -448,7 +448,8 @@ export async function runDataImport(
     const writes: (ImportWriteRow & { digest: string })[] = [];
     for (const p of level) {
       if (!ok(p) || (p.held !== null && !isOwn(p))) continue;
-      const parent = p.parentInCall && p.checked.parentKey ? inCall.get(p.checked.parentKey) : undefined;
+      const parent =
+        p.parentInCall && p.checked.parentKey ? inCall.get(p.checked.parentKey) : undefined;
       if (parent && notStored.has(parent.checked.sourceKey)) {
         notStored.add(p.checked.sourceKey);
         problems.add("parent-not-found", `${p.index}`, {
@@ -630,7 +631,12 @@ async function removeStoredRows(
   if (!refs.ok) return refs;
   try {
     await kind.remove(
-      { registry: deps.registry, adapter: deps.adapter, ctx: caller.ctx, invocation: caller.invocation },
+      {
+        registry: deps.registry,
+        adapter: deps.adapter,
+        ctx: caller.ctx,
+        invocation: caller.invocation,
+      },
       importId,
       refs.refs,
     );
@@ -640,9 +646,15 @@ async function removeStoredRows(
       message: `the import is undone, but removing its rows failed: ${e instanceof Error ? e.message : String(e)}. Call undo_data_import again to repeat the removal`,
     };
   }
-  const done = await execute(deps.registry, deps.adapter, caller.ctx, "data_imports.finish_removal", {
-    importId,
-  });
+  const done = await execute(
+    deps.registry,
+    deps.adapter,
+    caller.ctx,
+    "data_imports.finish_removal",
+    {
+      importId,
+    },
+  );
   return done.ok ? { ok: true } : { ok: false, message: describeError(done.error) };
 }
 
@@ -659,7 +671,9 @@ export async function undoDataImport(
   caller: DataImportCaller,
   importId: string,
 ): Promise<{ ok: true; undo: DataImportUndo } | { ok: false; message: string }> {
-  const got = await execute(deps.registry, deps.adapter, caller.ctx, "data_imports.get", { importId });
+  const got = await execute(deps.registry, deps.adapter, caller.ctx, "data_imports.get", {
+    importId,
+  });
   if (!got.ok) return { ok: false, message: describeError(got.error) };
   const imp = got.value as {
     kind: string;
@@ -669,7 +683,8 @@ export async function undoDataImport(
     undoneAt: string | null;
     removalPending: boolean;
   };
-  const removeNow = imp.removalPending || (imp.undoneAt === null && (imp.release === "target" || !imp.stamped));
+  const removeNow =
+    imp.removalPending || (imp.undoneAt === null && (imp.release === "target" || !imp.stamped));
   if (imp.undoneAt !== null && !imp.removalPending)
     return { ok: false, message: `import ${importId} was already undone` };
   const kind = kindNamed(deps, imp.kind);
@@ -681,11 +696,17 @@ export async function undoDataImport(
   let state = "undone";
   if (imp.undoneAt === null) {
     // Marked first: a build that starts now no longer takes the import.
-    const marked = await execute(deps.registry, deps.adapter, caller.ctx, "data_imports.mark_undone", {
-      importId,
-      removeRows: removeNow,
-      ...(caller.chatSessionId ? { chatSessionId: caller.chatSessionId } : {}),
-    });
+    const marked = await execute(
+      deps.registry,
+      deps.adapter,
+      caller.ctx,
+      "data_imports.mark_undone",
+      {
+        importId,
+        removeRows: removeNow,
+        ...(caller.chatSessionId ? { chatSessionId: caller.chatSessionId } : {}),
+      },
+    );
     if (!marked.ok) return { ok: false, message: describeError(marked.error) };
     state = (marked.value as { state: string }).state;
   }

@@ -547,20 +547,47 @@ describe("review findings", () => {
   it("a reply in a new import keeps the parent an earlier import holds", async () => {
     const first = await importOk({
       kind: "comments",
-      rows: [{ sourceKey: "p:1", page: `/${P}-page`, authorName: "Parent", content: "p", submittedAt: "2019-05-04T10:00:00Z" }],
+      rows: [
+        {
+          sourceKey: "p:1",
+          page: `/${P}-page`,
+          authorName: "Parent",
+          content: "p",
+          submittedAt: "2019-05-04T10:00:00Z",
+        },
+      ],
       sourceLabel: "first",
     });
     const second = await importOk({
       kind: "comments",
       rows: [
-        { sourceKey: "p:1", page: `/${P}-page`, authorName: "Parent", content: "p", submittedAt: "2019-05-04T10:00:00Z" },
-        { sourceKey: "p:2", parentKey: "p:1", page: `/${P}-page`, authorName: "Child", content: "c", submittedAt: "2019-05-04T11:00:00Z" },
+        {
+          sourceKey: "p:1",
+          page: `/${P}-page`,
+          authorName: "Parent",
+          content: "p",
+          submittedAt: "2019-05-04T10:00:00Z",
+        },
+        {
+          sourceKey: "p:2",
+          parentKey: "p:1",
+          page: `/${P}-page`,
+          authorName: "Child",
+          content: "c",
+          submittedAt: "2019-05-04T11:00:00Z",
+        },
       ],
       sourceLabel: "second",
     });
     expect(second.counts).toMatchObject({ imported: 1, unchanged: 1 });
-    const [parent] = (await admin((tx) => tx`SELECT id::text AS id FROM comment_archive WHERE data_import_id = ${first.importId}::uuid`)) as { id: string }[];
-    const [child] = (await admin((tx) => tx`SELECT parent_id::text AS parent_id FROM comment_archive WHERE data_import_id = ${second.importId}::uuid`)) as { parent_id: string }[];
+    const [parent] = (await admin(
+      (tx) =>
+        tx`SELECT id::text AS id FROM comment_archive WHERE data_import_id = ${first.importId}::uuid`,
+    )) as { id: string }[];
+    const [child] = (await admin(
+      (tx) =>
+        tx`SELECT parent_id::text AS parent_id FROM comment_archive WHERE data_import_id = ${second.importId}::uuid`,
+    )) as { parent_id: string }[];
     expect(child?.parent_id).toBe(parent?.id ?? "");
     await undoDataImport(deps(), CALLER, second.importId ?? "");
     await undoDataImport(deps(), CALLER, first.importId ?? "");
@@ -570,8 +597,21 @@ describe("review findings", () => {
     const report = await importOk({
       kind: "comments",
       rows: [
-        { sourceKey: "r:1", page: `/${P}-page`, authorName: "R1", content: "<b>tag</b>", submittedAt: "2019-05-04T10:00:00Z" },
-        { sourceKey: "r:2", parentKey: "r:1", page: `/${P}-page`, authorName: "R2", content: "reply", submittedAt: "2019-05-04T11:00:00Z" },
+        {
+          sourceKey: "r:1",
+          page: `/${P}-page`,
+          authorName: "R1",
+          content: "<b>tag</b>",
+          submittedAt: "2019-05-04T10:00:00Z",
+        },
+        {
+          sourceKey: "r:2",
+          parentKey: "r:1",
+          page: `/${P}-page`,
+          authorName: "R2",
+          content: "reply",
+          submittedAt: "2019-05-04T11:00:00Z",
+        },
       ],
       sourceLabel: "refused parent",
       skipInvalid: true,
@@ -596,17 +636,29 @@ describe("review findings", () => {
     const d: DataImportDeps = { ...deps(), kinds: () => [flaky, redirectsImportKind] };
     const report = await importOk({
       kind: "comments",
-      rows: [{ sourceKey: "u:1", page: `/${P}-page`, authorName: "U", content: "u", submittedAt: "2019-05-04T10:00:00Z" }],
+      rows: [
+        {
+          sourceKey: "u:1",
+          page: `/${P}-page`,
+          authorName: "U",
+          content: "u",
+          submittedAt: "2019-05-04T10:00:00Z",
+        },
+      ],
       sourceLabel: "flaky undo",
     });
     const first = await undoDataImport(d, CALLER, report.importId ?? "");
     expect(first.ok).toBe(false);
-    const got = await execute(registry, adapter, HUMAN, "data_imports.get", { importId: report.importId });
+    const got = await execute(registry, adapter, HUMAN, "data_imports.get", {
+      importId: report.importId,
+    });
     expect(got.ok && (got.value as { state: string }).state).toBe("removal-pending");
     fail = false;
     const again = await undoDataImport(d, CALLER, report.importId ?? "");
     expect(again.ok && again.undo.state).toBe("undone");
-    const left = await admin((tx) => tx`SELECT 1 FROM comment_archive WHERE data_import_id = ${report.importId}::uuid`);
+    const left = await admin(
+      (tx) => tx`SELECT 1 FROM comment_archive WHERE data_import_id = ${report.importId}::uuid`,
+    );
     expect(left).toHaveLength(0);
   });
 
@@ -618,17 +670,33 @@ describe("review findings", () => {
         RETURNING id::text AS id`) as { id: string }[];
       return s?.id ?? "";
     });
-    const r = await runDataImport(deps(), { ...CALLER, chatSessionId: chat }, {
-      kind: "comments",
-      rows: [{ sourceKey: "o:1", page: `/${P}-page`, authorName: "O", content: "o", submittedAt: "2019-05-04T10:00:00Z" }],
-      sourceLabel: "open change",
-    });
-    if (!r.ok) throw new Error(r.message);
-    const open = await execute(registry, adapter, HUMAN, "chat.list_open_changes", { mineOnly: true });
-    if (!open.ok) throw new Error(JSON.stringify(open.error));
-    const mine = (open.value as { chats: { chatSessionId: string; pendingCount: number; pendingImports: number }[] }).chats.find(
-      (c) => c.chatSessionId === chat,
+    const r = await runDataImport(
+      deps(),
+      { ...CALLER, chatSessionId: chat },
+      {
+        kind: "comments",
+        rows: [
+          {
+            sourceKey: "o:1",
+            page: `/${P}-page`,
+            authorName: "O",
+            content: "o",
+            submittedAt: "2019-05-04T10:00:00Z",
+          },
+        ],
+        sourceLabel: "open change",
+      },
     );
+    if (!r.ok) throw new Error(r.message);
+    const open = await execute(registry, adapter, HUMAN, "chat.list_open_changes", {
+      mineOnly: true,
+    });
+    if (!open.ok) throw new Error(JSON.stringify(open.error));
+    const mine = (
+      open.value as {
+        chats: { chatSessionId: string; pendingCount: number; pendingImports: number }[];
+      }
+    ).chats.find((c) => c.chatSessionId === chat);
     expect(mine).toMatchObject({ pendingImports: 1, pendingCount: 1 });
     await undoDataImport(deps(), CALLER, r.report.importId ?? "");
   });
@@ -646,7 +714,10 @@ describe("review findings", () => {
       ids.push((r.value as { importId: string }).importId);
     }
     // One instant for all three: only the id tells them apart.
-    await admin((tx) => tx`UPDATE data_imports SET created_at = '2026-11-20T10:00:00.123456Z' WHERE id = ANY(${ids}::uuid[])`);
+    await admin(
+      (tx) =>
+        tx`UPDATE data_imports SET created_at = '2026-11-20T10:00:00.123456Z' WHERE id = ANY(${ids}::uuid[])`,
+    );
     const seen: string[] = [];
     let cursor: unknown;
     for (let i = 0; i < 100; i++) {

@@ -286,7 +286,8 @@ export async function runPluginRenderPass(args: {
       // P13 perf-pass — prefer the pre-batched value when present.
       const batched = batchedSigs.get(plugin.slug);
       const metaSig =
-        batched?.get(target.pageId) ?? (await plugins.metaSignature(plugin.slug, target.pageId, runId));
+        batched?.get(target.pageId) ??
+        (await plugins.metaSignature(plugin.slug, target.pageId, runId));
       // The URL style and the origin are part of the key: a plugin linking
       // to pages renders different hrefs per style (#590) and per host — a
       // staging bake must never be reused by a live build (#650). So is the

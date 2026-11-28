@@ -482,7 +482,9 @@ export const listDataImportsOp = defineOperation({
     return ok({
       imports: page.map(summaryOf),
       nextCursor:
-        rows.length > limit && last ? { createdAt: last.created_at, importId: last.import_id } : null,
+        rows.length > limit && last
+          ? { createdAt: last.created_at, importId: last.import_id }
+          : null,
     });
   },
 });

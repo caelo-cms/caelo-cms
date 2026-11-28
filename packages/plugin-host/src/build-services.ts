@@ -230,10 +230,17 @@ export const localBuildPluginServices: BuildPluginServices = {
       pageIds,
     }),
   metaSignature: (pluginSlug, pageId, runId) =>
-    runPluginMetaSignature({ invocation: renderInvocation(buildRender(runId)), pluginSlug, pageId }),
+    runPluginMetaSignature({
+      invocation: renderInvocation(buildRender(runId)),
+      pluginSlug,
+      pageId,
+    }),
   staticRender: async (pluginSlug, pageId, context) =>
     (await runPluginStaticRender({
-      invocation: renderInvocation({ ...buildRender(context.runId), siteBaseUrl: context.siteBaseUrl }),
+      invocation: renderInvocation({
+        ...buildRender(context.runId),
+        siteBaseUrl: context.siteBaseUrl,
+      }),
       pluginSlug,
       pageId,
       pageUrlStyle: context.pageUrlStyle,
