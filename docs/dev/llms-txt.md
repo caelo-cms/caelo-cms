@@ -27,6 +27,8 @@ The build's indexing state, the decision the sitemap reads too (`SeoPass.indexed
 
 Sections follow the page types by name, pages the build's order. Only what the site's authors wrote reaches the file: titles, meta descriptions, page type names, the site's name, each on one line with Markdown link text escaped, never a page body or anything visitors wrote (comments, form entries), so the file cannot carry text a visitor slipped in for an agent to follow. It is capped at 256 KB; past that the rest is left out and a last section points at the sitemap. A page already published at `/llms.txt` refuses the build with the way out. Served as `text/plain; charset=utf-8`.
 
+An incremental build (`changedPageIds`: a Publish live of some kinds of change) renders only the pages a change reached, while the file speaks for the whole site. So it adds the pages the build leaves alone from the live page record (`live_page_versions`, `ContentStates.liveNotRendered`), with the URL, title and meta description they were published with, never from page rows that may hold unpublished edits; a recorded page whose URL is not its own address is left out, and a page whose row is gone waits for the next full build. Before the first recorded build there is no record to read them from, so an incremental build leaves the deployed file as it is, as it leaves those pages' HTML.
+
 No Markdown versions of pages (maintainer decision 2026-11-26).
 
 ## Tests

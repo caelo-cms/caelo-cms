@@ -18,7 +18,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { generateSite } from "./generate.js";
-import { LLMS_TXT_FILE } from "./llms-txt.js";
+import { buildLlmsTxt, LLMS_TXT_FILE } from "./llms-txt.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -34,6 +34,7 @@ const BASE = "https://llms.example";
 const PFX = `llm-${Date.now().toString(36)}`;
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
+const ids: Record<"home" | "guide" | "copy", string> = { home: "", guide: "", copy: "" };
 let before: {
   site_base_url: string | null;
   site_language: string | null;
@@ -103,15 +104,16 @@ beforeAll(async () => {
     blocks: [{ name: "content", displayName: "Content", position: 0 }],
   });
   const home = await page(`${PFX}-home`, "Home", { metaDescription: "Docs for the product." });
+  ids.home = home;
   const designated = await execute(registry, adapter, SYSTEM, "pages.set_home_page", {
     pageId: home,
   });
   if (!designated.ok) throw new Error(`set_home_page: ${JSON.stringify(designated.error)}`);
-  await page(`${PFX}-guide`, "The [setup] guide", {
+  ids.guide = await page(`${PFX}-guide`, "The [setup] guide", {
     metaDescription: "How to set it up,\nstep by step.",
   });
   await page(`${PFX}-hidden`, "Hidden page", { metaDescription: "Kept out.", noindex: true });
-  await page(`${PFX}-copy`, "Copy of the guide", {
+  ids.copy = await page(`${PFX}-copy`, "Copy of the guide", {
     metaDescription: "A copy.",
     canonicalUrl: `${BASE}/${PFX}-guide/`,
   });
@@ -174,5 +176,43 @@ describe("llms.txt in the build", () => {
     expect(text).toMatch(/\n## [^\n]+\n\n- \[/);
     const types = JSON.parse(await readFile(join(dir, "_content-types.json"), "utf8"));
     expect(types[LLMS_TXT_FILE]).toBe("text/plain; charset=utf-8");
+  });
+
+  it("an incremental build lists the pages it leaves alone from the live record", async () => {
+    // The build rendered only the guide; the home page and the copy are
+    // live as recorded, with what they were published with.
+    const text = await adapter.withAdminTransaction(SYSTEM, (tx) =>
+      buildLlmsTxt(
+        tx,
+        {
+          indexedPages: async () => [
+            {
+              pageId: ids.guide,
+              url: `${BASE}/${PFX}-guide/`,
+              title: "The guide",
+              metaDescription: "Now.",
+            },
+          ],
+        },
+        { siteBaseUrl: BASE, sitemap: true },
+        [
+          { pageId: ids.home, url: `${BASE}/`, title: "Home as published", summary: "Live text." },
+          // Recorded at the guide's URL (its canonical points there): not its own address.
+          { pageId: ids.copy, url: `${BASE}/${PFX}-guide/`, title: "Copy", summary: "x" },
+          // A page row that is gone waits for the next full build.
+          {
+            pageId: "00000000-0000-4000-8000-00000000dead",
+            url: `${BASE}/gone/`,
+            title: "Gone",
+            summary: "",
+          },
+        ],
+      ),
+    );
+    expect(text).toContain(`- [The guide](${BASE}/${PFX}-guide/): Now.`);
+    expect(text).toContain(`- [Home as published](${BASE}/): Live text.`);
+    expect(text).toContain("> Live text.");
+    expect(text).not.toContain("[Copy]");
+    expect(text).not.toContain("Gone");
   });
 });

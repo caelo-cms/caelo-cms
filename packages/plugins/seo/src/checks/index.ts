@@ -72,6 +72,13 @@ export const SEO_AUDIT_RULES: readonly SeoAuditRule[] = [];
 /** Most findings one answer may carry (the SDK contract). */
 const MAX_FINDINGS_PER_ANSWER = 499;
 
+/**
+ * The longest finding message (the SDK contract). A message names paths,
+ * texts and module ids the site chose, so a long one is cut here rather
+ * than failing the whole answer at core's check.
+ */
+const MAX_MESSAGE_CHARS = 1000;
+
 const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 } as const;
 
 /**
@@ -95,7 +102,12 @@ const auditArgs = z.object(auditArgShape).strict();
 function capped(findings: readonly PluginAuditFinding[]): PluginAuditFinding[] {
   return [...findings]
     .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
-    .slice(0, MAX_FINDINGS_PER_ANSWER);
+    .slice(0, MAX_FINDINGS_PER_ANSWER)
+    .map((f) =>
+      f.message.length > MAX_MESSAGE_CHARS
+        ? { ...f, message: `${f.message.slice(0, MAX_MESSAGE_CHARS - 1)}…` }
+        : f,
+    );
 }
 
 /** The fact batches of the first answer: every page, in staged order. */

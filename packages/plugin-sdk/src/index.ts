@@ -1062,7 +1062,7 @@ export interface PluginAuditPageFacts {
   /** Every `<a href>` of the body. */
   readonly links: readonly (PluginAuditUrl & {
     readonly hreflang: string | null;
-    /** The visible link text (or its `aria-label` / `title`), whitespace-collapsed. */
+    /** The visible link text, else the `alt` of images in it (a linked logo), else its `aria-label` / `title`; whitespace-collapsed. */
     readonly text: string;
     /** The module root it sits in (`data-caelo-module-id`), if any. */
     readonly moduleId: string | null;

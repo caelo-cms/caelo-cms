@@ -260,6 +260,31 @@ export class ContentStates {
     return { base: this.base, changes, feed: feed.slice(0, FEED_ENTRY_LIMIT) };
   }
 
+  /** Whether the live record holds anything yet (empty before the first recorded build). */
+  get hasRecord(): boolean {
+    return this.base !== null;
+  }
+
+  /**
+   * #1763 — the pages live as recorded that this build does not render,
+   * with the URL, title and summary they were published with: what a
+   * site-wide file of an incremental build lists for the pages it leaves
+   * alone (their HTML stays deployed as it is).
+   *
+   * @param rendered every page the build renders (indexable or not): a page
+   *   it renders speaks for itself, also when it is no longer indexable.
+   */
+  liveNotRendered(
+    rendered: ReadonlySet<string>,
+  ): { pageId: string; url: string; title: string; summary: string }[] {
+    const out: { pageId: string; url: string; title: string; summary: string }[] = [];
+    for (const [pageId, s] of this.live) {
+      if (rendered.has(pageId) || s.url === null || s.title === null) continue;
+      out.push({ pageId, url: s.url, title: s.title, summary: s.summary ?? "" });
+    }
+    return out;
+  }
+
   /** The newest live pages this build did not render, as feed entries. */
   private async liveFeedEntriesNotRecorded(tx: TransactionRunner): Promise<FeedEntry[]> {
     const candidates = [...this.live]

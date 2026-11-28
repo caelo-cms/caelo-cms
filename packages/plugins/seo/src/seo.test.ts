@@ -5,6 +5,7 @@ import {
   manifestFromDefinition,
   type PluginAuditFinding,
   type PluginContextTier1,
+  pluginAuditFindings,
   pluginManifest,
 } from "@caelo-cms/plugin-sdk";
 import { type SeoAuditRule, seoAudit } from "./checks/index.js";
@@ -96,6 +97,18 @@ describe("seo audit runner", () => {
     const r = await seoAudit(ctx, { pages: [] }, [many]);
     expect(r.findings).toHaveLength(499);
     expect(r.findings[0]?.severity).toBe("error");
+  });
+
+  it("keeps every message within the SDK's 1,000 characters", async () => {
+    const long: SeoAuditRule = {
+      name: "long",
+      site: async () => [
+        { rule: "long", severity: "error" as const, message: `Long: ${"/deep".repeat(300)}.` },
+      ],
+    };
+    const r = await seoAudit(ctx, { pages: [] }, [long]);
+    expect(r.findings[0]?.message).toHaveLength(1000);
+    expect(pluginAuditFindings.safeParse(r).success).toBe(true);
   });
 });
 
