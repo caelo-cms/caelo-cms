@@ -23,6 +23,7 @@ import {
   listItemInputSchema,
   listTypeDefSchema,
   MAX_IMAGE_PREVIEW_VALUES,
+  moduleKindSchema,
   pageTypeDefSchema,
   STATIC_FILE_CONTENT_TYPES,
   seoOriginsSchema,
@@ -45,6 +46,9 @@ const moduleStateV1 = z
     schemaVersion: z.literal(1),
     slug: z.string(),
     displayName: z.string(),
+    /** #1746 — absent on snapshots written before it (see ModuleState). */
+    description: z.string().optional(),
+    kind: moduleKindSchema.optional(),
     /** v0.12.3 (issue #106) — stable module `type`. Defaults to "" for
      *  snapshots written before 0103; `parseAndUpgradeModuleState`
      *  fills it from `slug` when empty (matching the 0103 backfill). */

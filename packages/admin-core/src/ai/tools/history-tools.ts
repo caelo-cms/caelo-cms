@@ -237,6 +237,11 @@ export const listUnpublishedChangesTool: ToolDefinitionWithHandler<
       ...renderRefs("staged", "page", v.staged.pages),
       ...renderRefs("staged", "global", v.staged.globals),
       ...renderRefs("staged", "list", v.staged.lists),
+      ...(v.olderStagedNotListed
+        ? [
+            "staged: older changes of this chat are not listed; the next Publish live ships them too",
+          ]
+        : []),
     ];
     // #1550 — the site's pending redirect changes (a Draft, a Staged change
     // and what waits for its target), whichever chat saved them.

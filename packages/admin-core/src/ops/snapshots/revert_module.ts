@@ -55,10 +55,14 @@ export const revertModuleOp = defineOperation({
     }
 
     // Update or restore the live row depending on whether deleted_at is set.
+    // #1746 — a snapshot from before description / kind were captured
+    // leaves them as they are.
     await tx.execute(sql`
       UPDATE modules SET
         slug = ${target.slug},
         display_name = ${target.displayName},
+        description = COALESCE(${target.description ?? null}::text, description),
+        kind = COALESCE(${target.kind ?? null}::text, kind),
         type = ${target.type},
         html = ${target.html},
         css = ${target.css},
