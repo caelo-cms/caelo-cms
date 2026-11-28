@@ -80,6 +80,9 @@ export function valueBreaksMarkupEffect(rule: string, spelling: string): string 
   if (rule === "markup-in-table") {
     return `${s} stands right inside the module's table, where any tag restructures the table`;
   }
+  if (rule === "unknown-place") {
+    return `${s} could end the tag or attribute the module places the value in`;
+  }
   return `${s} changes the markup around the value`;
 }
 
@@ -108,6 +111,9 @@ export function valueBreaksMarkupFix(rule: string, spelling: string): string {
   }
   if (rule === "markup-in-table") {
     return "Put the placeholder in a cell in the module HTML (<td>{{field}}</td>), or write a < meant as text as &lt;.";
+  }
+  if (rule === "unknown-place") {
+    return "Write < > \" ' as &lt; &gt; &quot; &#39;, or fix the module HTML (a repeated attribute drops the placeholder's place).";
   }
   if (rule === "ends-tag" || rule === "ends-tag-name") {
     return "Write the > as &gt; and keep quotes paired.";

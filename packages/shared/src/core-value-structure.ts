@@ -178,6 +178,17 @@ export function coreValueProblem(place: CorePlace, value: string): CoreValueProb
       return attributeProblem(place, value);
     case "tag":
       return tagProblem(place.inName, value, place.before, place.after);
+    case "unknown": {
+      // Whatever could end or start something where the place is unknown.
+      const at = value.search(/[<>"']/);
+      return at === -1
+        ? null
+        : {
+            rule: "unknown-place",
+            spelling: spellingAt(value, at, at + 1),
+            place: "a place of the module HTML its reading cannot name (a repeated attribute)",
+          };
+    }
   }
 }
 
@@ -197,7 +208,10 @@ export function coreValueProblemAt(
     // In raw text, comments and tags the template's own text around the
     // value can make letters an end (`</text{{x}}>` with `area`, `id=x`
     // before a self-closing `/>`).
-    if (plain && place.kind !== "raw-text" && place.kind !== "comment" && place.kind !== "tag") {
+    if (
+      plain &&
+      (place.kind === "content" || place.kind === "attribute" || place.kind === "unknown")
+    ) {
       continue;
     }
     const problem = coreValueProblem(place, value);

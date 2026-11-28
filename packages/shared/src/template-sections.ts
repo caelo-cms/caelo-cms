@@ -971,12 +971,19 @@ export function moduleValueTags(
   const pairs = matchSections(tokens);
   const kindOf = (name: string) => (fields.get(name) ?? fields.get(name.toLowerCase()))?.kind;
   const out: ModuleValueTag[] = [];
-  // The close token of every entry section the walk is inside.
+  // The close token of every entry section the walk is inside, and of the
+  // scalar conditionals (`{{#body}}…{{/body}}`), whose `{{.}}` and
+  // `{{item}}` read their field.
   const inEntries: number[] = [];
+  const conditionals: { readonly close: number; readonly field: string }[] = [];
+  const bodies: { readonly from: number; readonly to: number; readonly field: string }[] = [];
   for (let i = 0; i < tokens.length; i += 1) {
     const t = tokens[i] as Token;
     while (inEntries.length > 0 && i >= (inEntries[inEntries.length - 1] as number)) {
       inEntries.pop();
+    }
+    while (conditionals.length > 0 && i >= (conditionals[conditionals.length - 1]?.close ?? 0)) {
+      conditionals.pop();
     }
     const close = pairs.get(i);
     if (close !== undefined) {
@@ -984,13 +991,26 @@ export function moduleValueTags(
       const kind = kindOf((t.name.split(".")[0] as string).toLowerCase());
       const entries = kind === undefined || (ENTRY_SCOPE_KINDS.has(kind) && !t.name.includes("."));
       if (t.sigil === "#" && entries) inEntries.push(close);
+      if (t.sigil === "#" && !entries && inEntries.length === 0 && !t.name.includes(".")) {
+        const field = t.name.toLowerCase();
+        conditionals.push({ close, field });
+        bodies.push({ from: t.end, to: (tokens[close] as Token).start, field });
+      }
       continue;
     }
     // Inside entries only `{{&f}}` surely reads the module field.
     const reads = t.sigil === "&" || (t.sigil === "" && inEntries.length === 0);
     if (!reads) continue;
     if (t.name.includes(".") && (!withPaths || isContextHead(t.name))) continue;
-    out.push({ start: t.start, name: t.name.toLowerCase() });
+    const alias = t.sigil === "" && t.name === "item" ? conditionals.at(-1)?.field : undefined;
+    out.push({ start: t.start, name: alias ?? t.name.toLowerCase() });
+  }
+  // `{{.}}` in a conditional's body reads the conditional's field.
+  for (const m of html.matchAll(DOT_RE)) {
+    const at = m.index ?? -1;
+    let field: string | undefined;
+    for (const b of bodies) if (at >= b.from && at < b.to) field = b.field;
+    if (field !== undefined) out.push({ start: at, name: field });
   }
   return out;
 }

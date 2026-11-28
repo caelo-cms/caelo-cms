@@ -534,3 +534,30 @@ describe("#1748 review, round 7", () => {
     expect(at(html, "Text &amp; more")).toBeNull();
   });
 });
+
+describe("#1748 review, round 8", () => {
+  it("holds a value the reading lost to every place at once", () => {
+    const html = '<div title="fixed" title="{{x}}">Inside</div><footer>F</footer>';
+    expect(rule(html, '"><!--')).toBe("unknown-place");
+    expect(at(html, "plain")).toBeNull();
+  });
+
+  it("reads an unquoted value's start through values before it that may render empty", () => {
+    const html = "<img alt={{a}}{{x}}><footer>F</footer>";
+    expect(coreValueProblemAt(html, html.indexOf("{{x}}"), "'photo")?.rule).toBe(
+      "attribute-apostrophe",
+    );
+  });
+
+  it("checks a conditional's {{.}} and {{item}} at write, for its field", () => {
+    const fields = [{ name: "body", kind: "text" }];
+    for (const html of [
+      "{{#body}}<div>{{.}}</div>{{/body}}",
+      "{{#body}}<div>{{item}}</div>{{/body}}",
+    ]) {
+      expect(moduleValueProblems(html, fields, { body: "</div>" }).map((p) => p.path)).toEqual([
+        ["body"],
+      ]);
+    }
+  });
+});

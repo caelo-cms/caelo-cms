@@ -184,7 +184,8 @@ export async function listWriteValueProblems(
   const renders = new Map<string, Set<string>>();
   for (const m of await loadModulesInView(tx, branchId, { referencing: [list.id] })) {
     for (const f of listFieldsOf(m.fields)) {
-      if (f.list !== ref && f.default !== ref) continue;
+      // The binding the renderer uses: a fixed list wins over the default.
+      if ((f.list ?? f.default) !== ref) continue;
       renders.set(m.id, (renders.get(m.id) ?? new Set()).add(f.name));
     }
   }

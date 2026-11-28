@@ -222,6 +222,8 @@ export type CorePlace =
   | ({ readonly kind: "comment" } & Neighbours)
   /** An attribute's value: its quote (null unquoted), and whether the value starts it. */
   | { readonly kind: "attribute"; readonly quote: '"' | "'" | null; readonly atStart: boolean }
+  /** A place the reading lost (its marker dropped by the parse): every place's rule at once. */
+  | { readonly kind: "unknown" }
   /** A tag's name (`inName`) or its attribute list (`<div {{attrs}}>`). */
   | {
       readonly kind: "tag";
@@ -738,8 +740,14 @@ function readValues(
     const found = places.get(i) ?? [];
     const near = around.get(i) ?? NOWHERE;
     const core = found
-      .map((place) => corePlaceOf(place, near, text, fosteredFrom(place, near.at, tableRanges)))
+      .map((place) =>
+        corePlaceOf(place, near, text, markers, fosteredFrom(place, near.at, tableRanges)),
+      )
       .filter((c): c is CorePlace => c !== null);
+    // A marker the parse dropped (a repeated attribute, an `<img>` in a
+    // `<select>`): the browser still reads the value somewhere this reading
+    // cannot say, so it is held to every place at once.
+    if (found.length === 0) core.push({ kind: "unknown" });
     if (core.length > 0) corePlaces.set(i, core);
     const read: PlaceholderContext[] = [];
     for (const place of found) {
@@ -825,6 +833,13 @@ function tableStructureRanges(
   return out;
 }
 
+/** Whether `text` (of the reading) holds nothing but value markers. */
+function onlyMarkers(text: string, markers: MarkerSet): boolean {
+  let rest = text;
+  for (const i of markers.find(text)) rest = rest.replace(markers.mark(i), "");
+  return rest === "";
+}
+
 /** Elements whose own content is table structure: text right inside one is foster-parented. */
 const TABLE_STRUCTURE: ReadonlySet<string> = new Set(["table", "tbody", "thead", "tfoot", "tr"]);
 
@@ -844,7 +859,13 @@ function fosteredFrom(
   return ranges.some((r) => at >= r.from && at < r.to && !chain.has(r.element));
 }
 
-function corePlaceOf(place: Place, near: Around, text: string, inTable = false): CorePlace | null {
+function corePlaceOf(
+  place: Place,
+  near: Around,
+  text: string,
+  markers: MarkerSet,
+  inTable = false,
+): CorePlace | null {
   const { before, after, valueBefore, valueAfter, at } = near;
   switch (place.at) {
     case "text": {
@@ -875,7 +896,8 @@ function corePlaceOf(place: Place, near: Around, text: string, inTable = false):
       return {
         kind: "attribute",
         quote: span.quoted && (q === '"' || q === "'") ? q : null,
-        atStart: span.valueStart === at,
+        // At the value's start, or after values only, which may render empty.
+        atStart: at >= span.valueStart && onlyMarkers(text.slice(span.valueStart, at), markers),
       };
     }
     case "tag-name":
