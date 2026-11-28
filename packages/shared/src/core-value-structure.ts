@@ -137,7 +137,7 @@ const MAY_BREAK = /[<>"'\t\n\f\r -]/;
 
 /**
  * Whether `value` holds a character that could change markup by itself (a
- * cheap first test). Raw text and comments are checked whatever the value
+ * cheap first test). Raw text, comments and tags are checked whatever the value
  * holds: the template's text around it can complete an end.
  */
 export function mayBreakMarkup(value: string): boolean {
@@ -194,9 +194,12 @@ export function coreValueProblemAt(
   if (places === undefined) return null;
   const plain = !mayBreakMarkup(value);
   for (const place of places) {
-    // In raw text and comments the template's own text around the value
-    // can make letters an end (`</text{{x}}>` with `area`).
-    if (plain && place.kind !== "raw-text" && place.kind !== "comment") continue;
+    // In raw text, comments and tags the template's own text around the
+    // value can make letters an end (`</text{{x}}>` with `area`, `id=x`
+    // before a self-closing `/>`).
+    if (plain && place.kind !== "raw-text" && place.kind !== "comment" && place.kind !== "tag") {
+      continue;
+    }
     const problem = coreValueProblem(place, value);
     if (problem !== null) return problem;
   }
@@ -615,6 +618,11 @@ function commentProblem(value: string, near: Neighbours): CoreValueProblem | nul
   };
 }
 
+/** The rule of a quote that ends an attribute value: the marker names which one, so the repair does. */
+function quoteRule(quote: '"' | "'"): string {
+  return quote === "'" ? "attribute-apostrophe" : "attribute-quote";
+}
+
 function attributeProblem(
   place: Extract<CorePlace, { kind: "attribute" }>,
   value: string,
@@ -624,14 +632,15 @@ function attributeProblem(
     return at === -1
       ? null
       : {
-          rule: "attribute-quote",
+          rule: quoteRule(place.quote),
           spelling: place.quote,
           place: `a ${place.quote}-quoted attribute value`,
         };
   }
   const where = "an unquoted attribute value";
   if (place.atStart && (value.startsWith('"') || value.startsWith("'"))) {
-    return { rule: "attribute-quote", spelling: value[0] as string, place: where };
+    const quote = value[0] as '"' | "'";
+    return { rule: quoteRule(quote), spelling: quote, place: where };
   }
   for (const ch of value) {
     if (ch === ">") return { rule: "attribute-end", spelling: ">", place: where };

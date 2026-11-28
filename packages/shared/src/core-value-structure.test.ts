@@ -74,7 +74,7 @@ describe("the structure rule for core values (#1748)", () => {
     expect(rule("<!-- {{x}} -->", "a --> b")).toBe("ends-comment");
     expect(rule("<!--{{x}} -->", ">")).toBe("ends-comment");
     expect(rule('<a title="{{x}}">y</a>', 'say "hi"')).toBe("attribute-quote");
-    expect(rule("<a title='{{x}}'>y</a>", "it's")).toBe("attribute-quote");
+    expect(rule("<a title='{{x}}'>y</a>", "it's")).toBe("attribute-apostrophe");
     expect(rule("<img alt={{x}}>", "a photo")).toBe("attribute-space");
     expect(rule("<img alt={{x}}>", "a>b")).toBe("attribute-end");
     expect(rule("<div {{x}}>", 'class="a> b')).toBe("ends-tag");
@@ -479,5 +479,22 @@ describe("#1748 review, round 4", () => {
         (p) => p.path,
       ),
     ).toEqual([[0, "children", 0, "values", "label"]]);
+  });
+});
+
+describe("#1748 review, round 5", () => {
+  it("checks a tag's attributes whatever the value holds", () => {
+    expect(rule("<svg><g {{x}}/><circle/></svg>", "id=x")).toBe("tag-self-closing");
+    expect(at("<svg><g {{x}}/><circle/></svg>", "hidden")).toBeNull();
+  });
+
+  it("names the quote that ends the attribute, in the marker and in its repair", () => {
+    expect(rule("<a title='{{x}}'>y</a>", "it's")).toBe("attribute-apostrophe");
+    expect(valueBreaksMarkupRepair("title:attribute-apostrophe", 'module "m"').hint).toStartWith(
+      "Write the ' as &#39;.",
+    );
+    expect(valueBreaksMarkupRepair("title:attribute-quote", 'module "m"').hint).toStartWith(
+      'Write the " as &quot;.',
+    );
   });
 });

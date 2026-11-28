@@ -68,7 +68,9 @@ export function valueBreaksMarkupEffect(rule: string, spelling: string): string 
     return `${s} ends the module's <${rule.slice("ends-".length)}> early`;
   }
   if (rule === "ends-comment") return `${s} ends the module's comment early`;
-  if (rule === "attribute-quote") return `${s} ends the attribute value early`;
+  if (rule === "attribute-quote" || rule === "attribute-apostrophe") {
+    return `${s} ends the attribute value early`;
+  }
   if (rule === "attribute-space" || rule === "attribute-end")
     return "it ends the unquoted attribute value early";
   if (rule === "ends-tag" || rule === "ends-tag-name") return `${s} ends the tag early`;
@@ -81,9 +83,8 @@ export function valueBreaksMarkupEffect(rule: string, spelling: string): string 
 /** How to write the value instead, for a rule. */
 export function valueBreaksMarkupFix(rule: string, spelling: string): string {
   const asText = spelling.replaceAll("<", "&lt;");
-  if (rule === "attribute-quote") {
-    return spelling === "'" ? "Write the ' as &#39;." : 'Write the " as &quot;.';
-  }
+  if (rule === "attribute-apostrophe") return "Write the ' as &#39;.";
+  if (rule === "attribute-quote") return 'Write the " as &quot;.';
   if (rule === "attribute-space" || rule === "attribute-end") {
     return 'Quote the attribute in the module HTML (attr="{{field}}"), or write a space as &#32; and > as &gt;.';
   }
@@ -138,6 +139,7 @@ function ruleSpelling(rule: string): string {
   if (rule === "doctype") return "<!DOCTYPE";
   if (rule === "ends-comment") return "-->";
   if (rule === "attribute-quote") return '"';
+  if (rule === "attribute-apostrophe") return "'";
   if (rule === "attribute-end" || rule === "ends-tag" || rule === "ends-tag-name") return ">";
   if (rule === "unfinished-tag") return "<";
   if (rule.startsWith("end-tag-")) return `</${rule.slice("end-tag-".length)}>`;
