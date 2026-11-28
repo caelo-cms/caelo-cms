@@ -6,13 +6,16 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type {
-  PluginAuditHeading,
-  PluginAuditImage,
-  PluginAuditPageFacts,
-  PluginContextTier1,
+import {
+  indexCheckedQuery,
+  manifestFromDefinition,
+  type PluginAuditHeading,
+  type PluginAuditImage,
+  type PluginAuditPageFacts,
+  type PluginContextTier1,
 } from "@caelo-cms/plugin-sdk";
 import { seoAudit } from "../checks/index.js";
+import seo from "../index.js";
 import { AUDIT_RULES } from "../rule-sets.js";
 import {
   headingFindings,
@@ -282,7 +285,9 @@ describe("through the audit operation", () => {
           throw new Error(`unexpected core call ${op}`);
         },
       },
-      adminQuery: { list: async () => [] },
+      adminQuery: indexCheckedQuery(manifestFromDefinition(seo), "adminSchema", {
+        list: async () => [],
+      }),
     } as unknown as PluginContextTier1;
     const first = await seoAudit(ctx, { pages: [{ pageId: PAGE, path: "/guide" }] }, AUDIT_RULES);
     expect(first.factBatches).toEqual([[PAGE]]);

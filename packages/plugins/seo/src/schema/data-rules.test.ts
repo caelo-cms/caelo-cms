@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import type { PluginAuditPageFacts, PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import {
+  indexCheckedQuery,
+  manifestFromDefinition,
+  type PluginAuditPageFacts,
+  type PluginContextTier1,
+} from "@caelo-cms/plugin-sdk";
+import seo from "../index.js";
 import {
   graphNodes,
   mainNode,
@@ -187,7 +193,8 @@ describe("the structured data rule family", () => {
   const ctxOf = (noindexAuthor: boolean, mapped = true) => {
     const calls: string[] = [];
     const ctx = {
-      adminQuery: {
+      // The host's read rule applies: a read no index drives fails here (#1536).
+      adminQuery: indexCheckedQuery(manifestFromDefinition(seo), "adminSchema", {
         list: async () =>
           mapped
             ? [
@@ -199,7 +206,7 @@ describe("the structured data rule family", () => {
                 },
               ]
             : [],
-      },
+      }),
       cms: {
         call: async (op: string, input: { pageIds?: string[]; paths?: string[] }) => {
           calls.push(op);
