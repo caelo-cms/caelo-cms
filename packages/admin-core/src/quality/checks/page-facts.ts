@@ -262,7 +262,9 @@ export function extractPageFacts(
           const v = attrs[attr];
           if (v !== undefined) addText(v, scope, attr);
         }
-        if (name === "img" && attrs.alt !== undefined) {
+        // An image hidden from assistive technology (aria-hidden on it or
+        // around it) names nothing: screen readers never read its alt.
+        if (name === "img" && attrs.alt !== undefined && !scope.ariaHidden) {
           for (const l of open) l.imageAlt += ` ${attrs.alt}`;
         }
         if (name === "input" && BUTTON_INPUTS.has((attrs.type ?? "").toLowerCase())) {

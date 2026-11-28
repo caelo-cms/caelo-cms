@@ -8,7 +8,7 @@ import {
   pluginAuditFindings,
   pluginManifest,
 } from "@caelo-cms/plugin-sdk";
-import { type SeoAuditRule, seoAudit } from "./checks/index.js";
+import { boundedMessage, type SeoAuditRule, seoAudit } from "./checks/index.js";
 import { type SeoWriteHintRule, seoWriteHints } from "./hints/index.js";
 import seo from "./index.js";
 
@@ -109,6 +109,18 @@ describe("seo audit runner", () => {
     const r = await seoAudit(ctx, { pages: [] }, [long]);
     expect(r.findings[0]?.message).toHaveLength(1000);
     expect(pluginAuditFindings.safeParse(r).success).toBe(true);
+  });
+
+  it("never leaves half of a character in a message (Postgres refuses it in jsonb)", () => {
+    const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    // A cap that falls inside an emoji, and a rule's own cut that split one.
+    const atCap = boundedMessage(`${"x".repeat(998)}😀 tail`);
+    expect(atCap.length).toBeLessThanOrEqual(1000);
+    expect(lone.test(atCap)).toBe(false);
+    const split = boundedMessage(`Quoted: "${"😀".slice(0, 1)}" here.`);
+    expect(lone.test(split)).toBe(false);
+    expect(split).toBe('Quoted: "" here.');
+    expect(boundedMessage("Keeps 😀 whole.")).toBe("Keeps 😀 whole.");
   });
 });
 

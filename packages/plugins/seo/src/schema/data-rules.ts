@@ -7,8 +7,6 @@
  * only (maintainer decision 2026-11-26): what is missing or contradicts
  * the page; recommended properties stay write hints.
  *
- * - `structured-data-invalid`: a JSON-LD block that is no JSON (core
- *   writes valid JSON-LD, so a module's own block).
  * - `structured-data-required`: the page's main node lacks a property its
  *   rich result requires (the type table's `required`).
  * - `overview-empty`: an overview (CollectionPage) whose lists show no
@@ -17,17 +15,27 @@
  *   on the page (Google: markup must match the visible content).
  * - `article-author-missing`: the page type maps authors and this article
  *   names none.
- * - `author-page-incomplete`: a person's page without name, biography,
- *   portrait or a profile link, so its Person says little about who wrote
- *   the articles that name it.
+ * - `author-page-incomplete` (a warning): a person's page without a
+ *   biography, portrait or profile link. A warning because a person's page
+ *   need not be an author's (a team member, a speaker), which this check
+ *   cannot tell from the page alone.
  * - `author-page-noindex`: an article names an author whose page is
  *   noindex, so the author reference leads search engines to a page they
  *   may not show.
  *
+ * Only pages search engines take as themselves are judged: indexable (not
+ * noindex, which also covers the 404 page) and canonical to themselves,
+ * the pages the duplicates check and llms.txt read. A noindex page gets no
+ * live dates from core and its rich result is never shown; a page whose
+ * canonical names another URL has its nodes under that URL and is not the
+ * page search engines index. A broken JSON-LD block is core's finding
+ * (`structured-data/invalid-json`), not this check's.
+ *
  * Main node: the graph node of the type's main schema type whose `@id`
  * is the page's own URL with a fragment (an article's author Persons have
- * their own pages' URLs). A page with a JSON-LD block cut by the facts
- * budget (`omitted`) is not judged: its graph is not all there.
+ * their own pages' URLs). A page whose JSON-LD the facts budget cut
+ * (`omitted`, or `jsonLd` in `truncatedFacts`) is not judged: its graph is
+ * not all there.
  */
 
 import type {
@@ -116,9 +124,58 @@ function present(v: unknown): boolean {
   return true;
 }
 
+/**
+ * A required property another one stands in for (Google's rich result
+ * documentation): a remote job has `jobLocationType: "TELECOMMUTE"` and no
+ * `jobLocation` (schema/entities.ts writes it so).
+ */
+const REQUIRED_ALTERNATIVES: Readonly<Record<string, readonly string[]>> = {
+  jobLocation: ["jobLocationType"],
+};
+
+/** Whether `node` carries `property`, or a property that stands in for it. */
+function hasRequired(node: Node, property: string): boolean {
+  return (
+    present(node[property]) ||
+    (REQUIRED_ALTERNATIVES[property] ?? []).some((alt) => present(node[alt]))
+  );
+}
+
 /** Text as compared with the page: lower case, one space, no punctuation at the ends. */
 function norm(s: string): string {
-  return s.toLowerCase().replace(/\s+/g, " ").trim();
+  return s
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/^[\p{P}\p{S}\s]+|[\p{P}\p{S}\s]+$/gu, "");
+}
+
+/** At most `max` characters of `text`, never half of one (a surrogate pair). */
+function clip(text: string, max: number): string {
+  const chars = Array.from(text);
+  return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : text;
+}
+
+/** Does the page ask to stay out of search (`<meta name="robots">` noindex or none)? */
+function robotsNoindex(f: PluginAuditPageFacts): boolean {
+  return (f.robots ?? "")
+    .toLowerCase()
+    .split(",")
+    .some((d) => d.trim() === "noindex" || d.trim() === "none");
+}
+
+/**
+ * Why the page is not judged, or null when it is: noindex (the facts or the
+ * build's record say so), canonical to another URL, or a graph the facts
+ * budget cut.
+ */
+function notJudged(f: PluginAuditPageFacts, info: PageInfo | undefined): string | null {
+  if (robotsNoindex(f) || info?.noindex) return "noindex";
+  // An external canonical has no site path; a same-site one names a page.
+  if (f.canonical !== null && f.canonical.path !== bare(f.path)) return "canonical elsewhere";
+  if (f.jsonLd.some((b) => b.kind === "omitted") || f.truncatedFacts.includes("jsonLd")) {
+    return "graph cut";
+  }
+  return null;
 }
 
 /** Whether `value` is on the page: in a heading or a visible text run. */
@@ -194,27 +251,16 @@ const MAPPING_FIX = {
   hint: "Map the role that feeds it to a property the page shows (get_schema_mapping lists the roles), then fill the property on the page (update_pages_many).",
 } as const;
 
-/** The findings of one page from its graph alone. */
+/**
+ * The findings of one page from its graph alone, for a page the family
+ * judges ({@link notJudged} is null).
+ */
 export function pageDataFindings(
   f: PluginAuditPageFacts,
   mapping: SchemaMapping,
   spec: SchemaTypeSpec,
 ): PluginAuditFinding[] {
   const out: PluginAuditFinding[] = [];
-  for (const b of f.jsonLd) {
-    if (b.kind !== "invalid") continue;
-    out.push({
-      rule: "structured-data-invalid",
-      severity: "error",
-      pageId: f.pageId,
-      message: `Invalid JSON-LD: ${f.path} carries a JSON-LD block that is no JSON (${b.error.slice(0, 120)}), so search engines read none of it.`,
-      fix: {
-        tool: "update_modules_many",
-        hint: "Remove the module's own <script type=\"application/ld+json\">: core writes the page's structured data from the schema mapping.",
-      },
-    });
-  }
-  if (f.jsonLd.some((b) => b.kind === "omitted")) return out;
   const nodes = graphNodes(f.jsonLd.flatMap((b) => (b.kind === "parsed" ? [b.data] : [])));
   const main = mainNode(nodes, spec.schemaType, f.path);
   if (spec.builder === "collection") {
@@ -244,7 +290,7 @@ export function pageDataFindings(
     }
     return out;
   }
-  const missing = spec.required.filter((p) => !present(main[p]));
+  const missing = spec.required.filter((p) => !hasRequired(main, p));
   if (missing.length > 0) {
     out.push({
       rule: "structured-data-required",
@@ -260,7 +306,7 @@ export function pageDataFindings(
       rule: "structured-data-not-visible",
       severity: "error",
       pageId: f.pageId,
-      message: `Structured data not on the page: the ${spec.schemaType} of ${f.path} says ${spec.builder === "article" ? "headline" : "name"} "${shown.slice(0, 80)}", which the page does not show. Search engines want markup that matches what visitors read.`,
+      message: `Structured data not on the page: the ${spec.schemaType} of ${f.path} says ${spec.builder === "article" ? "headline" : "name"} "${clip(shown, 80)}", which the page does not show. Search engines want markup that matches what visitors read.`,
       fix: {
         tool: spec.builder === "article" ? "update_pages_many" : "set_schema_mappings_many",
         hint:
@@ -300,9 +346,9 @@ export function pageDataFindings(
         words.length > 1 ? `${words.slice(0, -1).join(", ")} or ${words.at(-1)}` : words[0];
       out.push({
         rule: "author-page-incomplete",
-        severity: "error",
+        severity: "warning",
         pageId: f.pageId,
-        message: `Person page incomplete: the Person of ${f.path} has no ${list}, so it says little about who writes the articles that name it. Accept it for a page that is no author's.`,
+        message: `Person page incomplete: the Person of ${f.path} has no ${list}. On an author's page that says little about who writes the articles that name it; a team member's or speaker's page may stay as it is.`,
         fix: MAPPING_FIX,
       });
     }
@@ -325,12 +371,12 @@ export const STRUCTURED_DATA_AUDIT_RULE: SeoAuditRule = {
     const out: PluginAuditFinding[] = [];
     const authorPaths = new Set<string>();
     for (const f of facts) {
-      const pageType = info.get(f.pageId)?.pageType;
-      const mapping = pageType === undefined ? undefined : mappings.get(pageType);
+      const page = info.get(f.pageId);
+      const mapping = page === undefined ? undefined : mappings.get(page.pageType);
       const spec = mapping ? SCHEMA_TYPES[mapping.schemaType] : undefined;
-      if (!mapping || !spec) continue;
+      if (!mapping || !spec || notJudged(f, page) !== null) continue;
       out.push(...pageDataFindings(f, mapping, spec));
-      if (spec.builder !== "article" || f.jsonLd.some((b) => b.kind === "omitted")) continue;
+      if (spec.builder !== "article") continue;
       const nodes = graphNodes(f.jsonLd.flatMap((b) => (b.kind === "parsed" ? [b.data] : [])));
       const main = mainNode(nodes, spec.schemaType, f.path);
       for (const id of main === null ? [] : authorIds(main)) {

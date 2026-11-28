@@ -110,6 +110,21 @@ describe("article rules", () => {
       rules(facts("/blog/x", [article()], { headings: [heading("Why we test")] as never }), blog),
     ).toEqual([]);
   });
+  it("reads a headline past punctuation at its ends (review #6)", () => {
+    const f = facts("/blog/x", [article({ headline: "Why we test?" })], {
+      headings: [heading("Why we test")] as never,
+    });
+    expect(rules(f, blog)).toEqual([]);
+  });
+  it("never quotes half of a character (review #8)", () => {
+    const long = `${"x".repeat(79)}😀😀 end`;
+    const found = pageDataFindings(
+      facts("/blog/x", [article({ headline: long })], { headings: [heading("Other")] as never }),
+      blog,
+      spec(blog),
+    );
+    expect(found[0]?.message).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
   it("finds a headline the page does not show", () => {
     expect(
       rules(facts("/blog/x", [article()], { headings: [heading("Other")] as never }), blog),
@@ -141,6 +156,8 @@ describe("person and overview rules", () => {
     const found = pageDataFindings(f, person, spec(person));
     expect(found.map((x) => x.rule)).toEqual(["author-page-incomplete"]);
     expect(found[0]?.message).toContain("has no biography, portrait or profile link");
+    // A team member's or speaker's page need not be an author's (review #5).
+    expect(found[0]?.severity).toBe("warning");
   });
   it("finds a person without a name as missing a required property", () => {
     const f = facts("/team/ana", [
@@ -169,9 +186,37 @@ describe("person and overview rules", () => {
     ]);
     expect(rules(full, overview)).toEqual([]);
   });
-  it("finds a JSON-LD block that is no JSON, and judges no cut graph", () => {
-    const f = facts("/x", [], {
+  it("takes a remote job's jobLocationType for its jobLocation (review #3)", () => {
+    const job: SchemaMapping = { pageType: "job", schemaType: "JobPosting", roles: {} };
+    const node = (over: Record<string, unknown>) => ({
+      "@type": "JobPosting",
+      "@id": `${URL_}/jobs/dev#job`,
+      title: "Developer",
+      description: "Build things.",
+      datePosted: "2026-11-01",
+      hiringOrganization: { "@id": `${URL_}/#organization` },
+      ...over,
+    });
+    expect(rules(facts("/jobs/dev", [node({ jobLocationType: "TELECOMMUTE" })]), job)).toEqual([]);
+    expect(rules(facts("/jobs/dev", [node({})]), job)).toEqual(["structured-data-required"]);
+  });
+  it("leaves a JSON-LD block that is no JSON to core's check (review #4)", () => {
+    const f = facts(
+      "/topics/tea",
+      [
+        { "@type": "CollectionPage", "@id": `${URL_}/topics/tea#webpage` },
+        {
+          "@type": "ItemList",
+          "@id": `${URL_}/topics/tea#items`,
+          itemListElement: [{ "@type": "ListItem", position: 1, url: `${URL_}/blog/x` }],
+        },
+      ],
+      {},
+    );
+    const withBroken = {
+      ...f,
       jsonLd: [
+        ...f.jsonLd,
         {
           kind: "invalid",
           error: "Unexpected token",
@@ -179,10 +224,9 @@ describe("person and overview rules", () => {
           listItem: null,
           pluginSlug: null,
         },
-        { kind: "omitted", chars: 70000, moduleId: null, listItem: null, pluginSlug: null },
-      ] as never,
-    });
-    expect(rules(f, overview)).toEqual(["structured-data-invalid"]);
+      ],
+    } as unknown as PluginAuditPageFacts;
+    expect(rules(withBroken, overview)).toEqual([]);
   });
 });
 
@@ -254,6 +298,89 @@ describe("the structured data rule family", () => {
       auditRunId: RUN,
     });
     expect(open).toEqual([]);
+  });
+
+  // Pages of the other mapped types, through the family (it decides which
+  // pages are judged).
+  const familyCtx = (
+    rows: { page_type: string; schema_type: string }[],
+    info: Record<string, { pageType: string; noindex?: boolean }>,
+  ) =>
+    ({
+      adminQuery: indexCheckedQuery(manifestFromDefinition(seo), "adminSchema", {
+        list: async () => rows.map((r, i) => ({ id: `m${i}`, roles: {}, ...r })),
+      }),
+      cms: {
+        call: async (op: string, input: { pageIds?: string[] }) => {
+          if (op !== "pages_seo.overview") throw new Error(op);
+          return {
+            pages: (input.pageIds ?? []).flatMap((pageId) => {
+              const i = info[pageId];
+              return i
+                ? [{ pageId, path: "/p", pageType: i.pageType, noindex: i.noindex ?? false }]
+                : [];
+            }),
+            nextCursor: null,
+          };
+        },
+      },
+    }) as unknown as PluginContextTier1;
+  const TOPIC = "00000000-0000-4000-8000-0000000000c1";
+  const emptyTopic = (over: Partial<PluginAuditPageFacts> = {}) =>
+    facts("/topics/tea", [{ "@type": "CollectionPage", "@id": `${URL_}/topics/tea#webpage` }], {
+      pageId: TOPIC,
+      ...over,
+    });
+  const topicCtx = (noindex = false) =>
+    familyCtx([{ page_type: "topic", schema_type: "CollectionPage" }], {
+      [TOPIC]: { pageType: "topic", noindex },
+    });
+  const run = async (ctx: PluginContextTier1, f: PluginAuditPageFacts) =>
+    ((await STRUCTURED_DATA_AUDIT_RULE.facts?.(ctx, { facts: [f], auditRunId: RUN })) ?? []).map(
+      (x) => x.rule,
+    );
+
+  it("judges an indexable empty overview, and none kept out of search (review #1)", async () => {
+    expect(await run(topicCtx(), emptyTopic())).toEqual(["overview-empty"]);
+    // What the overview-empty fix advises: noindex until it lists pages.
+    expect(await run(topicCtx(), emptyTopic({ robots: "noindex, follow" }))).toEqual([]);
+    expect(await run(topicCtx(true), emptyTopic())).toEqual([]);
+  });
+
+  it("judges no noindex JobPosting, which core leaves undated (review #1)", async () => {
+    const JOB = "00000000-0000-4000-8000-0000000000d1";
+    const job = facts(
+      "/jobs/dev",
+      [{ "@type": "JobPosting", "@id": `${URL_}/jobs/dev#job`, title: "Dev", description: "x" }],
+      { pageId: JOB, robots: "noindex" },
+    );
+    const ctx = familyCtx([{ page_type: "job", schema_type: "JobPosting" }], {
+      [JOB]: { pageType: "job" },
+    });
+    expect(await run(ctx, job)).toEqual([]);
+  });
+
+  it("judges no page whose canonical names another URL (review #2)", async () => {
+    const PERSON = "00000000-0000-4000-8000-0000000000e1";
+    // Core writes the page's nodes under its canonical URL.
+    const ana = (canonicalPath: string) =>
+      facts("/team/ana", [{ "@type": "Person", "@id": `${URL_}${canonicalPath}/#person` }], {
+        pageId: PERSON,
+        canonical: { href: `${URL_}${canonicalPath}/`, path: canonicalPath },
+      });
+    const ctx = familyCtx([{ page_type: "author", schema_type: "ProfilePage" }], {
+      [PERSON]: { pageType: "author" },
+    });
+    expect(await run(ctx, ana("/people/ana"))).toEqual([]);
+    // Canonical to itself: judged (here a Person without a name).
+    expect(await run(ctx, ana("/team/ana"))).toEqual([
+      "structured-data-required",
+      "author-page-incomplete",
+    ]);
+  });
+
+  it("judges no graph the facts budget cut (review #7)", async () => {
+    expect(await run(topicCtx(), emptyTopic({ truncatedFacts: ["jsonLd"] as never }))).toEqual([]);
   });
 
   it("judges nothing on a site without a mapping", async () => {

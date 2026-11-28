@@ -522,7 +522,8 @@ describe("#1756 the seo plugin on a blog", () => {
     // the portrait is missing.
     const anna = await findings(ids.anna, "anna", "author", "ProfilePage");
     expect(anna.map((f) => f.rule)).toEqual(["author-page-incomplete"]);
-    expect(anna[0]?.message).toContain("has no portrait,");
+    expect(anna[0]?.message).toContain("has no portrait.");
+    expect(anna[0]?.severity).toBe("warning");
     // Ben's page has no module at all: his name is not on it either.
     expect(await rulesOf(ids.ben, "ben", "author", "ProfilePage")).toEqual([
       "structured-data-not-visible",
