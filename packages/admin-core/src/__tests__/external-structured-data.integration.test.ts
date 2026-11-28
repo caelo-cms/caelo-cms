@@ -290,6 +290,7 @@ function record(pageId: string, title: string): StructuredDataPage {
     publishedAt: new Date().toISOString(),
     properties: {},
     terms: [],
+    propertyTerms: [],
     listed: [],
   };
 }
@@ -412,3 +413,28 @@ it("checks every sitemap entry: no markup, no address of this site, library thum
     ].sort(),
   );
 }, 120_000);
+
+it("asks a sandboxed plugin about pages too large for one message in several calls (Codex on #1797)", async () => {
+  // 45 pages with two 20,000-character properties: about 1.8 MB, more than
+  // one sandbox message, which failed the whole call before.
+  const long = "x".repeat(20_000);
+  const filler = Array.from({ length: 45 }, (_, i) => ({
+    ...record(`f0000000-0000-4000-8000-${String(i).padStart(12, "0")}`, `filler-${i}`),
+    properties: { body: long, summary: long },
+  }));
+  const real = input([page.article, page.news]);
+  const big = { ...real, pages: [...filler, ...real.pages] };
+  const graph = await localBuildPluginServices.collectStructuredData(big, URL_CONTEXT);
+  expect(graph.parts.get(page.article)?.length ?? 0).toBeGreaterThan(0);
+  const entries = await localBuildPluginServices.collectSitemapEntries(big, URL_CONTEXT);
+  expect(entries.news.get(page.news)).toEqual({ title: "Wahl & Folgen" });
+  // A page whose record alone exceeds a message is refused by name, never left out unsaid.
+  const huge = { ...record(page.article, "article"), properties: { body: "y".repeat(1_100_000) } };
+  const one = await localBuildPluginServices.collectStructuredData(
+    { ...input([]), pages: [huge] },
+    URL_CONTEXT,
+  );
+  expect(one.refused.get(page.article)).toEqual([
+    refused("structured-data", "page", "record-too-large"),
+  ]);
+}, 180_000);

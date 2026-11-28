@@ -213,8 +213,13 @@ export const mergeTermsOp = defineOperation({
     const redirected: { pageId: string; to: string }[] = [];
     const patches: { op: "update"; itemId: string; values: Record<string, unknown> }[] = [];
     const deletions: { pageId: string; disposition: "redirect"; redirectTo: string }[] = [];
+    // The kept term's overview page as the merges before it left it: two
+    // merges into one term adopt at most one page, and redirect the rest to it.
+    const keptOf = new Map<string, string | null>();
     for (const m of input.merges) {
-      let kept = landingPageOf(items.get(m.into) as TermItem);
+      let kept = keptOf.has(m.into)
+        ? (keptOf.get(m.into) ?? null)
+        : landingPageOf(items.get(m.into) as TermItem);
       for (const f of m.from) {
         const landing = landingPageOf(items.get(f) as TermItem);
         if (landing === null || landing === kept) continue;
@@ -248,6 +253,7 @@ export const mergeTermsOp = defineOperation({
         deletions.push({ pageId: landing, disposition: "redirect", redirectTo: path });
         redirected.push({ pageId: landing, to: path });
       }
+      keptOf.set(m.into, kept);
     }
     if (deletions.length > 0) {
       const r = await deletePagesManyOp.handler(ctx, { deletions }, tx);

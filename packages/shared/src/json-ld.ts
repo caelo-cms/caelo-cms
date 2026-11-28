@@ -35,6 +35,13 @@ export const JSON_LD_CONTEXT = "https://schema.org";
 export const PLUGIN_STRUCTURED_DATA_POINT = "structured-data";
 
 /**
+ * The rule a page is refused with at the structured-data and the
+ * sitemap-entries points when its record alone (with the pages it names) is
+ * larger than one plugin call may carry (plugin-host `composition-calls.ts`).
+ */
+export const RECORD_TOO_LARGE_RULE = "record-too-large";
+
+/**
  * The placeholder of a `{media}` value until the caller publishes the
  * image: the build through its media pass, the preview through its media
  * URLs. JSON, so it crosses a build's process boundary.

@@ -22,7 +22,12 @@ import type {
   StructuredDataTerm,
 } from "@caelo-cms/plugin-sdk";
 import type { ReadScope } from "@caelo-cms/query-api";
-import { type ExecutionContext, type ListItem, MEDIA_PLACEHOLDER_KEY } from "@caelo-cms/shared";
+import {
+  type ExecutionContext,
+  type ListItem,
+  MEDIA_PLACEHOLDER_KEY,
+  propertyTermRefs,
+} from "@caelo-cms/shared";
 import { loadListEntities } from "../lists/store.js";
 import { listPagesOp } from "../ops/content/pages.js";
 import { loadShareImageUrls } from "./share-image.js";
@@ -35,6 +40,12 @@ export interface PreviewStructuredDataPage {
   readonly shareImage: string | null;
   readonly live: boolean;
   readonly listed: readonly string[];
+}
+
+/** A page's tags and the terms its `term` properties name, by page id. */
+interface PageTerms {
+  readonly tags: Map<string, StructuredDataTerm[]>;
+  readonly props: Map<string, StructuredDataTerm[]>;
 }
 
 /** The plugins' parts of the previewed page, and the preview URLs of the images they name. */
@@ -107,9 +118,12 @@ export async function previewStructuredData(args: {
           if (!r.ok) throw new Error(`structured data: reading pages failed: ${r.error.kind}`);
           return r.value.pages as unknown as PageRow[];
         });
-  const termsOf = async (rows: readonly PageRow[]): Promise<Map<string, StructuredDataTerm[]>> => {
-    const refs = rows.flatMap((r) =>
-      r.terms.flatMap((t) => {
+  // A page's tags and the terms its `term` properties name, resolved alike
+  // with one list read (as the build does).
+  type Ref = { pageId: string; listId: string; itemId: string; prop: boolean };
+  const termsOf = async (rows: readonly PageRow[]): Promise<PageTerms> => {
+    const refs: Ref[] = rows.flatMap((r) => [
+      ...r.terms.flatMap((t) => {
         const m = TERM_REF_RE.exec(t);
         return m
           ? [
@@ -117,27 +131,36 @@ export async function previewStructuredData(args: {
                 pageId: r.id,
                 listId: (m[1] as string).toLowerCase(),
                 itemId: (m[2] as string).toLowerCase(),
+                prop: false,
               },
             ]
           : [];
       }),
-    );
+      ...propertyTermRefs(r.properties).map((t) => ({
+        pageId: r.id,
+        listId: t.listId.toLowerCase(),
+        itemId: t.itemId.toLowerCase(),
+        prop: true,
+      })),
+    ]);
+    const out: PageTerms = { tags: new Map(), props: new Map() };
     const listIds = [...new Set(refs.map((r) => r.listId))];
+    if (listIds.length === 0) return out;
     const lists = await reads.read((tx) =>
       loadListEntities(tx, "list", branchId, { ids: listIds }),
     );
     const items = new Map(
       lists.map((l) => [l.id, { slug: l.state.slug, items: flatten(l.state.items) }]),
     );
-    const out = new Map<string, StructuredDataTerm[]>();
     for (const r of refs) {
       const list = items.get(r.listId);
       const item = list?.items.get(r.itemId);
       if (!list || !item) continue;
       const href = (item.values.landing_page as { href?: unknown } | undefined)?.href;
       const landing = typeof href === "string" ? PAGE_REF_RE.exec(href) : null;
-      out.set(r.pageId, [
-        ...(out.get(r.pageId) ?? []),
+      const into = r.prop ? out.props : out.tags;
+      into.set(r.pageId, [
+        ...(into.get(r.pageId) ?? []),
         {
           vocabulary: list.slug,
           listId: r.listId,
@@ -152,7 +175,7 @@ export async function previewStructuredData(args: {
   };
   const record = (
     r: PageRow,
-    terms: Map<string, StructuredDataTerm[]>,
+    terms: PageTerms,
     own: PreviewStructuredDataPage | null,
   ): StructuredDataPage => ({
     pageId: r.id,
@@ -167,7 +190,8 @@ export async function previewStructuredData(args: {
     live: own?.live ?? false,
     publishedAt: r.firstPublishedAt,
     properties: r.properties,
-    terms: terms.get(r.id) ?? [],
+    terms: terms.tags.get(r.id) ?? [],
+    propertyTerms: terms.props.get(r.id) ?? [],
     listed: own?.listed ?? [],
   });
 

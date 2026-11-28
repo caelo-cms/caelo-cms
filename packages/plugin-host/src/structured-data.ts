@@ -26,12 +26,7 @@
  * and checked exactly like a sandboxed one's.
  */
 
-import {
-  STRUCTURED_DATA_ANSWER_MAX_BYTES,
-  STRUCTURED_DATA_PAGES_PER_CALL,
-  type StructuredDataArgs,
-  type StructuredDataPage,
-} from "@caelo-cms/plugin-sdk";
+import { STRUCTURED_DATA_ANSWER_MAX_BYTES, type StructuredDataArgs } from "@caelo-cms/plugin-sdk";
 import {
   type GraphContribution,
   LIVE_PLACEHOLDER_KEY,
@@ -39,8 +34,10 @@ import {
   PLUGIN_STRUCTURED_DATA_POINT,
   pageNodeId,
   pluginValueRefusedMarker,
+  RECORD_TOO_LARGE_RULE,
   siteNodeId,
 } from "@caelo-cms/shared";
+import { compositionCalls } from "./composition-calls.js";
 import {
   isPluginDisabled,
   loadedPlugins,
@@ -88,61 +85,6 @@ export function hasStructuredDataContributors(): boolean {
   return contributors().length > 0;
 }
 
-const PAGE_REF_RE = /^caelo:page\/([0-9a-f-]{36})$/i;
-
-/** The pages one page names: its `page` properties' targets and its terms' overview pages. */
-function namedPages(page: StructuredDataPage): string[] {
-  const out = new Set<string>();
-  const visit = (v: unknown) => {
-    if (typeof v === "string") {
-      const m = PAGE_REF_RE.exec(v);
-      if (m) out.add((m[1] as string).toLowerCase());
-    } else if (Array.isArray(v)) for (const e of v) visit(e);
-  };
-  for (const value of Object.values(page.properties)) visit(value);
-  for (const t of page.terms) if (t.overviewPageId) out.add(t.overviewPageId.toLowerCase());
-  return [...out];
-}
-
-/** A page record as a related page: no head of its own ({@link StructuredDataArgs.related}). */
-function asRelated(p: StructuredDataPage): StructuredDataPage {
-  return { ...p, lang: "", description: "", shareImage: null, live: false, listed: [] };
-}
-
-/**
- * The arguments of one call: its pages, the pages they name, their page
- * types (the sitemap-entries point asks with the same records).
- */
-export function chunkArgs(
-  input: StructuredDataInput,
-  chunk: readonly StructuredDataPage[],
-): StructuredDataArgs {
-  const wanted = new Set(chunk.flatMap(namedPages));
-  const inChunk = new Set(chunk.map((p) => p.pageId.toLowerCase()));
-  // A named page the caller asks about in another chunk (an author in the
-  // same build batch) is not in `input.related`: hand it over from `pages`,
-  // without its head, as every related record (the preview's view).
-  const fromPages = input.pages
-    .filter((p) => !inChunk.has(p.pageId.toLowerCase()) && wanted.has(p.pageId.toLowerCase()))
-    .map(asRelated);
-  const known = new Set(fromPages.map((p) => p.pageId.toLowerCase()));
-  const related = [
-    ...input.related.filter(
-      (r) => wanted.has(r.pageId.toLowerCase()) && !known.has(r.pageId.toLowerCase()),
-    ),
-    ...fromPages,
-  ];
-  const types = new Set([...chunk, ...related].map((p) => p.pageType));
-  return {
-    pages: chunk,
-    related,
-    pageTypes: Object.fromEntries(
-      Object.entries(input.pageTypes).filter(([slug]) => types.has(slug)),
-    ),
-    site: input.site,
-  };
-}
-
 /**
  * Collect + check every plugin's structured data for the given pages.
  * Loud (no fallbacks): a failing call throws in a build and is flagged in a
@@ -170,17 +112,22 @@ export async function collectStructuredData(
   // Every plugin's checked answers first, so the pages and media they name
   // are resolved once for the whole pass.
   const answers: { slug: string; pages: ReadonlyMap<string, CheckedPageAnswer> }[] = [];
+  // Calls by count and by wire size (composition-calls.ts); a page too large
+  // for any call is refused for every plugin, never left out unsaid.
+  const { calls, oversized } = compositionCalls(input);
   for (const lp of plugins) {
     const operationName = lp.definition.structuredDataOperation as string;
     const label = `structured-data: ${lp.slug}.${operationName}`;
-    for (let at = 0; at < input.pages.length; at += STRUCTURED_DATA_PAGES_PER_CALL) {
-      const chunk = input.pages.slice(at, at + STRUCTURED_DATA_PAGES_PER_CALL);
-      const asked = new Set(chunk.map((p) => p.pageId));
+    for (const page of oversized) {
+      refuse(lp.slug, { pageId: page.pageId, field: "page", rule: RECORD_TOO_LARGE_RULE });
+    }
+    for (const call of calls) {
+      const asked = new Set(call.pages.map((p) => p.pageId));
       const r = await runPluginOperation({
         invocation: renderInvocation(opts),
         pluginSlug: lp.slug,
         operationName,
-        args: chunkArgs(input, chunk),
+        args: call.args,
         maxAnswerBytes: STRUCTURED_DATA_ANSWER_MAX_BYTES,
       });
       const tooLarge = r.ok

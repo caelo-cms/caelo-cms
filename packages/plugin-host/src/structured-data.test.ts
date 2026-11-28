@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import type { StructuredDataArgs, StructuredDataPage } from "@caelo-cms/plugin-sdk";
-import { chunkArgs } from "./structured-data.js";
+import { chunkArgs } from "./composition-calls.js";
 
 const ARTICLE = "11111111-1111-4111-8111-111111111111";
 const ANNA = "22222222-2222-4222-8222-222222222222";
@@ -24,6 +24,7 @@ function page(pageId: string, over: Partial<StructuredDataPage> = {}): Structure
     publishedAt: "2026-01-01T00:00:00.000Z",
     properties: {},
     terms: [],
+    propertyTerms: [],
     listed: [],
     ...over,
   };

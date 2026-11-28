@@ -393,4 +393,72 @@ describe("#1759 lists.merge_terms", () => {
     expect(r2.removedTerms).toBe(2);
     expect(await shape(two)).toEqual([{ K1: ["B"] }, "K2"]);
   });
+
+  it("adopts one overview page when two merges keep the same term, and redirects the other to it (Codex on #1797)", async () => {
+    const slug = `${PFX}-same-into`;
+    await op(SYS, "lists.upsert_many", {
+      lists: [
+        {
+          slug,
+          name: slug,
+          purpose: "Terms merged twice into one",
+          type: "categories",
+          items: [
+            { node: "category", values: { name: "Kept", slug: "kept" } },
+            { node: "category", values: { name: "First", slug: "first" } },
+            { node: "category", values: { name: "Second", slug: "second" } },
+          ],
+        },
+      ],
+    });
+    const [kept, first, second] = (
+      await op<{ list: { items: ListItem[] } }>(SYS, "lists.get", { slug })
+    ).list.items as [ListItem, ListItem, ListItem];
+    const firstPage = await page("topic-first", `${PFX}-topic`);
+    const secondPage = await page("topic-second", `${PFX}-topic`);
+    await op(SYS, "lists.patch_items_many", {
+      lists: [
+        {
+          slug,
+          patches: [
+            {
+              op: "update",
+              itemId: first.id,
+              values: { landing_page: { href: `caelo:page/${firstPage}` } },
+            },
+            {
+              op: "update",
+              itemId: second.id,
+              values: { landing_page: { href: `caelo:page/${secondPage}` } },
+            },
+          ],
+        },
+      ],
+    });
+
+    const r = await op<{
+      adoptedOverviewPages: string[];
+      redirectedOverviewPages: { pageId: string; to: string }[];
+    }>(SYS, "lists.merge_terms", {
+      list: slug,
+      merges: [
+        { from: [first.id], into: kept.id },
+        { from: [second.id], into: kept.id },
+      ],
+    });
+    expect(r.adoptedOverviewPages).toEqual([firstPage]);
+    expect(r.redirectedOverviewPages).toEqual([{ pageId: secondPage, to: `/${PFX}-topic-first` }]);
+    const after = (await op<{ list: { items: ListItem[] } }>(SYS, "lists.get", { slug })).list;
+    expect(after.items.map((i) => i.values.name)).toEqual(["Kept"]);
+    expect((after.items[0]?.values.landing_page as { href: string } | undefined)?.href).toBe(
+      `/${PFX}-topic-first`,
+    );
+    const redirects = await asSystem(
+      (tx) =>
+        tx`SELECT from_path, to_path FROM pending_redirects WHERE from_path = ${`/${PFX}-topic-second`}`,
+    );
+    expect(redirects).toEqual([
+      { from_path: `/${PFX}-topic-second`, to_path: `/${PFX}-topic-first` },
+    ]);
+  });
 });

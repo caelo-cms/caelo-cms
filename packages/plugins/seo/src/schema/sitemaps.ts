@@ -15,10 +15,12 @@
  * Core writes the files, only for the pages `sitemap.xml` lists.
  */
 
-import type {
-  SitemapEntriesAnswer,
-  SitemapPageEntries,
-  SitemapVideoEntry,
+import {
+  SITEMAP_DESCRIPTION_MAX,
+  SITEMAP_TITLE_MAX,
+  type SitemapEntriesAnswer,
+  type SitemapPageEntries,
+  type SitemapVideoEntry,
 } from "@caelo-cms/plugin-sdk";
 import { type NodeContext, roleValues } from "./values.js";
 
@@ -26,6 +28,22 @@ import { type NodeContext, roleValues } from "./values.js";
 export const NEWS_WINDOW_HOURS = 48;
 
 const DURATION_RE = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/;
+
+/**
+ * `text` within `max` UTF-16 units (the host's measure): unchanged when it
+ * fits, else cut at a character boundary (never inside a surrogate pair)
+ * and ended with an ellipsis. The graph keeps the full text; a sitemap's
+ * title and description have a limit of their own.
+ */
+export function boundedText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let out = "";
+  for (const ch of text) {
+    if (out.length + ch.length > max - 1) break;
+    out += ch;
+  }
+  return `${out.trimEnd()}…`;
+}
 
 /** Whole seconds of a `PT…` duration, or undefined for anything else (days included). */
 export function durationSeconds(iso: string): number | undefined {
@@ -48,7 +66,7 @@ export function sitemapEntriesAnswer(ctx: NodeContext, now: Date): SitemapEntrie
     if (mapping.schemaType === "NewsArticle" && page.publishedAt !== null) {
       const age = now.getTime() - Date.parse(page.publishedAt);
       if (age >= 0 && age <= NEWS_WINDOW_HOURS * 3_600_000) {
-        pages[page.pageId] = { news: { title: page.title } };
+        pages[page.pageId] = { news: { title: boundedText(page.title, SITEMAP_TITLE_MAX) } };
       }
     }
     if (mapping.schemaType === "VideoObject") {
@@ -68,8 +86,8 @@ export function sitemapEntriesAnswer(ctx: NodeContext, now: Date): SitemapEntrie
         continue;
       }
       const video: { -readonly [K in keyof SitemapVideoEntry]: SitemapVideoEntry[K] } = {
-        title,
-        description,
+        title: boundedText(title, SITEMAP_TITLE_MAX),
+        description: boundedText(description, SITEMAP_DESCRIPTION_MAX),
         thumbnail: { media: thumbnail.media },
       };
       if (typeof content === "object" && "url" in content) video.contentUrl = { url: content.url };

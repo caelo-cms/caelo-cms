@@ -532,6 +532,18 @@ describe("structured data and news / video sitemap entries a plugin added (#1753
     expect(page.hint.length).toBeLessThan(500);
   });
 
+  it("sends a page too large to ask a plugin about to its own properties", () => {
+    for (const point of ["structured-data", "sitemap-entries"]) {
+      const r = renderRepairOf({
+        reason: `plugin-value-refused:seo.${point}.page:record-too-large`,
+        moduleSlug: null,
+      });
+      expect(r.tool).toBe("update_pages_many");
+      expect(r.hint).toContain("more than one plugin call carries");
+      expect(r.hint.length).toBeLessThan(500);
+    }
+  });
+
   it("sends a news entry without the site name to the site identity", () => {
     const r = renderRepairOf({
       reason: "plugin-value-refused:seo.sitemap-entries.news:site-name-unset",

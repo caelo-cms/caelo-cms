@@ -127,8 +127,9 @@ export function valuesOf(
       const names: string[] = [];
       for (const ref of refs) {
         const m = typeof ref === "string" ? TERM_REF_RE.exec(ref) : null;
+        // The terms the page's properties name, not its tags: the two are independent.
         const term = m
-          ? page.terms.find(
+          ? page.propertyTerms.find(
               (t) =>
                 t.listId.toLowerCase() === (m[1] as string).toLowerCase() &&
                 t.itemId.toLowerCase() === (m[2] as string).toLowerCase(),

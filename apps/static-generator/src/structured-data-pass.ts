@@ -36,6 +36,7 @@ import {
   MEDIA_PLACEHOLDER_KEY,
   type NewsSitemapEntry,
   type PageUrlStyle,
+  propertyTermRefs,
   renderNewsSitemap,
   renderVideoSitemap,
   type VideoSitemapEntry,
@@ -116,19 +117,34 @@ interface ListItemRow {
   readonly children?: readonly ListItemRow[];
 }
 
-/** The terms of these pages, with their vocabulary's slug and each term's overview page. */
-async function termsOf(
-  tx: TransactionRunner,
-  pageIds: readonly string[],
-): Promise<Map<string, StructuredDataTerm[]>> {
-  const out = new Map<string, StructuredDataTerm[]>();
-  if (pageIds.length === 0) return out;
-  const rows = (await tx.execute(sql`
+/** A page's tags and the terms its `term` properties name, resolved alike. */
+interface PageTerms {
+  readonly tags: Map<string, StructuredDataTerm[]>;
+  readonly props: Map<string, StructuredDataTerm[]>;
+}
+
+/**
+ * The terms of these pages, as the records carry them: the tags from
+ * `page_terms`, and the terms their `term` properties name (#1753; an
+ * author's expertise need not be how the page is filed). One list read for
+ * both.
+ */
+async function termsOf(tx: TransactionRunner, rows: readonly RecordRow[]): Promise<PageTerms> {
+  const out: PageTerms = { tags: new Map(), props: new Map() };
+  if (rows.length === 0) return out;
+  const tagRows = (await tx.execute(sql`
     SELECT t.page_id::text AS page_id, t.list_id::text AS list_id, t.item_id::text AS item_id
-      FROM page_terms t WHERE t.page_id IN ${jsonIds(pageIds)}
+      FROM page_terms t WHERE t.page_id IN ${jsonIds(rows.map((r) => r.id))}
      ORDER BY t.created_at, t.list_id, t.item_id
   `)) as unknown as { page_id: string; list_id: string; item_id: string }[];
-  const listIds = [...new Set(rows.map((r) => r.list_id))];
+  const propRows = rows.flatMap((r) =>
+    propertyTermRefs((parse(r.properties) as Record<string, unknown>) ?? {}).map((t) => ({
+      page_id: r.id,
+      list_id: t.listId,
+      item_id: t.itemId,
+    })),
+  );
+  const listIds = [...new Set([...tagRows, ...propRows].map((r) => r.list_id))];
   if (listIds.length === 0) return out;
   const lists = (await tx.execute(sql`
     SELECT id::text AS id, slug, items FROM lists
@@ -142,13 +158,17 @@ async function termsOf(
     }
   };
   for (const l of lists) flatten(l.id, l.slug, (parse(l.items) as ListItemRow[]) ?? []);
-  for (const r of rows) {
+  const add = (
+    into: Map<string, StructuredDataTerm[]>,
+    r: { page_id: string; list_id: string; item_id: string },
+  ) => {
+    // A term whose list or entry is gone names nothing (the references check reports it).
     const found = items.get(`${r.list_id}/${r.item_id}`);
-    if (!found) continue;
+    if (!found) return;
     const values = found.item.values ?? {};
     const href = (values.landing_page as { href?: unknown } | undefined)?.href;
     const landing = typeof href === "string" ? PAGE_REF_RE.exec(href) : null;
-    const list = out.get(r.page_id) ?? [];
+    const list = into.get(r.page_id) ?? [];
     list.push({
       vocabulary: found.slug,
       listId: r.list_id,
@@ -157,8 +177,10 @@ async function termsOf(
       slug: typeof values.slug === "string" ? values.slug : "",
       overviewPageId: landing ? (landing[1] as string).toLowerCase() : null,
     });
-    out.set(r.page_id, list);
-  }
+    into.set(r.page_id, list);
+  };
+  for (const r of tagRows) add(out.tags, r);
+  for (const r of propRows) add(out.props, r);
   return out;
 }
 
@@ -237,14 +259,13 @@ export async function prepareStructuredDataPass(args: {
   return {
     async forBatch(batch) {
       const ids = batch.map((p) => p.pageId);
-      const [rows, terms] = await Promise.all([
-        recordRows(args.tx, ids, false),
-        termsOf(args.tx, ids),
-      ]);
+      const rows = await recordRows(args.tx, ids, false);
+      const terms = await termsOf(args.tx, rows);
       const byId = new Map(batch.map((p) => [p.pageId, p]));
       const toRecord = (
         r: RecordRow,
         own: StructuredDataBatchPage | undefined,
+        t: PageTerms,
       ): StructuredDataPage => ({
         pageId: r.id,
         pageType: r.page_type,
@@ -264,22 +285,17 @@ export async function prepareStructuredDataPass(args: {
               ? args.publishAt
               : null,
         properties: (parse(r.properties) as Record<string, unknown>) ?? {},
-        terms: terms.get(r.id) ?? [],
+        terms: t.tags.get(r.id) ?? [],
+        propertyTerms: t.props.get(r.id) ?? [],
         listed: own?.listed ?? [],
       });
-      const pages = rows.map((r) => toRecord(r, byId.get(r.id)));
+      const pages = rows.map((r) => toRecord(r, byId.get(r.id), terms));
       const relatedIds = [
         ...new Set(pages.flatMap((p) => namedPageIds(p.properties, p.terms))),
       ].filter((id) => !byId.has(id));
       const relatedRows = await recordRows(args.tx, relatedIds, true);
-      const relatedTerms = await termsOf(
-        args.tx,
-        relatedRows.map((r) => r.id),
-      );
-      const related = relatedRows.map((r) => ({
-        ...toRecord(r, undefined),
-        terms: relatedTerms.get(r.id) ?? [],
-      }));
+      const relatedTerms = await termsOf(args.tx, relatedRows);
+      const related = relatedRows.map((r) => toRecord(r, undefined, relatedTerms));
       const input: StructuredDataArgs = {
         pages,
         related,

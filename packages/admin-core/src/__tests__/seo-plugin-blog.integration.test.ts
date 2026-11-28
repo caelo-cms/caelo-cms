@@ -191,12 +191,26 @@ beforeAll(async () => {
         type: "tags",
         items: [{ node: "tag", values: { name: "SEO", slug: "seo" } }],
       },
+      {
+        // What an author knows about: a term property, not how the page is filed.
+        slug: `${PFX}-skills`,
+        name: "Skills",
+        purpose: "Subjects an author knows about",
+        type: "tags",
+        items: [{ node: "tag", values: { name: "Crawling", slug: "crawling" } }],
+      },
     ],
   });
   const list = (
     await run<{ list: { id: string; items: { id: string }[] } }>("lists.get", { slug: tagList })
   ).list;
   tags = { id: list.id, seo: list.items[0]?.id ?? "" };
+  const skills = (
+    await run<{ list: { id: string; items: { id: string }[] } }>("lists.get", {
+      slug: `${PFX}-skills`,
+    })
+  ).list;
+  const crawling = `caelo:term/${skills.id}/${skills.items[0]?.id ?? ""}`;
 
   await templateFor("author", {
     slug: `${PFX}-author`,
@@ -207,6 +221,13 @@ beforeAll(async () => {
       { name: "role", label: "Role", type: "text" },
       { name: "bio", label: "Bio", type: "richtext" },
       { name: "linkedin", label: "LinkedIn", type: "link" },
+      {
+        name: "expertise",
+        label: "Expertise",
+        type: "term",
+        list: `${PFX}-skills`,
+        multiple: true,
+      },
     ],
     vocabularies: [],
   });
@@ -243,6 +264,7 @@ beforeAll(async () => {
       role: "Head of SEO",
       bio: "<p>Anna has worked on <strong>search</strong> since 2010.</p>",
       linkedin: { href: "https://www.linkedin.com/in/anna-berg" },
+      expertise: [crawling],
     },
   });
   ids.ben = await page("ben", "Ben Okafor", "author", { properties: { role: "Editor" } });
@@ -380,6 +402,7 @@ beforeAll(async () => {
           bio: "prop:bio",
           same_as: ["prop:linkedin"],
           works_for: "organization",
+          knows_about: "prop:expertise",
         },
       },
       { pageType: `${PFX}-topic`, schemaType: "CollectionPage" },
@@ -453,6 +476,8 @@ describe("#1756 the seo plugin on a blog", () => {
       description: "Anna has worked on search since 2010.",
       sameAs: "https://www.linkedin.com/in/anna-berg",
       worksFor: { "@id": `${BASE}/#organization` },
+      // From the expertise property's term; the page is not tagged with it.
+      knowsAbout: "Crawling",
     });
     expect(html).toContain(`<a href="/${PFX}-graph/">One graph per page</a>`);
   });

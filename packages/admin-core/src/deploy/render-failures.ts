@@ -51,6 +51,7 @@ import {
   parsePagePathUnknown,
   parsePluginValueRefused,
   parseSeoTitleVariableMarker,
+  RECORD_TOO_LARGE_RULE,
   renderFailureKind,
   renderFailureMarker,
   replacementMediaUrls,
@@ -356,6 +357,20 @@ export function pluginValueRefusedHint(body: string, mod = "a module on this pag
       "Set another with the plugin's tool (get_plugin lists them), or give the page its own image with set_page_seo_many (ogImageAssetId from find_media). Tell the operator."
     );
   }
+  // #1753, #1761 — the page's own record is too large to ask any plugin about.
+  if (
+    rule === RECORD_TOO_LARGE_RULE &&
+    (source === PLUGIN_STRUCTURED_DATA_POINT || source === PLUGIN_SITEMAP_ENTRIES_POINT)
+  ) {
+    const what =
+      source === PLUGIN_STRUCTURED_DATA_POINT
+        ? "its structured data"
+        : "its news or video sitemap entry";
+    return (
+      `The page's data (its properties and the pages they name) is more than one plugin call carries (about 1 MB), so the plugin "${plugin}" was not asked about it and ${what} is missing. ` +
+      "Shorten its longest property values (update_pages_many). Tell the operator."
+    );
+  }
   // #1753 — the page's JSON-LD graph: typed nodes, never free JSON.
   if (source === PLUGIN_STRUCTURED_DATA_POINT) {
     const refs = /^(ref-unknown|ref-dangling|id-taken|id-reserved)$/.test(rule)
@@ -515,7 +530,9 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
       const tool =
         source === PLUGIN_SITEMAP_ENTRIES_POINT && rule === "site-name-unset"
           ? "set_site_identity"
-          : "get_plugin";
+          : rule === RECORD_TOO_LARGE_RULE
+            ? "update_pages_many"
+            : "get_plugin";
       return { tool, hint: pluginValueRefusedHint(path, mod) };
     }
     default:

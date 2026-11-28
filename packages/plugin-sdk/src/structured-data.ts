@@ -235,7 +235,14 @@ export interface StructuredDataPage {
    * `link` as `{href}`, a `date` as `YYYY-MM-DD`.
    */
   readonly properties: Readonly<Record<string, unknown>>;
+  /** The page's tags: the terms it is filed under (its vocabularies). */
   readonly terms: readonly StructuredDataTerm[];
+  /**
+   * The terms its `term` properties name (`caelo:term/<list>/<item>` in
+   * `properties`), resolved like `terms`. Independent of the tags: an
+   * author's expertise property need not be how the page is filed.
+   */
+  readonly propertyTerms: readonly StructuredDataTerm[];
   /**
    * The pages the page's lists show, in the order shown (an overview's
    * current page of results, an author page's articles): what an ItemList

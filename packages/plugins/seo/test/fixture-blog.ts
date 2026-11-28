@@ -31,6 +31,7 @@ const base = {
   live: true,
   publishedAt: "2026-11-01T09:00:00.000Z",
   terms: [],
+  propertyTerms: [],
   listed: [],
 } as const;
 

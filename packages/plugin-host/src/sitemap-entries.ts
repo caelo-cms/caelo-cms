@@ -24,9 +24,13 @@ import {
   SITEMAP_DESCRIPTION_MAX,
   SITEMAP_TITLE_MAX,
   SITEMAP_VIDEOS_PER_PAGE,
-  STRUCTURED_DATA_PAGES_PER_CALL,
 } from "@caelo-cms/plugin-sdk";
-import { PLUGIN_SITEMAP_ENTRIES_POINT, pluginValueRefusedMarker } from "@caelo-cms/shared";
+import {
+  PLUGIN_SITEMAP_ENTRIES_POINT,
+  pluginValueRefusedMarker,
+  RECORD_TOO_LARGE_RULE,
+} from "@caelo-cms/shared";
+import { compositionCalls } from "./composition-calls.js";
 import {
   isPluginDisabled,
   loadedPlugins,
@@ -37,7 +41,7 @@ import {
 import { checkPluginMedia, describePluginMedia } from "./plugin-values.js";
 import type { PublicUrlContext } from "./public-urls.js";
 import { reportPluginRenderFailure } from "./render-failures.js";
-import { chunkArgs, type StructuredDataInput } from "./structured-data.js";
+import type { StructuredDataInput } from "./structured-data.js";
 
 /** One video entry core writes; `thumbnail` is the library image's id. */
 export interface ResolvedVideoEntry {
@@ -175,17 +179,19 @@ export async function collectSitemapEntries(
   };
   const thumbnails: { slug: string; pageId: string; video: ResolvedVideoEntry }[] = [];
 
+  // The structured-data point's calls: the same records, the same budget.
+  const { calls, oversized } = compositionCalls(input);
   for (const lp of plugins) {
     const operationName = lp.definition.sitemapEntriesOperation as string;
     const label = `sitemap-entries: ${lp.slug}.${operationName}`;
-    for (let at = 0; at < input.pages.length; at += STRUCTURED_DATA_PAGES_PER_CALL) {
-      const chunk = input.pages.slice(at, at + STRUCTURED_DATA_PAGES_PER_CALL);
-      const asked = new Set(chunk.map((p) => p.pageId));
+    for (const page of oversized) refuse(lp.slug, page.pageId, "page", RECORD_TOO_LARGE_RULE);
+    for (const call of calls) {
+      const asked = new Set(call.pages.map((p) => p.pageId));
       const r = await runPluginOperation({
         invocation: renderInvocation(opts),
         pluginSlug: lp.slug,
         operationName,
-        args: chunkArgs(input, chunk),
+        args: call.args,
         maxAnswerBytes: SITEMAP_ANSWER_MAX_BYTES,
       });
       const tooLarge = r.ok

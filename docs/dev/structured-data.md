@@ -21,9 +21,9 @@ A page outside the live record (a draft in the preview, a noindex page) carries 
 
 ## The `structured_data` composition point
 
-A plugin with the `structured_data` capability names a `structuredDataOperation` (an installed plugin answers through the reserved entry `$structuredData`). Core asks it in calls of at most 50 pages with `StructuredDataArgs` (plugin SDK `structured-data.ts`):
+A plugin with the `structured_data` capability names a `structuredDataOperation` (an installed plugin answers through the reserved entry `$structuredData`). Core asks it in calls of at most 50 pages and at most one sandbox message of arguments (`SANDBOX_MESSAGE_BYTES` less 64 KiB for the envelope; `packages/plugin-host/src/composition-calls.ts`, the same calls for every plugin) with `StructuredDataArgs` (plugin SDK `structured-data.ts`). A page whose record alone, with the pages it names, is larger than that is refused for every plugin as `record-too-large`, a render failure that names it:
 
-- `pages`: per page its type, path, language, title, short title, meta description, share image, properties as stored, terms (with each term's overview page), `listed` (the pages its lists show, in order), whether it has live dates and when it went live first;
+- `pages`: per page its type, path, language, title, short title, meta description, share image, properties as stored, terms (its tags, with each term's overview page), `propertyTerms` (the terms its `term` properties name, resolved the same way, independent of the tags), `listed` (the pages its lists show, in order), whether it has live dates and when it went live first;
 - `related`: the pages they name through `page` properties and their terms' overview pages, one level deep (an article's authors);
 - `pageTypes`: the property definitions of all of them;
 - `site`: whether the Organization node exists, the site name.
@@ -42,7 +42,7 @@ The plugin maps each page type to a schema type and its roles to the page's own 
 
 ## The `sitemap_entries` composition point (#1761)
 
-Plugins own no routes and write no files. With the `sitemap_entries` capability a plugin names a `sitemapEntriesOperation` (`$sitemapEntries`), asked with the same page records, and answers `{pages: {<pageId>: {news?: {title}, videos?: [...]}}}` (plugin SDK `sitemap-entries.ts`). Core writes `sitemap-news.xml` and `sitemap-video.xml` (`packages/shared/src/sitemap-extras.ts`) from the entries of the pages `sitemap.xml` lists, and robots.txt names them next to `sitemap.xml`. The `seo` plugin lists NewsArticle pages that went live in the last 48 hours and VideoObject pages with thumbnail, description and the player on the video host. News entries need the site name (`<news:name>`); without it the host refuses them as a render failure that names the setting. `seo-plugin-topics-sitemaps.integration.test.ts` builds both files and robots.txt on a real Postgres.
+Plugins own no routes and write no files. With the `sitemap_entries` capability a plugin names a `sitemapEntriesOperation` (`$sitemapEntries`), asked with the same page records, and answers `{pages: {<pageId>: {news?: {title}, videos?: [...]}}}` (plugin SDK `sitemap-entries.ts`). Core writes `sitemap-news.xml` and `sitemap-video.xml` (`packages/shared/src/sitemap-extras.ts`) from the entries of the pages `sitemap.xml` lists, and robots.txt names them next to `sitemap.xml`. The `seo` plugin lists NewsArticle pages that went live in the last 48 hours (a page the build takes live first counts from the build's publication time) and VideoObject pages with thumbnail, description and the player on the video host; a title or description longer than the sitemap's limits (300 and 2,048 characters) is cut on a character boundary and ends with an ellipsis, while the graph keeps the full text. News entries need the site name (`<news:name>`); without it the host refuses them as a render failure that names the setting. `seo-plugin-topics-sitemaps.integration.test.ts` builds both files and robots.txt on a real Postgres.
 
 ## Topic pages and links (#1759)
 

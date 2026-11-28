@@ -121,6 +121,48 @@ describe("seo structured data on a blog (#1756)", () => {
     expect(props?.publisher).toBeUndefined();
   });
 
+  it("reads a term property from the terms it names, not from the page's tags (Codex on #1797)", () => {
+    const LIST = "e0000000-0000-4000-8000-000000000001";
+    const CRAWLING = "e0000000-0000-4000-8000-000000000002";
+    const expert: typeof anna = {
+      ...anna,
+      properties: { ...anna.properties, expertise: [`caelo:term/${LIST}/${CRAWLING}`] },
+      terms: [],
+      propertyTerms: [
+        {
+          vocabulary: "skills",
+          listId: LIST,
+          itemId: CRAWLING,
+          name: "Crawling",
+          slug: "crawling",
+          overviewPageId: null,
+        },
+      ],
+    };
+    const author = mappings.get("author");
+    if (!author) throw new Error("fixture lacks the author mapping");
+    const withExpertise = new Map(mappings).set("author", {
+      ...author,
+      roles: { ...author.roles, knows_about: "prop:expertise" },
+    });
+    const args = {
+      ...argsFor([expert]),
+      pageTypes: {
+        ...pageTypes,
+        author: {
+          properties: [
+            ...(pageTypes.author?.properties ?? []),
+            { name: "expertise", type: "term", multiple: true },
+          ],
+        },
+      },
+    };
+    const person = structuredDataAnswer({ args, mappings: withExpertise }).pages[
+      IDS.anna
+    ]?.nodes?.find((n) => n.type === "Person");
+    expect(person?.properties?.knowsAbout).toBe("Crawling");
+  });
+
   it("reads richtext as plain text", () => {
     expect(plainText("<p>A &lt;b&gt; tag &amp; <em>more</em></p>\n<p>x</p>")).toBe(
       "A <b> tag & more x",
