@@ -118,6 +118,10 @@ CREATE TABLE IF NOT EXISTS job_pieces (
   state        text NOT NULL CHECK (state IN ('open', 'claimed', 'done')),
   claimed_by   text NULL CHECK (char_length(claimed_by) <= 80),
   claim_until  timestamptz NULL,
+  -- The attempt whose lead registered the scope last: a new attempt's
+  -- registration opens the claims of the tasks before it, a registration
+  -- sent again in the same attempt leaves its helpers' claims alone.
+  attempt      integer NOT NULL DEFAULT 1 CHECK (attempt BETWEEN 1 AND 20),
   PRIMARY KEY (kind, subject_id, scope, piece),
   CONSTRAINT job_pieces_claim CHECK ((state = 'claimed') = (claim_until IS NOT NULL))
 );

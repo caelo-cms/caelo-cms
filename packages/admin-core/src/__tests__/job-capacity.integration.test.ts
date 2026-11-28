@@ -245,7 +245,7 @@ describe("job_capacity.admit", () => {
       count: 40,
       done: [],
       wantedTasks: 32,
-      resetClaims: true,
+      attempt: 1,
     });
     const r = await op<{
       helpers: { bookingId: string; tasks: number; token: string; attempt: number }[];
@@ -288,7 +288,7 @@ describe("a work's attempts and end", () => {
       count: 10,
       done: [3],
       wantedTasks: 4,
-      resetClaims: true,
+      attempt: 1,
     });
     await op("job_capacity.admit", {});
     expect((await bookings())[0]?.tasks).toBe(4);
@@ -330,7 +330,7 @@ describe("a work's attempts and end", () => {
       count: 4,
       done: [],
       wantedTasks: 4,
-      resetClaims: true,
+      attempt: 1,
     });
     await asSystem(
       (tx) =>
@@ -444,7 +444,7 @@ describe("job_pieces", () => {
       count: 3,
       done: [1],
       wantedTasks: 2,
-      resetClaims: true,
+      attempt: 1,
     });
     const got = await Promise.all([claim(s, "lead"), claim(s, "lead")]);
     expect(got.map((g) => g.piece).sort()).toEqual([0, 2]);
@@ -463,11 +463,11 @@ describe("job_pieces", () => {
     });
   });
 
-  it("a new lead's registration opens the claims of the attempt before", async () => {
+  it("a new attempt's registration opens the claims before it; the same one sent again does not", async () => {
     await budget(20);
     const s = crypto.randomUUID();
     await index(s);
-    const register = () =>
+    const register = (attempt: number) =>
       op("job_pieces.register", {
         kind: "collection_index",
         subjectId: s,
@@ -475,13 +475,17 @@ describe("job_pieces", () => {
         count: 2,
         done: [],
         wantedTasks: 1,
-        resetClaims: true,
+        attempt,
       });
-    await register();
+    await register(1);
     await claim(s, "lead");
     await claim(s, "lead");
     expect(await claim(s, "lead")).toEqual({ wait: true });
-    await register();
+    // The lead's report sent again after its answer was lost: helpers keep their pieces.
+    await register(1);
+    expect(await claim(s, "lead")).toEqual({ wait: true });
+    // The next attempt's lead: the claims of the tasks before are open again.
+    await register(2);
     expect(await claim(s, "lead")).toMatchObject({ piece: 0 });
   });
 
@@ -497,7 +501,7 @@ describe("job_pieces", () => {
       count: 40,
       done: [],
       wantedTasks: 32,
-      resetClaims: true,
+      attempt: 1,
     });
     const { helpers } = await op<{ helpers: { bookingId: string }[] }>("job_capacity.admit", {});
     const helperId = (helpers[0] as { bookingId: string }).bookingId;

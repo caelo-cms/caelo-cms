@@ -264,7 +264,7 @@ export const pluginBatchJobKind: ReportingJobKindDef = {
           done: [],
           keys: input.keys,
           wantedTasks: Math.min(batch.pieces?.maxTasks ?? 1, input.keys.length),
-          resetClaims: true,
+          attempt: request.attempt,
         });
         return { value, readmit: true };
       },

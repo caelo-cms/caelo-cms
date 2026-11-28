@@ -202,7 +202,7 @@ export const collectionIndexJobKind: ReportingJobKindDef = {
           count: input.count,
           done: input.done,
           wantedTasks: input.wantedTasks,
-          resetClaims: true,
+          attempt: request.attempt,
         });
         return { value, readmit: true };
       },

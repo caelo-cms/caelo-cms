@@ -76,10 +76,12 @@ export const registerJobPiecesOp = defineOperation({
       /** Tasks the work would run for this scope, the lead included. */
       wantedTasks: z.number().int().min(1).max(MAX_JOB_TASKS),
       /**
-       * A new attempt's lead registers: the claims of the attempt before
-       * belong to tasks that are gone, so their pieces are open at once.
+       * The attempt whose lead registers. Its first registration opens the
+       * claims of the attempts before (their tasks are gone); the same
+       * report sent again after its answer was lost leaves the claims of
+       * this attempt's helpers alone.
        */
-      resetClaims: z.boolean(),
+      attempt: z.number().int().min(1).max(20),
     })
     .strict()
     .refine((v) => v.keys === undefined || v.keys.length === v.count, {
@@ -90,21 +92,26 @@ export const registerJobPiecesOp = defineOperation({
     const done = jsonbParam(input.done);
     // A plugin piece's key from its plan; an index shard has none.
     const key = input.keys ? sql`${jsonbParam(input.keys)} ->> g` : sql`NULL::text`;
+    // Claims of an earlier attempt's tasks: open again, then the scope is this attempt's.
     await tx.execute(sql`
-      INSERT INTO job_pieces (kind, subject_id, scope, piece, piece_key, state)
+      UPDATE job_pieces SET state = 'open', claimed_by = NULL, claim_until = NULL
+       WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid AND scope = ${input.scope}
+         AND state = 'claimed' AND attempt < ${input.attempt}
+    `);
+    await tx.execute(sql`
+      UPDATE job_pieces SET attempt = ${input.attempt}
+       WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid AND scope = ${input.scope}
+         AND attempt < ${input.attempt}
+    `);
+    await tx.execute(sql`
+      INSERT INTO job_pieces (kind, subject_id, scope, piece, piece_key, state, attempt)
       SELECT ${input.kind}, ${input.subjectId}::uuid, ${input.scope}, g,
              ${key},
-             CASE WHEN g IN (SELECT jsonb_array_elements_text(${done})::int) THEN 'done' ELSE 'open' END
+             CASE WHEN g IN (SELECT jsonb_array_elements_text(${done})::int) THEN 'done' ELSE 'open' END,
+             ${input.attempt}
       FROM generate_series(0, ${input.count - 1}) AS g
       ON CONFLICT (kind, subject_id, scope, piece) DO NOTHING
     `);
-    if (input.resetClaims) {
-      await tx.execute(sql`
-        UPDATE job_pieces SET state = 'open', claimed_by = NULL, claim_until = NULL
-         WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid AND scope = ${input.scope}
-           AND state = 'claimed'
-      `);
-    }
     if (input.done.length > 0) {
       // A retry finds pieces an earlier attempt wrote: done, whatever their row says.
       await tx.execute(sql`
