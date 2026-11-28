@@ -11,7 +11,7 @@
  */
 
 import { z } from "zod";
-import { checkIdSchema, findingFixSchema, findingSchema } from "./findings.js";
+import { checkIdSchema, findingFixSchema, findingSchema, storableText } from "./findings.js";
 
 export const checkSourceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("core") }).strict(),
@@ -39,7 +39,8 @@ export const checkRunErrorSchema = z
     pageId: z.string().uuid().optional(),
     url: z.string().optional(),
     code: z.string().min(1),
-    message: z.string().min(1),
+    // A thrown error may quote half of a character too (findings.ts).
+    message: z.string().min(1).transform(storableText),
   })
   .strict();
 

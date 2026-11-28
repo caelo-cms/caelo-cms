@@ -69,7 +69,7 @@ const blog: SchemaMapping = {
   schemaType: "BlogPosting",
   roles: { authors: "prop:author" },
 };
-const person: SchemaMapping = { pageType: "author", schemaType: "ProfilePage", roles: {} };
+const personMapping: SchemaMapping = { pageType: "author", schemaType: "ProfilePage", roles: {} };
 const overview: SchemaMapping = { pageType: "topic", schemaType: "CollectionPage", roles: {} };
 
 function spec(m: SchemaMapping) {
@@ -116,6 +116,25 @@ describe("article rules", () => {
     });
     expect(rules(f, blog)).toEqual([]);
   });
+  it("finds a name markup split into runs, punctuation where the split put it (second review #1)", () => {
+    const run = (text: string) => ({ text, moduleId: null, listItem: null, pluginSlug: null });
+    const person = (name: string, texts: string[]) =>
+      facts("/team/ana", [{ "@type": "Person", "@id": `${URL_}/team/ana#person`, name }], {
+        texts: texts.map(run) as never,
+      });
+    const nameRules = (f: PluginAuditPageFacts) =>
+      pageDataFindings(f, personMapping, spec(personMapping))
+        .map((x) => x.rule)
+        .filter((r) => r === "structured-data-not-visible");
+    // <p><strong>Dr.</strong> Anna Berg</p>
+    expect(nameRules(person("Dr. Anna Berg", ["Dr.", "Anna Berg"]))).toEqual([]);
+    // Anna Berg,&nbsp;PhD: the entity splits the text.
+    expect(nameRules(person("Anna Berg, PhD", ["Anna Berg,", "", "PhD"]))).toEqual([]);
+    // A name the page does not show stays a finding.
+    expect(nameRules(person("Ben Okafor", ["Dr.", "Anna Berg"]))).toEqual([
+      "structured-data-not-visible",
+    ]);
+  });
   it("never quotes half of a character (review #8)", () => {
     const long = `${"x".repeat(79)}😀😀 end`;
     const found = pageDataFindings(
@@ -153,7 +172,7 @@ describe("person and overview rules", () => {
         headings: [heading("Ana")] as never,
       },
     );
-    const found = pageDataFindings(f, person, spec(person));
+    const found = pageDataFindings(f, personMapping, spec(personMapping));
     expect(found.map((x) => x.rule)).toEqual(["author-page-incomplete"]);
     expect(found[0]?.message).toContain("has no biography, portrait or profile link");
     // A team member's or speaker's page need not be an author's (review #5).
@@ -169,7 +188,7 @@ describe("person and overview rules", () => {
         sameAs: ["https://example.org/ana"],
       },
     ]);
-    expect(rules(f, person)).toEqual(["structured-data-required"]);
+    expect(rules(f, personMapping)).toEqual(["structured-data-required"]);
   });
   it("finds an overview that lists nothing, and passes one that lists pages", () => {
     const empty = facts("/topics/tea", [
@@ -197,8 +216,20 @@ describe("person and overview rules", () => {
       hiringOrganization: { "@id": `${URL_}/#organization` },
       ...over,
     });
-    expect(rules(facts("/jobs/dev", [node({ jobLocationType: "TELECOMMUTE" })]), job)).toEqual([]);
+    const remote = node({
+      jobLocationType: "TELECOMMUTE",
+      applicantLocationRequirements: { "@type": "Country", name: "DE" },
+    });
+    expect(rules(facts("/jobs/dev", [remote]), job)).toEqual([]);
     expect(rules(facts("/jobs/dev", [node({})]), job)).toEqual(["structured-data-required"]);
+    // Remote without a country: Google wants the countries applicants may live in (second review #2).
+    const nowhere = pageDataFindings(
+      facts("/jobs/dev", [node({ jobLocationType: "TELECOMMUTE" })]),
+      job,
+      spec(job),
+    );
+    expect(nowhere.map((x) => x.rule)).toEqual(["structured-data-required"]);
+    expect(nowhere[0]?.message).toContain("applicantLocationRequirements");
   });
   it("leaves a JSON-LD block that is no JSON to core's check (review #4)", () => {
     const f = facts(
@@ -377,6 +408,33 @@ describe("the structured data rule family", () => {
       "structured-data-required",
       "author-page-incomplete",
     ]);
+  });
+
+  it("finds the main node of a page whose canonical spells it with index.html (second review #4a)", async () => {
+    const PERSON = "00000000-0000-4000-8000-0000000000e2";
+    const ctx = familyCtx([{ page_type: "author", schema_type: "ProfilePage" }], {
+      [PERSON]: { pageType: "author" },
+    });
+    // Core's facts key the canonical as /team/ana; the node sits under the spelling it carries.
+    const f = facts(
+      "/team/ana",
+      [
+        {
+          "@type": "Person",
+          "@id": `${URL_}/team/ana/index.html#person`,
+          name: "Ana",
+          description: "Writes.",
+          image: "x.jpg",
+          sameAs: ["https://example.org/ana"],
+        },
+      ],
+      {
+        pageId: PERSON,
+        canonical: { href: `${URL_}/team/ana/index.html`, path: "/team/ana" },
+        headings: [heading("Ana")] as never,
+      },
+    );
+    expect(await run(ctx, f)).toEqual([]);
   });
 
   it("judges no graph the facts budget cut (review #7)", async () => {

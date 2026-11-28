@@ -65,12 +65,25 @@ const stagedAnswer = z
   .object({ pages: z.array(z.object({ pageId: z.string(), path: z.string() }).passthrough()) })
   .passthrough();
 
-/** A path without its trailing slash (the root stays `/`). */
+/**
+ * A site path as core's page facts key it (admin-core `pathKey`): decoded,
+ * `/index.html` folded, no trailing slash (the root stays `/`). Every side
+ * of a comparison goes through it: the facts' paths, a node's `@id`, a
+ * staged page's path.
+ */
 function bare(path: string): string {
-  return path.length > 1 ? path.replace(/\/+$/, "") : path;
+  let p: string;
+  try {
+    p = decodeURIComponent(path);
+  } catch {
+    p = path;
+  }
+  if (p.endsWith("/index.html")) p = p.slice(0, -"index.html".length);
+  while (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
+  return p === "" ? "/" : p;
 }
 
-/** The path of an absolute or root-relative URL, or null. */
+/** The path key of an absolute or root-relative URL, or null. */
 function pathOf(url: string): string | null {
   try {
     return bare(new URL(url, "https://site.invalid").pathname);
@@ -125,28 +138,43 @@ function present(v: unknown): boolean {
 }
 
 /**
- * A required property another one stands in for (Google's rich result
- * documentation): a remote job has `jobLocationType: "TELECOMMUTE"` and no
- * `jobLocation` (schema/entities.ts writes it so).
+ * What stands in for a required property (Google's job posting
+ * documentation): a fully remote job has `jobLocationType: "TELECOMMUTE"`
+ * and no `jobLocation`, but then names the countries applicants may live in
+ * (`applicantLocationRequirements`; schema/entities.ts writes it from the
+ * `country` role). A remote job without one has neither.
  */
-const REQUIRED_ALTERNATIVES: Readonly<Record<string, readonly string[]>> = {
-  jobLocation: ["jobLocationType"],
+const REQUIRED_STAND_INS: Readonly<Record<string, (node: Node) => boolean>> = {
+  jobLocation: (node) =>
+    node.jobLocationType === "TELECOMMUTE" && present(node.applicantLocationRequirements),
 };
 
-/** Whether `node` carries `property`, or a property that stands in for it. */
+/** Whether `node` carries `property`, or what stands in for it. */
 function hasRequired(node: Node, property: string): boolean {
-  return (
-    present(node[property]) ||
-    (REQUIRED_ALTERNATIVES[property] ?? []).some((alt) => present(node[alt]))
-  );
+  return present(node[property]) || (REQUIRED_STAND_INS[property]?.(node) ?? false);
 }
 
-/** Text as compared with the page: lower case, one space, no punctuation at the ends. */
+/** How a missing required property is named: a remote job lacks the country. */
+function missingLabel(node: Node, property: string): string {
+  return property === "jobLocation" && node.jobLocationType === "TELECOMMUTE"
+    ? "applicantLocationRequirements (a remote job names the country applicants may live in)"
+    : property;
+}
+
+/**
+ * Text as compared with the page: lower case, punctuation and symbols as
+ * spaces, one space. Markup splits text into runs at tags and entities
+ * (`<strong>Dr.</strong> Anna Berg`, `Anna Berg,&nbsp;PhD`), so a run's
+ * punctuation sits where the split put it; compared without it, "Dr. Anna
+ * Berg" is the runs "Dr." and "Anna Berg", and a headline "Why we test?"
+ * is the h1 "Why we test".
+ */
 function norm(s: string): string {
   return s
     .toLowerCase()
+    .replace(/[\p{P}\p{S}]+/gu, " ")
     .replace(/\s+/g, " ")
-    .replace(/^[\p{P}\p{S}\s]+|[\p{P}\p{S}\s]+$/gu, "");
+    .trim();
 }
 
 /** At most `max` characters of `text`, never half of one (a surrogate pair). */
@@ -182,7 +210,9 @@ function notJudged(f: PluginAuditPageFacts, info: PageInfo | undefined): string 
 function visible(f: PluginAuditPageFacts, value: string): boolean | null {
   const v = norm(value);
   if (v === "") return true;
-  const runs = [...f.headings.map((h) => h.text), ...f.texts.map((t) => t.text)].map(norm);
+  const runs = [...f.headings.map((h) => h.text), ...f.texts.map((t) => t.text)]
+    .map(norm)
+    .filter((r) => r !== "");
   if (runs.some((r) => r.includes(v))) return true;
   // The whole text across runs (a name split by markup).
   if (runs.join(" ").includes(v)) return true;
@@ -296,7 +326,7 @@ export function pageDataFindings(
       rule: "structured-data-required",
       severity: "error",
       pageId: f.pageId,
-      message: `Structured data incomplete: the ${spec.schemaType} of ${f.path} lacks ${missing.join(", ")}, which its rich result requires.`,
+      message: `Structured data incomplete: the ${spec.schemaType} of ${f.path} lacks ${missing.map((p) => missingLabel(main, p)).join(", ")}, which its rich result requires.`,
       fix: MAPPING_FIX,
     });
   }

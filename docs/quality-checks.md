@@ -59,7 +59,7 @@ Only objective rules are findings; rules of thumb are write hints (maintainer de
 | `duplicate-title`, `duplicate-description` | indexable, self-canonical pages that share their `<title>` or meta description (read for all staged pages on the first call, `pages_seo.overview`) | `bulk_optimize_seo` |
 | `noindex-blocked` | a noindex page robots.txt keeps search engines from fetching, so they never read the noindex | `propose_set_site_seo` |
 | `crawler-policy-contradiction` | robots.txt refuses a use (the training token, a `*` Content-Signal) and still lets crawlers of it in (`docs/dev/robots-rules.md`) | `plan_crawler_policy` |
-| `structured-data-required` | the page's main node lacks a property its rich result requires (the type table's `required`, `schema/types.ts`; a remote job's `jobLocationType` stands in for `jobLocation`), or the graph has no main node for the mapped type | `set_schema_mappings_many` |
+| `structured-data-required` | the page's main node lacks a property its rich result requires (the type table's `required`, `schema/types.ts`; a remote job (`jobLocationType: TELECOMMUTE`) names the countries applicants may live in, `applicantLocationRequirements`, in place of `jobLocation`), or the graph has no main node for the mapped type | `set_schema_mappings_many` |
 | `structured-data-not-visible` | the main node's headline (an article) or name is not on the page (Google: markup must match what visitors read) | `update_pages_many` / `set_schema_mappings_many` |
 | `overview-empty` | an overview (a page type mapped to `CollectionPage`, a topic page) whose lists show no page | `set_page_module_content_many` |
 | `article-author-missing` | an article whose page type maps authors names none (or only unpublished ones) | `update_pages_many` |
