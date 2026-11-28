@@ -22,12 +22,21 @@ export {
 export { ByteReader, ByteWriter } from "./bytes.js";
 export { compoundTailInitials, splitCompound } from "./compound.js";
 export {
+  defaultProbe,
+  PARTITION_MIN_VECTORS,
+  PROBE_SHARE,
+  VECTORS_PER_LIST,
+} from "./partitions.js";
+export {
   type CacheStats,
   FileCache,
   type FileCacheLike,
+  type FileFormat,
   type FileLoad,
   type FileSource,
+  jsonFormat,
   prefixedCache,
+  RAW_FORMAT,
   SegmentReader,
 } from "./reader.js";
 export {
@@ -49,10 +58,13 @@ export {
   parseRelease,
   passageEmbeddingText,
   prefetchRelease,
+  RELEASE_FORMAT,
   type ReleaseManifest,
   type ReleaseSegment,
   readProfile,
+  readQueryVectors,
   releaseFiles,
+  releaseNeedsRebuild,
   schemaDigest,
 } from "./release.js";
 export {
@@ -76,6 +88,8 @@ export {
   type FacetCount,
   fuse,
   type Hit,
+  keysOfTerms,
+  keysPassing,
   type QueryTerms,
   type SearchFilter,
   type SearchTuning,
@@ -87,7 +101,16 @@ export {
   type VectorHitDoc,
   type VectorQuery,
 } from "./search.js";
-export { compareTerms, type SegmentManifest } from "./segment.js";
+export {
+  columnValues,
+  compareTerms,
+  docPosition,
+  type FacetColumn,
+  type ParsedDocs,
+  SEGMENT_FORMAT,
+  type SegmentManifest,
+  STORE_BLOCK_BYTES,
+} from "./segment.js";
 export { type Highlighted, highlight, type Snippet, snippet } from "./snippet.js";
 export {
   type AccessTokenSource,
@@ -109,13 +132,22 @@ export {
   type PassageVector,
   VectorPool,
 } from "./vector-pool.js";
-export { binaryCode, type EncodedVector, encodeVector, normalize } from "./vectors.js";
+export {
+  binaryCode,
+  defaultRescore,
+  type EncodedVector,
+  encodeVector,
+  normalize,
+  RESCORE_SHARE,
+} from "./vectors.js";
 export { closestWord, editDistance } from "./vocabulary.js";
 export {
   buildSegment,
   COMPOUND_PREFIX,
   contentName,
   type FileSink,
+  PACK_MAX_BYTES,
+  type SegmentTuning,
   SegmentWriter,
   type WriterOptions,
   type WrittenSegment,

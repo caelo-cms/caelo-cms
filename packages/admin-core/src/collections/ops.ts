@@ -40,6 +40,28 @@ export interface ActiveCollection {
   readonly slug: string;
   readonly collection: string;
   readonly decl: PluginCollectionManifest;
+  /**
+   * Keyword fields the index stores per document (#1779): the plugin's
+   * declared operations read them for every hit (a search over link texts
+   * reads each text's target), so they come from the docs file the
+   * gateway holds, not from stored documents read one store block each.
+   * Derived from the declarations, never declared: the plugin's manifest
+   * stays as approved.
+   */
+  readonly columns: readonly string[];
+}
+
+/** The keyword columns `collection` needs for `operations`' per-hit reads. */
+export function collectionColumns(collection: string, operations: readonly object[]): string[] {
+  const out = new Set<string>();
+  for (const op of operations) {
+    const anchors =
+      "anchors" in op
+        ? (op.anchors as { collection: string; target: string } | undefined)
+        : undefined;
+    if (anchors?.collection === collection) out.add(anchors.target);
+  }
+  return [...out].sort();
 }
 
 /** Every collection of every active plugin that holds the `collections` grant. */
@@ -52,8 +74,15 @@ export function activeCollections(): ActiveCollection[] {
         ? (p.externalApproval?.capabilities.includes("collections") ?? false)
         : (p.definition.requestedCapabilities ?? []).includes("collections");
     if (!granted) continue;
+    const operations = p.definition.collectionOperations ?? [];
     for (const [collection, decl] of Object.entries(p.definition.collections ?? {})) {
-      out.push({ pluginId: p.pluginId, slug: p.slug, collection, decl });
+      out.push({
+        pluginId: p.pluginId,
+        slug: p.slug,
+        collection,
+        decl,
+        columns: collectionColumns(collection, operations),
+      });
     }
   }
   return out;
@@ -339,6 +368,8 @@ export const indexTaskSchema = z.object({
   previousSchemaDigest: z.string().nullable(),
   /** #1650 — the catalog model to embed passages with; null: no vectors. */
   vectorModel: z.string().nullable(),
+  /** #1779 — keyword fields stored per document ({@link ActiveCollection.columns}). */
+  columns: z.array(z.string()),
   /** Change files of the run, oldest first. */
   changeKeys: z.array(z.string()),
 });
@@ -391,6 +422,7 @@ export const collectionIndexTasksOp = defineOperation({
         previousSchemaDigest:
           typeof r.previous_stats?.schemaDigest === "string" ? r.previous_stats.schemaDigest : null,
         vectorModel: r.vector_model,
+        columns: [...c.columns],
         changeKeys: changes.map((x) => x.store_key),
       });
     }

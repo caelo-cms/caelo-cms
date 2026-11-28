@@ -13,7 +13,8 @@ validate config values against it without pulling in anything else.
 Each entry pins:
 
 - the publisher's Hugging Face repository at one commit;
-- every file by SHA-256 and size (the ONNX graph and `tokenizer.json`);
+- every file by SHA-256 and size (the ONNX graph and `tokenizer.json`), and
+  the files Caelo derives from them (`derived`, below);
 - dimensions, `maxTokens` (a longer text is cut, keeping its start), pooling,
   query and passage prefixes, the padding id, and the graph's input and
   output names;
@@ -30,9 +31,9 @@ The admin form offers the catalog as a select, and the AI tools list the ids.
 
 **Today the catalog has one model: `granite-embedding-97m-multilingual-r2`.**
 `packages/collection-index/bench/semantic-results.md` has the measurements that
-chose it. Every entry ships in both images (about 125 MB each), so a model
-joins only when a measurement shows that sites need what the default cannot
-do.
+chose it. Every entry ships in both images (about 105 MB of derived files
+each), so a model joins only when a measurement shows that sites need what
+the default cannot do.
 
 A release records `<id>@<first 12 hex of the graph's SHA-256>` (the
 fingerprint) as its vector model, so a new revision of the same id counts as a
@@ -57,6 +58,34 @@ The stage copies only the catalog and the fetch code, so it re-runs only when
 the catalog changes. The files land in `/opt/caelo/models/<id>/<revision>/`,
 and `CAELO_MODELS_DIR` points there.
 
+### Derived files: what a process loads (#1782)
+
+After the download the stage derives three files from the publisher's (all
+dependency-free code, `packages/models/src/derive.ts`), checks them against
+the catalog's pins like the downloads, and `--runtime-only` drops the
+publisher's files: the images carry only these.
+
+- **`graph.onnx`**: the publisher's graph without its token table. The
+  table (Granite 97M: 180,000 × 384 uint8, 69 of the graph's 97 MB) is read
+  by one `Gather` at the graph's start; the transform removes that node and
+  its initializer and makes the gathered rows a graph input
+  (`token-table.ts`). The rest is copied byte for byte.
+- **`tokens.bin`**: that table, row by row. The embedder looks up a text's
+  rows itself (a query: about twenty) and hands them to the graph, which
+  dequantises them in its next node exactly as before.
+- **`tokenizer.bin`**: the tokenizer's vocabulary, merges, added tokens and
+  template as typed arrays (`bpe.ts`), about 20 MB in memory where
+  `@huggingface/tokenizers` held 138 MB of maps. It cuts text exactly like
+  that library with the publisher's `tokenizer.json` (the library's
+  translation of the split regex is pinned in the catalog); `bpe.test.ts`
+  compares both on this repository's documentation and generated edge cases
+  (on 2026-11-27: 42,046 texts, 3.05 million tokens, no difference).
+
+The split graph fed the gathered rows computes bit for bit what the
+publisher's graph computes, on native and on WebAssembly
+(`token-table.test.ts`), so the model keeps its fingerprint and no index is
+rebuilt. The licence notice says what was changed (Apache-2.0 §4(b)).
+
 **When a process loads a model**, it re-hashes the bytes before handing them
 to ONNX Runtime (`packages/models/src/files.ts`):
 
@@ -74,17 +103,18 @@ to ONNX Runtime (`packages/models/src/files.ts`):
 | Gateway (live and staging) | `onnxruntime-web` WebAssembly, `@caelo-cms/models/wasm` | Embeds one visitor query. No native code touches a visitor's text next to the gateway's credentials (the reasoning of the capture job, #1217). |
 | Admin (search preview, the Stage audit's test queries) | `onnxruntime-web` WebAssembly, `@caelo-cms/models/wasm` | Embeds one query the way the gateway does, so the preview ranks like the live search. |
 
-Both runtimes are 1.31.1 (MIT). The tokenizer is `@huggingface/tokenizers`
-0.2.0 (Apache-2.0, pure JavaScript). `packages/models/src/model.test.ts`
-compares its token ids with ids recorded from the Rust reference
-(`src/__fixtures__/`).
+Both runtimes are 1.31.1 (MIT). The tokenizer is the compact one above (pure
+JavaScript); `@huggingface/tokenizers` 0.2.0 (Apache-2.0) is only a
+development dependency now, the reference `bpe.test.ts` compares with.
+`packages/models/src/model.test.ts` compares the token ids with ids recorded
+from the Rust reference (`src/__fixtures__/`).
 
 How each image carries the runtimes:
 
 - **Gateway.** The image bundles ONNX Runtime's JavaScript.
   `apps/api-gateway/image.ts` stages only `ort-wasm-simd-threaded.{wasm,mjs}`,
-  loaded from `CAELO_ORT_WASM_DIR`. The SBOM lists each model as
-  `pkg:huggingface/<repo>@<revision>`.
+  loaded from `CAELO_ORT_WASM_DIR`. The SBOM lists each derived graph as
+  `pkg:huggingface/<repo>@<revision>`, the model it was derived from.
 - **Admin.** The Dockerfile drops every native library but linux x64 and
   every WebAssembly build but the SIMD one. That removes about 400 MB of the
   435 MB the two packages install. The SvelteKit server does NOT bundle
@@ -93,12 +123,22 @@ How each image carries the runtimes:
   server chunk they look in `build/server/chunks/` and fail (0.12.11: every
   semantic query in the admin failed on `ort-wasm-simd-threaded.mjs`).
 
-Memory and speed of the default model (M3 Pro, one thread):
+Memory and speed of the default model (M3 Pro, one thread, fresh process,
+2026-11-27; the growth of the process's resident memory once the model has
+answered, and at the peak of its load):
 
-| | Query p50 / p95 | Memory |
+| | Load | Memory (steady / peak) |
 |---|---|---|
-| Gateway (WebAssembly) | 9.9 / 16.4 ms | about 570 MB |
-| Index job (native) | about 140 passages/s on 4 threads | about 320 MB |
+| Gateway (WebAssembly), before #1782 | 0.8 to 1.2 s | 463 / 494 MB, tokenizer (138 MB) included |
+| Gateway (WebAssembly), derived files | 0.58 s | 169 to 178 / 171 to 217 MB, tokenizer included |
+| Index job (native), derived files | 0.6 to 0.75 s | 69 to 86 / 108 to 125 MB |
+
+About 120 MB of the WebAssembly figure is ONNX Runtime's own (a session for
+a one-node graph costs that); the session of the derived graph adds about
+80 MB. Loading holds the event loop 65 to 88 ms. A worker thread was tried
+(#1778): it cut that to 12 to 20 ms but added 0.5 to 1.1 s to every load (its
+own runtime, its own WebAssembly compile), and the load is what a cold
+first search waits for, so the model stays in the gateway's thread.
 
 **On Cloud Run the index job is slower than the M3 numbers.** Measured on
 2026-11-26 with searchviu.com's passages (648 characters on average, about
@@ -111,28 +151,39 @@ a second. Large builds therefore run as several tasks
 (`docs/plugin-collections.md`, wide attempts), and a passage whose text did
 not change is never embedded again.
 
-**On Cloud Run the gateway needs more than the M3 numbers, and its load
-is slow.** Measured on 2026-11-26 on searchviu.com's live gateway (1 vCPU,
-then 1 GiB): loading the default model took the instance from 10 % of its
-memory to at least 87 %, and it stayed at 70 % (about 110 MiB is the
-gateway process with its plugins). One instance was lost in the middle of
-that load, inside a visitor's first search, which showed "Suche nicht
-erreichbar"; a first search on a cold instance took 11 s. The M3's 570 MB
-is the model alone. So:
+**On Cloud Run the gateway needed more than the M3 numbers.** Measured on
+2026-11-26 on searchviu.com's live gateway (1 vCPU, then 1 GiB) with the
+publisher's files: loading the default model took the instance from 10 % of
+its memory to at least 87 %, and it stayed at 70 % (about 102 to 110 MiB is
+the gateway process with its plugins), 1.38 times the M3's figure. One
+instance was lost in the middle of that load, inside a visitor's first
+search, which showed "Suche nicht erreichbar"; a first search on a cold
+instance took 11 s. #1747 raised the gateway to 2 GiB; #1777 removed the
+causes:
 
-- **The gateway runs with 2 GiB** (`GATEWAY_MEMORY_DEFAULT`), checked
-  against the measured peak plus the index cache
-  (`packages/shared/src/gateway-memory.ts`, `admin-memory.test.ts`).
-- **The model loads ahead of the search, inside a request.** The site
-  search asks for the release key when the visitor focuses the field, and
-  `/release` answers once the release is open, its index files are in
-  memory and the model is loaded (bounded to 20 s), so a cold instance
+- **The gateway runs with 1 GiB again** (`GATEWAY_MEMORY_DEFAULT`): the
+  derived files' peak (217 MB on the M3, so about 300 MiB on Cloud Run) and
+  the process (about 110 MiB) leave room for a full index cache counted as
+  it is held (128 MiB by default, up to 1.5 times that on the heap) with a
+  quarter of the memory to spare (`packages/shared/src/gateway-memory.ts`,
+  `admin-memory.test.ts`). To be measured on Cloud Run once a release ships
+  it (#1777).
+- **The model loads ahead of the search, inside a request, beside the
+  index files.** The site search asks for the release key when the visitor
+  focuses the field; when the gateway answers it, `/release` answers once
+  the release is open, its index files are in memory and the model is
+  loaded, the two at the same time (bounded to 20 s), so a cold instance
   warms while the visitor types. It never loads after an answer: on
   request-billed CPU that work would wait for the next request, which is
   the search. The admin's refresh ping after a publish opens the new
   releases but leaves the model to `/release` (the admin waits for the
   ping). Each load writes `[collections] model <id> loaded in <ms> ms
   (process memory <MiB> MiB)`.
+- **Known queries need no model** (#1785). The index job embeds the
+  queries the profile names (site-search: the approved popular queries,
+  the suggestions, the pinned results' queries) and the release carries
+  their vectors, so a visitor who follows a link to a search or picks a
+  popular query is answered before any model loads.
 
 Later queries reuse the loaded model and an LRU of query vectors.
 

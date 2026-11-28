@@ -12,7 +12,10 @@
  * from `<dir>/<licence>.txt`, as the images do. Prints the directory to set as CAELO_MODELS_DIR. Exits non-zero when a
  * file cannot be fetched or does not match the catalog. `--epoch` stamps
  * every file and directory with one fixed time, so an image layer of the
- * same models has the same digest in every build (#1559).
+ * same models has the same digest in every build (#1559). `--runtime-only`
+ * keeps only the files a process loads (#1782): the images use it, a
+ * checkout keeps the publisher's files for the tests that compare against
+ * them.
  */
 
 import { readdir, utimes } from "node:fs/promises";
@@ -32,10 +35,11 @@ const dir = resolve(
 );
 const licensesAt = args.indexOf("--licenses");
 const licenses = licensesAt >= 0 ? (args[licensesAt + 1] ?? null) : null;
+const runtimeOnly = args.includes("--runtime-only");
 let failed = false;
 for (const model of EMBEDDING_MODELS) {
   try {
-    const files = await fetchModel(dir, model);
+    const files = await fetchModel(dir, model, { runtimeOnly });
     for (const f of files) {
       console.log(`${model.id}: ${f.file} ${f.action} (${(f.bytes / 1e6).toFixed(1)} MB)`);
     }

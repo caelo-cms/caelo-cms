@@ -10,7 +10,18 @@
  *   and facet ordinals, all positional by document;
  * - store files: the full documents, deflate-compressed, a few dozen each;
  * - vector files (optional): binary codes for every passage, plus int8
- *   blocks for rescoring.
+ *   blocks for rescoring; or, in a large segment, partitions (#1783,
+ *   partitions.ts): centroids and lists of int8 vectors with their codes.
+ *
+ * Format 3 (#1780, #1781): a store file is compressed as one block, about
+ * {@link STORE_BLOCK_BYTES} of documents, behind a table of each
+ * document's key, offset and length, so a reader decodes the documents a
+ * query asks for and the cache holds the compressed bytes; `columns` are
+ * keyword fields stored per document in the docs file (like facets) for
+ * operations that read a value per hit; and a segment of at most
+ * `PACK_MAX_BYTES` is one packed file (`pack`): its parts by name with
+ * their offsets, read in one request. Readers keep reading format 2 (the
+ * releases built before it) until the index job rebuilds them.
  *
  * Segments are immutable. A Stage writes a small segment for the documents
  * that changed; an unchanged file keeps its name, so an upload or a Publish
@@ -25,8 +36,8 @@
  * frequency per slot in the mask; keyword terms carry mask 0.
  */
 
-import { inflateRawSync } from "node:zlib";
-import { ByteReader } from "./bytes.js";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
+import { ByteReader, ByteWriter } from "./bytes.js";
 import type { KeyedDoc } from "./schema.js";
 
 /** Entries between two restart points of a shard dictionary. */
@@ -52,15 +63,29 @@ export interface VectorRef {
   readonly field: string;
   readonly dims: number;
   readonly count: number;
-  /** Binary codes, `codeRecordBytes(dims)` per passage, at most `VECTORS_PER_CODE_FILE` per file. */
+  /** Binary codes, `codeRecordBytes(dims)` per passage, at most `VECTORS_PER_CODE_FILE` per file (empty when partitioned). */
   readonly codes: readonly string[];
-  /** int8 vectors plus a float32 scale, `VECTORS_PER_BLOCK` per file, in code order. */
+  /** int8 vectors plus a float32 scale, `VECTORS_PER_BLOCK` per file, in code order (empty when partitioned). */
   readonly blocks: readonly string[];
+  /** The partitions of a large segment (#1783), instead of codes and blocks. */
+  readonly partitions?: PartitionsRef | null;
+}
+
+/** A partitioned segment's vectors: its centroids and one list file per centroid. */
+export interface PartitionsRef {
+  readonly centroids: string;
+  readonly lists: readonly { readonly file: string; readonly count: number }[];
+}
+
+/** A packed segment (#1781): one file holding all others, each by name with its offset and length. */
+export interface PackRef {
+  readonly file: string;
+  readonly parts: Readonly<Record<string, readonly [number, number]>>;
 }
 
 /** The manifest of one segment. */
 export interface SegmentManifest {
-  readonly format: 2;
+  readonly format: 2 | 3;
   readonly slots: readonly string[];
   /** Slots whose words complete a typed prefix. */
   readonly prefixSlots: readonly string[];
@@ -77,7 +102,17 @@ export interface SegmentManifest {
   readonly vectors: VectorRef | null;
   /** Vocabulary file per first-character bucket (see vocabulary.ts). */
   readonly vocabulary: Readonly<Record<string, string>>;
+  /** Keyword fields stored per document in the docs file (format 3). */
+  readonly columns?: readonly string[];
+  /** Set when the segment is one packed file (format 3). */
+  readonly pack?: PackRef | null;
 }
+
+/** The segment format this engine writes. */
+export const SEGMENT_FORMAT = 3;
+
+/** Uncompressed bytes of documents per store block (format 3). */
+export const STORE_BLOCK_BYTES = 64 * 1024;
 
 /** Vectors per binary code file. */
 export const VECTORS_PER_CODE_FILE = 65_536;
@@ -268,13 +303,38 @@ export function prefixInShard(shard: ParsedShard, prefix: string): TermInfo[] {
 
 /** Parsed docs file. Every array is positional by document index. */
 export interface ParsedDocs {
+  /** Ascending: {@link docPosition} binary-searches them. */
   readonly keys: Uint32Array;
   readonly lengths: Uint32Array;
   readonly langs: readonly string[];
   readonly langOrdinals: Uint16Array;
   readonly numbers: ReadonlyMap<string, Float64Array>;
   readonly facets: ReadonlyMap<string, FacetColumn>;
-  readonly indexOf: ReadonlyMap<number, number>;
+  /** Keyword columns (format 3), in the facet layout. */
+  readonly columns: ReadonlyMap<string, FacetColumn>;
+}
+
+/** The position of `key` in a docs file, or -1. */
+export function docPosition(docs: ParsedDocs, key: number): number {
+  const keys = docs.keys;
+  let lo = 0;
+  let hi = keys.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const k = keys[mid] as number;
+    if (k === key) return mid;
+    if (k < key) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
+}
+
+/** The values of one document in a facet-layout column. */
+export function columnValues(column: FacetColumn, position: number): string[] {
+  const out: string[] = [];
+  for (let j = column.starts[position] as number; j < (column.starts[position + 1] as number); j++)
+    out.push(column.values[column.ordinals[j] as number] as string);
+  return out;
 }
 
 /** The values of one facet field: a value table and, per document, a range of ordinals into it. */
@@ -308,8 +368,7 @@ export function parseDocs(data: Uint8Array, manifest: SegmentManifest): ParsedDo
     for (let i = 0; i < n; i++) column[i] = view.getFloat64(i * 8, true);
     numbers.set(field, column);
   }
-  const facets = new Map<string, FacetColumn>();
-  for (const field of manifest.facets) {
+  const readColumn = (): FacetColumn => {
     const values = Array.from({ length: r.uint() }, () => r.string());
     const starts = new Uint32Array(n + 1);
     const ords: number[] = [];
@@ -319,18 +378,118 @@ export function parseDocs(data: Uint8Array, manifest: SegmentManifest): ParsedDo
       for (let j = 0; j < c; j++) ords.push(r.uint());
     }
     starts[n] = ords.length;
-    facets.set(field, { values, starts, ordinals: Uint32Array.from(ords) });
-  }
-  const indexOf = new Map<number, number>();
-  keys.forEach((k, i) => {
-    indexOf.set(k, i);
-  });
-  return { keys, lengths, langs, langOrdinals, numbers, facets, indexOf };
+    return { values, starts, ordinals: Uint32Array.from(ords) };
+  };
+  const facets = new Map<string, FacetColumn>();
+  for (const field of manifest.facets) facets.set(field, readColumn());
+  const columns = new Map<string, FacetColumn>();
+  for (const field of manifest.columns ?? []) columns.set(field, readColumn());
+  return { keys, lengths, langs, langOrdinals, numbers, facets, columns };
 }
 
-/** Parses a store file: the documents it holds, in key order. */
-export function parseStore(data: Uint8Array): KeyedDoc[] {
-  return JSON.parse(utf8Decoder.decode(inflateRawSync(data))) as KeyedDoc[];
+/** Bytes a string costs in memory, about: two per UTF-16 unit plus the object. */
+export function stringBytes(s: string): number {
+  return 32 + s.length * 2;
+}
+
+function columnBytes(c: FacetColumn): number {
+  let n = c.starts.byteLength + c.ordinals.byteLength;
+  for (const v of c.values) n += stringBytes(v);
+  return n;
+}
+
+/** Bytes a parsed docs file holds. */
+export function docsBytes(d: ParsedDocs): number {
+  let n = d.keys.byteLength + d.lengths.byteLength + d.langOrdinals.byteLength + 256;
+  for (const l of d.langs) n += stringBytes(l);
+  for (const c of d.numbers.values()) n += c.byteLength;
+  for (const c of d.facets.values()) n += columnBytes(c);
+  for (const c of d.columns.values()) n += columnBytes(c);
+  return n;
+}
+
+/** Bytes a parsed shard holds: its bytes as loaded and its restart table. */
+export function shardBytes(s: ParsedShard): number {
+  return s.data.byteLength + s.entryOffsets.byteLength + s.postingOffsets.byteLength + 64;
+}
+
+/** A format-3 store block as loaded: the compressed documents and where each is. */
+export interface StoreBlock {
+  readonly keys: Uint32Array;
+  readonly offsets: Uint32Array;
+  readonly lengths: Uint32Array;
+  readonly compressed: Uint8Array;
+}
+
+/** One document of a store block: its key and its JSON as UTF-8. */
+export interface StoreEntry {
+  readonly key: number;
+  readonly json: Uint8Array;
+}
+
+/** Encodes documents (ascending keys, each already JSON) as one format-3 store block. */
+export function encodeStoreBlock(entries: readonly StoreEntry[]): Uint8Array {
+  const w = new ByteWriter(entries.length * 8 + 16);
+  w.uint(entries.length);
+  let prev = 0;
+  let offset = 0;
+  for (const e of entries) {
+    w.uint(e.key - prev);
+    prev = e.key;
+    w.uint(offset);
+    w.uint(e.json.length);
+    offset += e.json.length;
+  }
+  const joined = new Uint8Array(offset);
+  let at = 0;
+  for (const e of entries) {
+    joined.set(e.json, at);
+    at += e.json.length;
+  }
+  w.bytes(deflateRawSync(joined, { level: 6 }));
+  return w.finish();
+}
+
+/** Reads a format-3 store block's table; the documents stay compressed. */
+export function parseStoreBlock(data: Uint8Array): StoreBlock {
+  const r = new ByteReader(data);
+  const n = r.uint();
+  const keys = new Uint32Array(n);
+  const offsets = new Uint32Array(n);
+  const lengths = new Uint32Array(n);
+  let key = 0;
+  for (let i = 0; i < n; i++) {
+    key += r.uint();
+    keys[i] = key;
+    offsets[i] = r.uint();
+    lengths[i] = r.uint();
+  }
+  return { keys, offsets, lengths, compressed: data.subarray(r.pos) };
+}
+
+/** Bytes a store block holds as cached. */
+export function storeBlockBytes(b: StoreBlock): number {
+  return b.compressed.byteLength + b.keys.byteLength * 3 + 64;
+}
+
+/** The documents of a block whose keys `wanted` accepts (all without it), decoded. */
+export function storeBlockDocs(b: StoreBlock, wanted?: (key: number) => boolean): KeyedDoc[] {
+  const picked: number[] = [];
+  for (let i = 0; i < b.keys.length; i++)
+    if (!wanted || wanted(b.keys[i] as number)) picked.push(i);
+  if (picked.length === 0) return [];
+  const text = inflateRawSync(b.compressed);
+  return picked.map(
+    (i) =>
+      JSON.parse(
+        utf8Decoder.decode(
+          text.subarray(
+            b.offsets[i] as number,
+            (b.offsets[i] as number) + (b.lengths[i] as number),
+          ),
+        ),
+      ) as KeyedDoc,
+  );
 }
 
 /** Bytes of one binary code record: key (u32 LE), passage index (u16 LE), then the code. */

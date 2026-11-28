@@ -340,3 +340,32 @@ test("a search that fails twice shows the error state, after exactly one repeat"
   await expect(results).toHaveAttribute("data-caelo-search-error", "true");
   expect(searches).toBe(2);
 });
+
+// #1786 — the CDN may hold the release key for half a minute, so after a
+// Publish live a visitor can get the key before. The gateway answers that
+// key with a 409 naming the new one; the page follows it once.
+test("a stale release key from the CDN reaches the current results with one more search", async ({
+  page,
+}) => {
+  const stale = "release-000000000000000000000000.json";
+  await page.route(/\/api\/plugin\/site-search\/search\/release$/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "Cache-Control": "public, max-age=0, s-maxage=30" },
+      body: JSON.stringify({ release: stale }),
+    }),
+  );
+  const named: (string | null)[] = [];
+  await page.route(/\/api\/plugin\/site-search\/search\?/, (route) => {
+    named.push(new URL(route.request().url()).searchParams.get("release"));
+    return route.continue();
+  });
+  await page.goto(`${origin}/suche/?q=Rabatte`);
+  const results = page.locator("[data-caelo-search-results]");
+  await expect(results.locator("[data-caelo-search-list] li").first()).toContainText("Preise");
+  await expect(results).toHaveAttribute("data-caelo-search-state", "done");
+  expect(named.length).toBe(2);
+  expect(named[0]).toBe(stale);
+  expect(named[1]).not.toBe(stale);
+});

@@ -1,71 +1,38 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #1650 — model files are used only as the catalog pins them, and a model
- * missing from disk fails loudly with the command that fetches it.
+ * #1650, #1782 — model files are used only as the catalog pins them, and a
+ * model missing from disk fails loudly with the command that fetches it.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { EmbeddingModel } from "@caelo-cms/shared";
+import { deriveModelFiles } from "./derive.js";
 import {
   ModelFileError,
   modelFilePath,
   modelsDirFromEnv,
   readModelFiles,
   readVerifiedModelFile,
-  sha256Hex,
+  verifyModelFileInPlace,
 } from "./files.js";
+import { tinyModel } from "./tiny-model.js";
 
-const graph = new TextEncoder().encode("not really an onnx graph");
-const tokenizer = new TextEncoder().encode(JSON.stringify({ model: { type: "WordLevel" } }));
-
-/** A catalog entry for two small files. */
-export function fakeModel(g: Uint8Array = graph, t: Uint8Array = tokenizer): EmbeddingModel {
-  return {
-    id: "test-model",
-    label: "Test",
-    description: "Test",
-    source: {
-      host: "huggingface.co",
-      repo: "example/test",
-      revision: "0123456789abcdef0123456789abcdef01234567",
-    },
-    licence: "Apache-2.0",
-    licenceUrl: "https://www.apache.org/licenses/LICENSE-2.0",
-    copyright: "Copyright Example",
-    files: {
-      model: { name: "model.onnx", path: "onnx/model.onnx", sha256: sha256Hex(g), bytes: g.length },
-      tokenizer: {
-        name: "tokenizer.json",
-        path: "tokenizer.json",
-        sha256: sha256Hex(t),
-        bytes: t.length,
-      },
-    },
-    dims: 4,
-    maxTokens: 8,
-    pooling: "cls",
-    prefixes: { query: "", passage: "" },
-    padTokenId: 0,
-    inputs: ["input_ids", "attention_mask"],
-    output: "last_hidden_state",
-    languages: "test",
-    quantization: "none",
-  };
-}
+const { model, graph } = tinyModel();
 
 let dir = "";
-const model = fakeModel();
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "caelo-models-"));
 });
 afterAll(() => rm(dir, { recursive: true, force: true }));
 
-async function place(bytes: Uint8Array, file = model.files.model): Promise<void> {
+async function place(
+  bytes: Uint8Array,
+  file: Parameters<typeof modelFilePath>[2] = model.files.model,
+): Promise<void> {
   const path = modelFilePath(dir, model, file);
   await mkdir(join(path, ".."), { recursive: true });
   await writeFile(path, bytes);
@@ -105,11 +72,23 @@ describe("model files", () => {
     );
   });
 
-  it("reads verified files and parses the tokenizer", async () => {
-    await place(graph);
-    await place(tokenizer, model.files.tokenizer);
+  it("reads the derived files a process loads, the table checked in place", async () => {
+    const json = JSON.parse(new TextDecoder().decode(tinyModel().tokenizer)) as unknown;
+    const derived = deriveModelFiles(model, graph, json);
+    await place(derived.graph, model.derived.graph);
+    await place(derived.tokenizer, model.derived.tokenizer);
+    await place(derived.table, model.derived.table);
     const files = await readModelFiles(dir, model);
-    expect([...files.graph]).toEqual([...graph]);
-    expect(files.tokenizer).toEqual({ model: { type: "WordLevel" } });
+    expect([...files.graph]).toEqual([...derived.graph]);
+    expect([...files.tokenizer]).toEqual([...derived.tokenizer]);
+    expect(files.tablePath).toBe(modelFilePath(dir, model, model.derived.table));
+  });
+
+  it("checks a file in place without reading it whole", async () => {
+    const table = new Uint8Array(model.derived.table.bytes);
+    await place(table, model.derived.table);
+    await expect(verifyModelFileInPlace(dir, model, model.derived.table)).rejects.toThrow(
+      /has SHA-256 [0-9a-f]{64}, the catalog pins/,
+    );
   });
 });

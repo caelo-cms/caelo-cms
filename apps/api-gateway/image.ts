@@ -27,17 +27,18 @@ import { EMBEDDING_MODELS } from "../../packages/shared/src/embedding-models.ts"
 import type { ServiceImageSpec } from "../../scripts/service-image.ts";
 
 /**
- * #1650 — the catalog's embedding models, under /opt/caelo/models (the
- * Dockerfile's `models` stage fetched and verified them): each graph with a
- * package URL, so the image's SBOM names the model at its revision, and its
- * tokenizer and licence notice beside it.
+ * #1650, #1782 — the catalog's embedding models, under /opt/caelo/models
+ * (the Dockerfile's `models` stage fetched, verified and derived them, and
+ * kept only what a process loads): each derived graph with a package URL,
+ * so the image's SBOM names the model it was derived from at its revision,
+ * and its token table, compact tokenizer and licence notice beside it.
  */
 const modelGraphs = EMBEDDING_MODELS.map((m) => ({
-  path: `opt/caelo/models/${m.id}/${m.source.revision}/${m.files.model.name}`,
+  path: `opt/caelo/models/${m.id}/${m.source.revision}/${m.derived.graph.name}`,
   purl: `pkg:huggingface/${m.source.repo}@${m.source.revision}`,
 }));
 const modelData = EMBEDDING_MODELS.flatMap((m) =>
-  [m.files.tokenizer.name, "NOTICE.txt"].map(
+  [m.derived.table.name, m.derived.tokenizer.name, "NOTICE.txt"].map(
     (f) => `opt/caelo/models/${m.id}/${m.source.revision}/${f}`,
   ),
 );

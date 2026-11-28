@@ -57,6 +57,9 @@
         "src/__tests__/fixtures/change-journal-instance.ts"
       ]
     },
+    "packages/collection-index": {
+      "entry": ["src/__fixtures__/format2/make.ts"]
+    },
     "packages/migrations": {
       "entry": ["src/truncate.ts", "drizzle.config.cms-admin.ts", "drizzle.config.cms-public.ts"]
     },

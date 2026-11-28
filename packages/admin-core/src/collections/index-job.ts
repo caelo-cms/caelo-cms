@@ -47,6 +47,8 @@ import {
   openRelease,
   parseRelease,
   readProfile,
+  readQueryVectors,
+  releaseNeedsRebuild,
   scopedStore,
   VectorPool,
 } from "@caelo-cms/collection-index";
@@ -325,6 +327,26 @@ function throttled(
   };
 }
 
+/** Most known queries one release embeds (#1785). */
+export const MAX_KNOWN_QUERIES = 2000;
+
+/**
+ * The query texts a profile names, once each, in a stable order: its known
+ * queries, its suggestions and its pinned results' queries, every language.
+ */
+export function knownQueriesOf(profile: SearchProfile | null): string[] {
+  if (!profile) return [];
+  const out = new Set<string>();
+  const add = (t: string): void => {
+    const q = t.trim();
+    if (q.length > 0 && out.size < MAX_KNOWN_QUERIES) out.add(q);
+  };
+  for (const list of Object.values(profile.knownQueries ?? {})) for (const t of list) add(t);
+  for (const list of Object.values(profile.suggestions ?? {})) for (const s of list) add(s.text);
+  for (const list of Object.values(profile.bestBets ?? {})) for (const b of list) add(b.query);
+  return [...out].sort();
+}
+
 /**
  * Builds one collection's next release in `store`, or, as a task of a wide
  * attempt, embeds this task's share of it (index-shards.ts).
@@ -359,7 +381,9 @@ export async function indexCollection(
     folded.reset ||
     task.previousSchemaDigest !== task.schemaDigest ||
     !sameSet(protectedTermsOf(previousProfile), protectedTerms) ||
-    (previous.vectorModel?.id ?? null) !== (embedder?.fingerprint ?? null);
+    (previous.vectorModel?.id ?? null) !== (embedder?.fingerprint ?? null) ||
+    // #1780 — an older engine format or other keyword columns: never extended.
+    releaseNeedsRebuild(previous, task.columns);
 
   // The vectors this build may keep: the previous release's, under the same model.
   const pool = new VectorPool();
@@ -462,14 +486,33 @@ export async function indexCollection(
         },
       }
     : {};
+  // #1785 — the queries the profile names, embedded as queries: the
+  // gateway answers them without its query model. Vectors the previous
+  // release holds for the same model are kept, never embedded again.
+  const queryVectors = new Map<string, Float32Array>();
+  if (embedder) {
+    const known = knownQueriesOf(profile ?? null);
+    const before =
+      previous && previous.vectorModel?.id === embedder.fingerprint
+        ? await readQueryVectors(previous, cache)
+        : new Map<string, Float32Array>();
+    const missingQueries = known.filter((t) => !before.has(t));
+    const fresh = missingQueries.length > 0 ? await embedder.embed(missingQueries, "query") : [];
+    for (const t of known) {
+      const v = before.get(t) ?? fresh[missingQueries.indexOf(t)];
+      if (v) queryVectors.set(t, v);
+    }
+  }
   let applied: AppliedRelease;
   if (rebuild) {
     applied = await buildRelease(docs(), {
+      queryVectors,
       schema,
       sink,
       protectedTerms,
       profile,
       reuse: pool,
+      columns: task.columns,
       ...vectors,
     });
   } else {
@@ -490,6 +533,8 @@ export async function indexCollection(
         cache,
         protectedTerms,
         reuse: pool,
+        columns: task.columns,
+        queryVectors,
         ...vectors,
         ...(folded.profile ? { profile: folded.profile } : {}),
       },

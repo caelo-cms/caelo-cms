@@ -7,6 +7,8 @@
  * job) and `./wasm` (gateway), so each image bundles only its runtime.
  */
 
+export { CompactTokenizer, deriveTokenizer, type SplitPattern } from "./bpe.js";
+export { type DerivedBytes, deriveModelFiles } from "./derive.js";
 export type { Embedder, OrtApi } from "./embedder.js";
 export { createEmbedder } from "./embedder.js";
 export {
@@ -18,6 +20,7 @@ export {
   writeModelNotice,
 } from "./fetch.js";
 export {
+  type LoadableModelFiles,
   MODELS_DIR_ENV,
   ModelFileError,
   modelDir,
@@ -26,6 +29,8 @@ export {
   readModelFiles,
   readVerifiedModelFile,
   sha256Hex,
+  verifyModelFileInPlace,
 } from "./files.js";
 export { modelsForTests } from "./testing.js";
+export { type SplitGraph, splitTokenTable, TokenTable } from "./token-table.js";
 export { type Encoded, ModelTokenizer } from "./tokenize.js";

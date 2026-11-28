@@ -509,11 +509,13 @@ describe("semantic search in the gateway (#1650)", () => {
 });
 
 describe("declarative collection operations in the gateway", () => {
-  it("names the current release uncached", async () => {
+  // #1786 — the CDN holds the key briefly; a stale one costs one 409 naming the new key.
+  it("names the current release, cacheable at the CDN for half a minute", async () => {
     const r = await json(`/api/plugin/${SLUG}/search/release`);
     expect(r.status).toBe(200);
     expect(r.body.release).toBe(releaseKey);
-    expect(r.response.headers.get("cache-control")).toBe("no-store");
+    expect(r.response.headers.get("cache-control")).toBe("public, max-age=0, s-maxage=30");
+    expect(r.response.headers.get("set-cookie")).toBeNull();
   });
 
   it("searches with snippets and highlights, cacheable and without a cookie", async () => {
