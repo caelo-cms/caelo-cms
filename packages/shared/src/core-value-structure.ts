@@ -177,7 +177,7 @@ export function coreValueProblem(place: CorePlace, value: string): CoreValueProb
     case "attribute":
       return attributeProblem(place, value);
     case "tag":
-      return tagProblem(place.inName, value, place.after);
+      return tagProblem(place.inName, value, place.before, place.after);
   }
 }
 
@@ -649,8 +649,19 @@ function attributeProblem(
   return null;
 }
 
-function tagProblem(inName: boolean, value: string, after: string): CoreValueProblem | null {
+function tagProblem(
+  inName: boolean,
+  value: string,
+  before: string,
+  after: string,
+): CoreValueProblem | null {
   const where = inName ? "a tag's name" : "a tag's attributes";
+  // A value that starts the name right after the template's `<`: only a
+  // letter makes a tag of it (`<{{tag}}>` with `!--note` is a comment).
+  const opens = inName ? /<\/?$/.exec(before)?.[0] : undefined;
+  if (opens !== undefined && !/^[a-zA-Z]/.test(value)) {
+    return { rule: "ends-tag-name", spelling: spellingAt(value, 0, 1), place: where };
+  }
   if (inName) {
     const at = value.search(/[\t\n\f\r />]/);
     if (at !== -1) {
@@ -660,7 +671,7 @@ function tagProblem(inName: boolean, value: string, after: string): CoreValuePro
   // Where the template's own text after the value ends the tag: the tag
   // must end there with the value too, as self-closing as before (`id=x`
   // before the template's `/>` takes the `/` into its value).
-  const head = inName ? "<x" : "<x ";
+  const head = opens !== undefined ? `${opens}x` : inName ? "<x" : "<x ";
   const base = htmlTokens(head + after)[0];
   if (base?.kind === "start" && base.end > 0) {
     const read = htmlTokens(head + value + after)[0];

@@ -498,3 +498,20 @@ describe("#1748 review, round 5", () => {
     );
   });
 });
+
+describe("#1748 review, round 6", () => {
+  it("lets only a letter start a tag's name right after the template's `<`", () => {
+    expect(rule("<div><{{x}}>hidden</div><footer>F</footer>", "!--note")).toBe("ends-tag-name");
+    expect(rule("<div><{{x}}>hidden</div>", "?xml")).toBe("ends-tag-name");
+    expect(at("<div><{{x}} class=a>hidden</div>", "h2")).toBeNull();
+  });
+
+  it("reads text elements as text again inside an HTML integration point of SVG", () => {
+    expect(
+      at(
+        "<div>{{x}}</div>",
+        "<svg><foreignObject><textarea></div></textarea></foreignObject></svg>",
+      ),
+    ).toBeNull();
+  });
+});

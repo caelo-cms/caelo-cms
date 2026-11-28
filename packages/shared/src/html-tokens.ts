@@ -59,6 +59,19 @@ const TEXT_STATES: Readonly<Record<string, (typeof TokenizerMode)[keyof typeof T
   plaintext: TokenizerMode.PLAINTEXT,
 };
 
+/** SVG and MathML elements whose content is HTML again (the HTML standard's integration points). */
+const INTEGRATION_POINTS: ReadonlySet<string> = new Set([
+  "foreignobject",
+  "desc",
+  "title",
+  "mi",
+  "mo",
+  "mn",
+  "ms",
+  "mtext",
+  "annotation-xml",
+]);
+
 /** Options of {@link htmlTokens}. */
 export interface HtmlTokenOptions {
   /**
@@ -74,8 +87,12 @@ export interface HtmlTokenOptions {
 /** The tokens of `html`, in order. A tag left unfinished at the end is no token (the tokenizer drops it). */
 export function htmlTokens(html: string, options: HtmlTokenOptions = {}): HtmlToken[] {
   const out: HtmlToken[] = [];
-  // SVG / MathML elements open around the current token: no text elements there.
-  let foreign = 0;
+  // The SVG / MathML elements open around the current token, and the HTML
+  // integration points among them (`foreignObject`, `mtext`, …), where
+  // HTML, text elements included, is read again.
+  const foreign: { readonly name: string; readonly html: boolean }[] = [];
+  const inHtml = () =>
+    foreign.length === 0 || (foreign[foreign.length - 1] as { html: boolean }).html;
   const text = (t: Token.CharacterToken) => {
     const last = out[out.length - 1];
     if (last?.kind === "text") out[out.length - 1] = { kind: "text", value: last.value + t.chars };
@@ -86,9 +103,15 @@ export function htmlTokens(html: string, options: HtmlTokenOptions = {}): HtmlTo
     {
       onStartTag(t) {
         if (options.textElements) {
-          const textState = foreign === 0 ? TEXT_STATES[t.tagName] : undefined;
-          if (textState !== undefined) tokenizer.state = textState;
-          else if ((t.tagName === "svg" || t.tagName === "math") && !t.selfClosing) foreign += 1;
+          if (inHtml()) {
+            const textState = TEXT_STATES[t.tagName];
+            if (textState !== undefined) tokenizer.state = textState;
+            else if ((t.tagName === "svg" || t.tagName === "math") && !t.selfClosing) {
+              foreign.push({ name: t.tagName, html: false });
+            }
+          } else if (!t.selfClosing) {
+            foreign.push({ name: t.tagName, html: INTEGRATION_POINTS.has(t.tagName) });
+          }
         }
         out.push({
           kind: "start",
@@ -107,9 +130,7 @@ export function htmlTokens(html: string, options: HtmlTokenOptions = {}): HtmlTo
         });
       },
       onEndTag(t) {
-        if (options.textElements && foreign > 0 && (t.tagName === "svg" || t.tagName === "math")) {
-          foreign -= 1;
-        }
+        if (options.textElements && foreign[foreign.length - 1]?.name === t.tagName) foreign.pop();
         out.push({ kind: "end", name: t.tagName, start: t.location?.startOffset ?? -1 });
       },
       onComment(t) {

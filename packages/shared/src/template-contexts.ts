@@ -217,7 +217,13 @@ export type CorePlace =
   /** An attribute's value: its quote (null unquoted), and whether the value starts it. */
   | { readonly kind: "attribute"; readonly quote: '"' | "'" | null; readonly atStart: boolean }
   /** A tag's name (`inName`) or its attribute list (`<div {{attrs}}>`). */
-  | { readonly kind: "tag"; readonly inName: boolean; readonly after: string };
+  | {
+      readonly kind: "tag";
+      readonly inName: boolean;
+      /** The template's text right before (up to another value tag): a name may start right after its `<`. */
+      readonly before: string;
+      readonly after: string;
+    };
 
 /**
  * The template's text right before and after a value tag in raw text or a
@@ -801,9 +807,9 @@ function corePlaceOf(place: Place, near: Around, text: string): CorePlace | null
       };
     }
     case "tag-name":
-      return { kind: "tag", inName: true, after };
+      return { kind: "tag", inName: true, before, after };
     case "attr-name":
-      return { kind: "tag", inName: false, after };
+      return { kind: "tag", inName: false, before, after };
     case "doctype":
       return null;
   }
