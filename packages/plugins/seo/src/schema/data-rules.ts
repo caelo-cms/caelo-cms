@@ -216,6 +216,11 @@ function visible(f: PluginAuditPageFacts, value: string): boolean | null {
   if (runs.some((r) => r.includes(v))) return true;
   // The whole text across runs (a name split by markup).
   if (runs.join(" ").includes(v)) return true;
+  // Without spaces too: a run ends where markup or an entity split the
+  // text, which is no word boundary in a script without spaces
+  // (`<b>株式会社</b>トヨタ`) or inside a word (`Jos&eacute;`).
+  const tight = (t: string) => t.replace(/ /g, "");
+  if (tight(runs.join(" ")).includes(tight(v))) return true;
   // Cut facts prove nothing about what is missing.
   const cut = f.truncatedFacts.includes("texts") || f.truncatedFacts.includes("headings");
   return cut ? null : false;

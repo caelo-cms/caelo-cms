@@ -858,9 +858,18 @@ export const pluginAuditFinding = z
      * ("Translation missing: …"), then what is wrong and why it matters.
      */
     message: z.string().min(1).max(1000),
-    /** The AI tool that fixes it (the plugin's own or a core tool) and one sentence of how. */
+    /**
+     * The AI tool that fixes it (the plugin's own or a core tool) and one
+     * sentence of how. `tool` is a tool name as a model calls it (letters,
+     * digits, `_` and `-`, the names AI providers accept), never free text.
+     */
     fix: z
-      .object({ tool: z.string().min(1).max(80), hint: z.string().min(1).max(500) })
+      .object({
+        tool: z
+          .string()
+          .regex(/^[A-Za-z0-9_-]{1,80}$/, "a tool name: letters, digits, _ and -, at most 80"),
+        hint: z.string().min(1).max(500),
+      })
       .strict()
       .optional(),
   })

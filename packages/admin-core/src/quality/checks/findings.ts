@@ -70,8 +70,14 @@ export const ruleIdSchema = z
 /** Where the AI fixes a finding: the tool to call and what to do with it. */
 export const findingFixSchema = z
   .object({
-    /** An AI tool name (`set_page_seo_many`, `update_modules_many`, …). */
-    tool: z.string().min(1).max(80),
+    /**
+     * An AI tool name (`set_page_seo_many`, `update_modules_many`, …): the
+     * characters a model can call a tool by (AI providers accept letters,
+     * digits, `_` and `-`), never free text a plugin chose.
+     */
+    tool: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{1,80}$/, "a tool name: letters, digits, _ and -, at most 80"),
     /** One sentence: what to change, in the tool's terms. */
     hint: findingText(500),
   })

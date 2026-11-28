@@ -134,6 +134,17 @@ describe("article rules", () => {
     expect(nameRules(person("Ben Okafor", ["Dr.", "Anna Berg"]))).toEqual([
       "structured-data-not-visible",
     ]);
+    // A script without spaces: <b>株式会社</b>トヨタ (third review #1).
+    expect(nameRules(person("株式会社トヨタ", ["株式会社", "トヨタ"]))).toEqual([]);
+    // Letters written as entities split a word: Jos&eacute; Garc&iacute;a.
+    expect(nameRules(person("José García", ["Jos", "é", " Garc", "í", "a"]))).toEqual([]);
+    // Still a finding when the page shows neither.
+    expect(nameRules(person("株式会社ホンダ", ["株式会社", "トヨタ"]))).toEqual([
+      "structured-data-not-visible",
+    ]);
+    expect(nameRules(person("José Martín", ["Jos", "é", " Garc", "í", "a"]))).toEqual([
+      "structured-data-not-visible",
+    ]);
   });
   it("never quotes half of a character (review #8)", () => {
     const long = `${"x".repeat(79)}😀😀 end`;
